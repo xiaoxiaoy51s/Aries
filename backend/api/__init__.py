@@ -1,0 +1,10 @@
+from api.config import router as config_router
+from api.chat import router as chat_router
+from api.sessions import router as sessions_router
+from api.scheduled_tasks import router as scheduled_tasks_router
+from api.platforms import router as platforms_router
+from api.system import router as system_router
+from api.terminal import router as terminal_router
+from api.skills import router as skills_router
+from api.upload import router as upload_router
+from api.debug import router as debug_router
