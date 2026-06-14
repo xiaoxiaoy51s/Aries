@@ -1,12 +1,14 @@
 <template>
   <div class="user-message-content">
-    <p>{{ text }}</p>
+    <p>{{ content }}</p>
   </div>
 </template>
 
 <script setup lang="ts">
 defineProps<{
-  text: string
+  content: string
+  slashCommand?: string
+  slashBody?: string
   images?: string[]
 }>()
 </script>

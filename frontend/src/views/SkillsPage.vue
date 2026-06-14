@@ -42,7 +42,7 @@ async function fetchSkills() {
     loading.value = true
     error.value = ''
     const data = await listSkills()
-    skills.value = data.skills
+    skills.value = data
   } catch (e: any) {
     error.value = e.message || '获取技能列表失败'
   } finally {

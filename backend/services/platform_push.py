@@ -41,19 +41,30 @@ def _split_text(text: str, max_len: int = MAX_SEGMENT_LEN) -> list[str]:
 def push_wechat_message(text: str) -> bool:
     """主动推送微信消息。"""
     if not text.strip():
+        _log.warning("[Push/微信] 内容为空，跳过")
         return False
 
     config = _load_bot_config()
     wechat = config.get("wechat", {})
     if not wechat.get("enabled"):
+        _log.warning("[Push/微信] 未启用，请先在设置中绑定微信")
         return False
 
     bot_token = (wechat.get("bot_token") or "").strip()
+    if not bot_token:
+        _log.warning("[Push/微信] 缺少 bot_token")
+        return False
+
     context_token = (wechat.get("context_token") or "").strip()
     recipient = (
         (wechat.get("last_from_user_id") or "").strip()
         or (wechat.get("to_user_id") or "").strip()
     )
+    if not recipient:
+        _log.warning("[Push/微信] 缺少收消息用户，请先用手机给 bot 发一条消息")
+        return False
+
+    segments = _split_text(text)
 
     # 优先使用运行中的 bot 客户端
     try:
@@ -62,12 +73,13 @@ def push_wechat_message(text: str) -> bool:
         if _runner and _runner.client:
             _runner.client._running = True
             try:
-                result = _runner.client.send_message(
-                    text,
-                    to_user_id=recipient,
-                    context_token=context_token,
-                )
-                _log.info("[Push/微信] 运行中 bot 返回: %s", result)
+                for seg in segments:
+                    result = _runner.client.send_message(
+                        seg,
+                        to_user_id=recipient,
+                        context_token=context_token,
+                    )
+                    _log.info("[Push/微信] 运行中 bot 返回: %s", result)
                 return True
             except Exception as e:
                 _log.warning("[Push/微信] 运行中 bot 推送失败: %s", e)
@@ -85,8 +97,9 @@ def push_wechat_message(text: str) -> bool:
         )
         client._running = True
         try:
-            result = client.send_message(text, to_user_id=recipient, context_token=context_token)
-            _log.info("[Push/微信] 独立客户端返回: %s", result)
+            for seg in segments:
+                result = client.send_message(seg, to_user_id=recipient, context_token=context_token)
+                _log.info("[Push/微信] 独立客户端返回: %s", result)
             return True
         finally:
             client._close_client()

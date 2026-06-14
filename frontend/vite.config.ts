@@ -13,19 +13,19 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:2026',
+        target: 'http://127.0.0.1:30000',
         changeOrigin: true,
       },
       '/chat': {
-        target: 'http://127.0.0.1:2026',
+        target: 'http://127.0.0.1:30000',
         changeOrigin: true,
       },
       '/uploads': {
-        target: 'http://127.0.0.1:2026',
+        target: 'http://127.0.0.1:30000',
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://127.0.0.1:2026',
+        target: 'ws://127.0.0.1:30000',
         ws: true,
       },
     },

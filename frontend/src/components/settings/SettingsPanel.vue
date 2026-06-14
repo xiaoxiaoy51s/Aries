@@ -270,6 +270,7 @@ const privacyStore = usePrivacyStore()
 // 弹窗打开时加载数据
 watch(() => props.visible, (val) => {
   if (val) {
+    modelStore.loadModels()
     accountStore.fetchAccounts()
     configPanel.value = ''
   }

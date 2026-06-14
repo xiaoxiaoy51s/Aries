@@ -280,6 +280,14 @@ import SlashComposerInput, { type ComposerImage } from '@/components/SlashCompos
 import UserMessageContent from '@/components/UserMessageContent.vue'
 import { parseSnapshotEventObjects } from '@/utils/snapshotParser'
 
+const props = defineProps<{
+  sessionIdToLoad?: string | null
+}>()
+
+const emit = defineEmits<{
+  sessionLoaded: []
+}>()
+
 const modelStore = useModelStore()
 const privacyStore = usePrivacyStore()
 const workspaceStore = useWorkspaceStore()
@@ -549,11 +557,25 @@ async function applyWorkDir(path: string) {
   }
 }
 
-// 监听侧边栏点击会话事件，加载历史
-async function onLoadSession(e: Event) {
-  const id = (e as CustomEvent).detail
+// 监听侧边栏 / 定时任务跳转，加载指定 session 的历史
+async function loadSessionById(id: string) {
   if (!id) return
   currentSessionId.value = id
+  inputMessage.value = ''
+  clearAttachedImages()
+  clearComposerCommand()
+
+  try {
+    const meta = await getSession(id)
+    if (meta?.work_dir) {
+      workDir.value = meta.work_dir
+      workspaceStore.setWorkDir(meta.work_dir)
+      loadWorkDirHistory()
+    }
+  } catch {
+    // 会话元数据缺失时仍尝试加载消息
+  }
+
   try {
     const data = await getSessionMessages(id, 100)
     const msgs: ChatMessage[] = (data.messages || []).map((m: any) => {
@@ -606,7 +628,17 @@ async function onLoadSession(e: Event) {
     }
   } catch (err) {
     console.error('加载历史消息失败', err)
+    messages.value = []
+    hasActiveChat.value = false
+  } finally {
+    emit('sessionLoaded')
   }
+}
+
+async function onLoadSession(e: Event) {
+  const id = (e as CustomEvent).detail
+  if (!id) return
+  await loadSessionById(id)
 }
 
 // 加载消息快照（JSONL 优先；无事件时用 DB reasoning_content 拆段）
@@ -814,6 +846,13 @@ onMounted(() => {
   document.addEventListener('mousedown', closeWorkDirMenu)
   document.addEventListener('keydown', onGlobalKeydown)
   loadWorkDir()
+  if (props.sessionIdToLoad) {
+    void loadSessionById(props.sessionIdToLoad)
+  }
+})
+
+watch(() => props.sessionIdToLoad, (id) => {
+  if (id) void loadSessionById(id)
 })
 
 onUnmounted(() => {

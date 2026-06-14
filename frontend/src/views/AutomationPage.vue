@@ -43,19 +43,24 @@
           </span>
           <h3 class="card-title">{{ task.title || '未命名' }}</h3>
           <!-- 推送标签 -->
-          <span v-if="task.notify_type && task.notify_type !== 'none'" class="notify-badge">
-            {{ notifyTypeLabel(task.notify_type) }}
+          <span v-if="taskPushPlatform(task)" class="notify-badge">
+            {{ notifyTypeLabel(taskPushPlatform(task)!) }}
           </span>
         </div>
         <p class="card-content">{{ task.task_content || '无执行内容' }}</p>
         <div class="card-meta">
           <span class="schedule-label">{{ formatScheduleLabel(task) }}</span>
-          <span v-if="task.session_id" class="session-label">
+          <button
+            v-if="canOpenTaskSession(task)"
+            type="button"
+            class="session-link"
+            @click="openTaskSession(task)"
+          >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
             </svg>
-            绑定会话
-          </span>
+            {{ sessionLinkLabel(task) }}
+          </button>
         </div>
         <div class="card-footer">
           <span class="status-label" :class="'st-' + task.status">{{ statusLabel(task.status) }}</span>
@@ -66,6 +71,11 @@
               class="btn-text btn-danger"
               @click="handleCancel(task.id)"
             >取消</button>
+            <button
+              type="button"
+              class="btn-text"
+              @click="openTaskDetail(task)"
+            >详情</button>
             <button
               type="button"
               class="btn-text"
@@ -134,81 +144,108 @@
 
               <!-- 每间隔 -->
               <template v-if="form.schedule_type === 'interval'">
-                <select v-model.number="form.intervalMinutes">
-                  <option :value="5">每5分钟</option>
-                  <option :value="10">每10分钟</option>
-                  <option :value="15">每15分钟</option>
-                  <option :value="30">每30分钟</option>
-                  <option :value="60">每小时</option>
-                  <option :value="120">每2小时</option>
-                  <option :value="360">每6小时</option>
-                  <option :value="720">每12小时</option>
-                  <option :value="1440">每天</option>
+                <select v-model.number="form.intervalHours">
+                  <option :value="1">每1小时</option>
+                  <option :value="2">每2小时</option>
+                  <option :value="6">每6小时</option>
+                  <option :value="12">每12小时</option>
+                  <option :value="24">每天</option>
                 </select>
               </template>
             </div>
           </div>
 
-          <!-- 会话绑定 -->
+          <!-- 结果推送（网页会话 与 手机推送 互斥） -->
           <div class="form-group">
             <label>结果推送 <span class="required">*</span></label>
-            <div class="session-row">
-              <select v-model="form.session_mode" class="session-mode-select">
-                <option value="new">推送到新会话</option>
-                <option value="bind">推送到已有会话</option>
-              </select>
-              <template v-if="form.session_mode === 'bind'">
-                <select v-model="form.session_id" class="session-select">
-                  <option value="">-- 请选择会话 --</option>
-                  <option v-for="s in sessions" :key="s.session_id" :value="s.session_id">
-                    {{ s.title || s.session_id.substring(0, 16) + '...' }}
-                  </option>
-                </select>
-              </template>
-            </div>
-            <p v-if="form.session_mode === 'new'" class="form-hint">任务执行结果将推送到新会话，可在聊天页面查看</p>
-            <p v-else class="form-hint">结果推送到已有会话，agent 将基于该会话的历史上下文继续对话</p>
-          </div>
+            <select v-model="form.delivery_target" class="delivery-select">
+              <option value="web_new">推送到新会话（网页聊天）</option>
+              <option value="web_bind">推送到已有会话（网页聊天）</option>
+              <option value="external">推送到手机（微信 / QQ / 飞书）</option>
+            </select>
 
-          <!-- 外部推送（高级，折叠） -->
-          <div class="form-group advanced-section">
-            <button type="button" class="advanced-toggle" @click="showAdvanced = !showAdvanced">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: showAdvanced }">
-                <polyline points="6,9 12,15 18,9"/>
-              </svg>
-              外部推送（可选）
-            </button>
-            <template v-if="showAdvanced">
-              <select v-model="form.notify_type" class="notify-select">
-                <option value="">-- 请选择推送平台 --</option>
-                <option value="wechat">企业微信</option>
-                <option value="qq">QQ 机器人</option>
+            <template v-if="form.delivery_target === 'web_bind'">
+              <select v-model="form.session_id" class="session-select session-select--bind">
+                <option value="">-- 请选择会话 --</option>
+                <option v-for="s in sessions" :key="s.session_id" :value="s.session_id">
+                  {{ formatSessionOption(s) }}
+                </option>
+              </select>
+              <p v-if="sessions.length === 0" class="form-hint form-hint--warn">暂无可用会话，请先在「对话」页创建聊天</p>
+              <p v-else class="form-hint">AI 将基于所选会话的历史上下文继续对话，结果写入该会话</p>
+            </template>
+
+            <template v-else-if="form.delivery_target === 'external'">
+              <select v-model="form.notify_type" class="session-select session-select--bind">
+                <option value="wechat">微信</option>
+                <option value="qq">QQ</option>
                 <option value="feishu">飞书</option>
               </select>
-
-              <template v-if="form.notify_type === 'wechat' || form.notify_type === 'qq'">
-                <div class="sub-form">
-                  <label class="sub-label">Webhook 地址</label>
-                  <input v-model="form.notify_webhook_url" type="text" placeholder="https://..." />
-                </div>
-              </template>
-
-              <template v-if="form.notify_type === 'feishu'">
-                <div class="sub-form">
-                  <label class="sub-label">Webhook 地址</label>
-                  <input v-model="form.notify_webhook_url" type="text" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." />
-                </div>
-                <div class="sub-form">
-                  <label class="sub-label">签名密钥（可选）</label>
-                  <input v-model="form.notify_secret" type="text" placeholder="飞书机器人签名校验密钥" />
-                </div>
-              </template>
+              <p class="form-hint">AI 回复会像平时聊天一样发到手机。需先在设置绑定对应平台，并用手机发过至少一条消息</p>
             </template>
+
+            <p v-else class="form-hint">任务执行后自动创建新会话，可在「对话」页查看</p>
           </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn-secondary" @click="closeDialog">取消</button>
           <button type="button" class="btn-primary" @click="handleSubmit" :disabled="!isFormValid">确定</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 任务详情弹窗 -->
+    <div v-if="showDetailDialog" class="modal-overlay" @click.self="closeDetailDialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>任务详情</h3>
+          <button type="button" class="btn-close" @click="closeDetailDialog">&times;</button>
+        </div>
+        <div v-if="detailLoading" class="modal-body detail-loading">加载中...</div>
+        <div v-else-if="detailTask" class="modal-body">
+          <div class="form-group">
+            <label>名称</label>
+            <div class="detail-value">{{ detailTask.title || '未命名' }}</div>
+          </div>
+          <div class="form-group">
+            <label>要求说明</label>
+            <div class="detail-text">{{ detailTask.task_content || '（无）' }}</div>
+          </div>
+          <div class="form-group">
+            <label>执行时间</label>
+            <div class="detail-value">{{ formatScheduleDetail(detailTask) }}</div>
+            <p v-if="detailTask.scheduled_at" class="form-hint">下次/计划执行：{{ formatDateTimeDisplay(detailTask.scheduled_at) }}</p>
+          </div>
+          <div class="form-group">
+            <label>结果推送</label>
+            <div class="detail-value">{{ formatDeliveryTarget(detailTask) }}</div>
+            <p v-if="detailTask.session_id" class="form-hint">会话 ID：{{ detailTask.session_id }}</p>
+          </div>
+          <div class="form-group">
+            <label>任务状态</label>
+            <div class="detail-value">
+              <span class="status-label" :class="'st-' + detailTask.status">{{ statusLabel(detailTask.status) }}</span>
+            </div>
+          </div>
+          <div class="form-group detail-meta-grid">
+            <div>
+              <label>创建时间</label>
+              <div class="detail-value">{{ formatDateTimeDisplay(detailTask.created_at) || '—' }}</div>
+            </div>
+            <div>
+              <label>更新时间</label>
+              <div class="detail-value">{{ formatDateTimeDisplay(detailTask.updated_at) || '—' }}</div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button
+            v-if="detailTask && canOpenTaskSession(detailTask)"
+            type="button"
+            class="btn-secondary"
+            @click="openTaskSession(detailTask!)"
+          >{{ sessionLinkLabel(detailTask!) }}</button>
+          <button type="button" class="btn-primary" @click="closeDetailDialog">关闭</button>
         </div>
       </div>
     </div>
@@ -244,12 +281,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import {
   listScheduledTasks,
   createScheduledTask,
   cancelScheduledTask,
   deleteScheduledTask,
+  getScheduledTask,
   listSessions,
   type ScheduledTask,
   type SessionItem,
@@ -263,7 +301,9 @@ const tasks = ref<ScheduledTask[]>([])
 const sessions = ref<SessionItem[]>([])
 const loading = ref(false)
 const showDialog = ref(false)
-const showAdvanced = ref(false)
+const showDetailDialog = ref(false)
+const detailLoading = ref(false)
+const detailTask = ref<ScheduledTask | null>(null)
 
 const form = ref({
   title: '',
@@ -273,27 +313,36 @@ const form = ref({
   onceTime: '',
   dailyHour: '09',
   dailyMinute: '00',
-  intervalMinutes: 60,
-  session_mode: 'new' as 'new' | 'bind',
+  intervalHours: 1,
+  delivery_target: 'web_new' as 'web_new' | 'web_bind' | 'external',
   session_id: '',
-  notify_type: 'none' as 'none' | 'wechat' | 'qq' | 'feishu' | 'webhook',
-  notify_webhook_url: '',
-  notify_secret: '',
-  notify_method: 'POST',
+  notify_type: 'wechat' as 'wechat' | 'qq' | 'feishu',
 })
+
+function platformFromSessionId(sessionId: string | undefined): string | null {
+  if (!sessionId) return null
+  const m = sessionId.match(/^__(wechat|qq|feishu)__$/)
+  return m ? m[1] : null
+}
+
+function taskPushPlatform(task: ScheduledTask): string | null {
+  const fromSession = platformFromSessionId(task.session_id)
+  if (fromSession) return fromSession
+  if (task.notify_type && task.notify_type !== 'none') return task.notify_type
+  return null
+}
 
 const isFormValid = computed(() => {
   const f = form.value
   if (!f.title.trim() || !f.task_content.trim()) return false
   if (f.schedule_type === 'once' && (!f.onceDate || !f.onceTime)) return false
-  if (f.session_mode === 'bind' && !f.session_id) return false
-  // 外部推送是可选的，但如果选了就得填地址
-  if (showAdvanced.value && f.notify_type !== 'none' && !f.notify_webhook_url) return false
+  if (f.delivery_target === 'web_bind' && !f.session_id) return false
+  if (f.delivery_target === 'external' && !f.notify_type) return false
   return true
 })
 
 function notifyTypeLabel(type: string): string {
-  const map: Record<string, string> = { wechat: '企微', qq: 'QQ', feishu: '飞书', webhook: 'Hook' }
+  const map: Record<string, string> = { wechat: '微信', qq: 'QQ', feishu: '飞书', webhook: 'Hook' }
   return map[type] || type
 }
 
@@ -302,9 +351,20 @@ function statusLabel(status: string): string {
   return map[status] || status
 }
 
+function formatIntervalLabel(minutes: number): string {
+  if (minutes >= 1440 && minutes % 1440 === 0) {
+    const days = minutes / 1440
+    return days === 1 ? '每天' : `每${days}天`
+  }
+  if (minutes >= 60 && minutes % 60 === 0) {
+    const hours = minutes / 60
+    return `每${hours}小时`
+  }
+  return `每${minutes}分钟`
+}
+
 function formatScheduleLabel(task: ScheduledTask): string {
   const st = task.schedule_type || 'once'
-  const config = task.schedule_config || {}
 
   if (st === 'once') {
     if (task.scheduled_at) {
@@ -316,16 +376,105 @@ function formatScheduleLabel(task: ScheduledTask): string {
     return '单次'
   }
   if (st === 'daily') {
-    const time = (config as Record<string, unknown>).time || '09:00'
-    return '每天 ' + time
+    if (task.scheduled_at) {
+      const d = new Date(task.scheduled_at)
+      if (!isNaN(d.getTime())) {
+        const hh = String(d.getHours()).padStart(2, '0')
+        const mm = String(d.getMinutes()).padStart(2, '0')
+        return `每天 ${hh}:${mm}`
+      }
+    }
+    return '每天'
   }
   if (st === 'interval') {
-    const mins = Number((config as Record<string, unknown>).minutes) || 60
-    if (mins >= 1440) return '每天'
-    if (mins >= 60) return '每' + Math.floor(mins / 60) + '小时'
-    return '每' + mins + '分钟'
+    const mins = Number(task.interval_minutes) || 60
+    return formatIntervalLabel(mins)
   }
   return '未知'
+}
+
+function formatSessionOption(s: SessionItem): string {
+  const title = (s.title || s.last_user_message || '').trim()
+  if (title) return title.length > 40 ? title.slice(0, 40) + '…' : title
+  return s.session_id.substring(0, 16) + '…'
+}
+
+function canOpenTaskSession(task: ScheduledTask): boolean {
+  if (taskPushPlatform(task)) return true
+  return !!task.session_id
+}
+
+function sessionLinkLabel(task: ScheduledTask): string {
+  const platform = taskPushPlatform(task)
+  if (platform) return `查看${notifyTypeLabel(platform)}`
+  return '查看会话'
+}
+
+function formatScheduleDetail(task: ScheduledTask): string {
+  const st = task.schedule_type || 'once'
+  if (st === 'once') return '单次执行'
+  if (st === 'daily') {
+    if (task.scheduled_at) {
+      const d = new Date(task.scheduled_at)
+      if (!isNaN(d.getTime())) {
+        const hh = String(d.getHours()).padStart(2, '0')
+        const mm = String(d.getMinutes()).padStart(2, '0')
+        return `每天 ${hh}:${mm}`
+      }
+    }
+    return '每天'
+  }
+  if (st === 'interval') {
+    const mins = Number(task.interval_minutes) || 60
+    return `每间隔 · ${formatIntervalLabel(mins)}`
+  }
+  return formatScheduleLabel(task)
+}
+
+function formatDeliveryTarget(task: ScheduledTask): string {
+  const platform = taskPushPlatform(task)
+  if (platform) return `推送到手机 · ${notifyTypeLabel(platform)}`
+  if (task.session_id) return '推送到已有会话（网页聊天）'
+  return '推送到新会话（网页聊天）'
+}
+
+function formatDateTimeDisplay(value: string): string {
+  if (!value) return ''
+  const d = new Date(value)
+  if (isNaN(d.getTime())) return value
+  return d.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
+async function openTaskDetail(task: ScheduledTask) {
+  showDetailDialog.value = true
+  detailLoading.value = true
+  detailTask.value = task
+  try {
+    detailTask.value = await getScheduledTask(task.id)
+  } catch (e) {
+    console.error('加载任务详情失败', e)
+    detailTask.value = task
+  } finally {
+    detailLoading.value = false
+  }
+}
+
+function closeDetailDialog() {
+  showDetailDialog.value = false
+  detailTask.value = null
+}
+
+function openTaskSession(task: ScheduledTask) {
+  const sessionId = task.session_id || (taskPushPlatform(task) ? `__${taskPushPlatform(task)}__` : '')
+  if (!sessionId) return
+  window.dispatchEvent(new CustomEvent('mimo:open-session', { detail: sessionId }))
 }
 
 function openCreateDialog() {
@@ -344,16 +493,14 @@ function openCreateDialog() {
     onceTime: hour + ':' + minute,
     dailyHour: '09',
     dailyMinute: '00',
-    intervalMinutes: 60,
-    session_mode: 'new',
+    intervalHours: 1,
+    delivery_target: 'web_new',
     session_id: '',
-    notify_type: 'none',
-    notify_webhook_url: '',
-    notify_secret: '',
-    notify_method: 'POST',
+    notify_type: 'wechat',
   }
-  loadSessions()
-  showAdvanced.value = false
+  if (form.value.delivery_target === 'web_bind') {
+    loadSessions()
+  }
   showDialog.value = true
 }
 
@@ -365,9 +512,8 @@ interface Template {
   title: string
   task_content: string
   schedule_type: 'once' | 'daily' | 'interval'
-  scheduleConfig?: Record<string, unknown>
-  notify_type?: 'none' | 'wechat' | 'qq' | 'feishu' | 'webhook'
-  notify_webhook_url?: string
+  intervalHours?: number
+  scheduleConfig?: { time?: string }
 }
 
 const templates: Template[] = [
@@ -396,7 +542,7 @@ const templates: Template[] = [
     title: '代码质量扫描',
     task_content: '检查当前项目的代码质量，包括：1. 潜在的 bug 和逻辑问题 2. 代码风格一致性 3. 性能优化建议。输出具体的文件路径、问题描述和修复建议。',
     schedule_type: 'interval',
-    scheduleConfig: { minutes: 360 },
+    intervalHours: 6,
   },
   {
     id: 'news-briefing',
@@ -421,13 +567,10 @@ function applyTemplate(tmpl: Template) {
       onceTime: String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0'),
       dailyHour: '09',
       dailyMinute: '00',
-      intervalMinutes: 60,
-      session_mode: 'new',
+      intervalHours: 1,
+      delivery_target: 'web_new',
       session_id: '',
-      notify_type: tmpl.notify_type || 'none',
-      notify_webhook_url: tmpl.notify_webhook_url || '',
-      notify_secret: '',
-      notify_method: 'POST',
+      notify_type: 'wechat',
     }
   } else if (tmpl.schedule_type === 'daily') {
     const timeStr = (tmpl.scheduleConfig?.time as string) || '09:00'
@@ -439,16 +582,13 @@ function applyTemplate(tmpl: Template) {
       onceTime: '',
       dailyHour: timeStr.split(':')[0],
       dailyMinute: timeStr.split(':')[1] || '00',
-      intervalMinutes: 60,
-      session_mode: 'new',
+      intervalHours: 1,
+      delivery_target: 'web_new',
       session_id: '',
-      notify_type: tmpl.notify_type || 'none',
-      notify_webhook_url: tmpl.notify_webhook_url || '',
-      notify_secret: '',
-      notify_method: 'POST',
+      notify_type: 'wechat',
     }
   } else if (tmpl.schedule_type === 'interval') {
-    const mins = Number(tmpl.scheduleConfig?.minutes) || 60
+    const hours = Number(tmpl.intervalHours) || 1
     form.value = {
       title: tmpl.title,
       task_content: tmpl.task_content,
@@ -457,18 +597,16 @@ function applyTemplate(tmpl: Template) {
       onceTime: '',
       dailyHour: '09',
       dailyMinute: '00',
-      intervalMinutes: mins,
-      session_mode: 'new',
+      intervalHours: hours,
+      delivery_target: 'web_new',
       session_id: '',
-      notify_type: tmpl.notify_type || 'none',
-      notify_webhook_url: tmpl.notify_webhook_url || '',
-      notify_secret: '',
-      notify_method: 'POST',
+      notify_type: 'wechat',
     }
   }
 
-  loadSessions()
-  showAdvanced.value = false
+  if (form.value.delivery_target === 'web_bind') {
+    loadSessions()
+  }
   showDialog.value = true
 }
 
@@ -486,13 +624,12 @@ function formatDateForInput(d: Date): string {
 async function handleSubmit() {
   if (!isFormValid.value) return
 
-  let scheduled_at = ''
-  let schedule_config: Record<string, unknown> | undefined
+  let scheduled_at: string | undefined
+  let interval_minutes: number | undefined
   const f = form.value
 
   if (f.schedule_type === 'once') {
     scheduled_at = f.onceDate + 'T' + f.onceTime + ':00'
-    schedule_config = { datetime: scheduled_at }
   } else if (f.schedule_type === 'daily') {
     const now = new Date()
     const timeStr = f.dailyHour.padStart(2, '0') + ':' + f.dailyMinute.padStart(2, '0') + ':00'
@@ -502,22 +639,20 @@ async function handleSubmit() {
       const tomorrow = new Date(now.getTime() + 86400000)
       scheduled_at = formatDateForInput(tomorrow) + 'T' + timeStr
     }
-    schedule_config = { time: f.dailyHour + ':' + f.dailyMinute }
   } else if (f.schedule_type === 'interval') {
-    const now = new Date()
-    const future = new Date(now.getTime() + f.intervalMinutes * 60000)
-    scheduled_at = future.toISOString().replace('Z', '')
-    schedule_config = { minutes: f.intervalMinutes }
+    interval_minutes = f.intervalHours * 60
   }
 
-  // 构建推送配置（仅高级选项展开时）
-  let notify_type: string = 'none'
-  let notify_config: Record<string, unknown> | undefined
-  if (showAdvanced.value && f.notify_type !== 'none') {
-    notify_type = f.notify_type
-    if (f.notify_type === 'wechat' || f.notify_type === 'qq') {
-      notify_config = { webhook_url: f.notify_webhook_url }
-    } else if (f.notify_type === 'feishu') {
+  let session_mode: 'new' | 'bind' | undefined
+  let session_id: string | undefined
+
+  if (f.delivery_target === 'external') {
+    session_id = `__${f.notify_type}__`
+  } else if (f.delivery_target === 'web_bind') {
+    session_mode = 'bind'
+    session_id = f.session_id
+  } else {
+    session_mode = 'new'
   }
 
   try {
@@ -526,11 +661,9 @@ async function handleSubmit() {
       task_content: f.task_content.trim(),
       schedule_type: f.schedule_type,
       scheduled_at,
-      schedule_config,
-      session_mode: f.session_mode,
-      session_id: f.session_mode === 'bind' ? f.session_id : undefined,
-      notify_type: notify_type as 'none' | 'wechat' | 'qq' | 'feishu' | 'webhook',
-      notify_config,
+      interval_minutes,
+      session_mode,
+      session_id,
     })
     closeDialog()
     await loadTasks()
@@ -575,12 +708,23 @@ async function loadTasks() {
 async function loadSessions() {
   try {
     const res = await listSessions()
-    sessions.value = res.sessions || []
+    sessions.value = (res.sessions || []).filter(
+      s => !(s.session_id.startsWith('__') && s.session_id.endsWith('__'))
+    )
   } catch (e) {
     console.error('加载会话列表失败', e)
     sessions.value = []
   }
 }
+
+watch(() => form.value.delivery_target, (target) => {
+  if (target === 'web_bind') {
+    form.value.session_id = ''
+    loadSessions()
+  } else if (target === 'external') {
+    form.value.session_id = ''
+  }
+})
 
 onMounted(() => {
   loadTasks()
@@ -748,7 +892,7 @@ onMounted(() => {
   color: var(--text-muted);
 }
 
-.session-label {
+.session-link {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -757,6 +901,62 @@ onMounted(() => {
   background: rgba(74, 144, 217, 0.08);
   padding: 2px 8px;
   border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.session-link:hover {
+  background: rgba(74, 144, 217, 0.16);
+}
+
+.delivery-select,
+.session-select--bind {
+  margin-top: 8px;
+}
+
+.form-hint--warn {
+  color: #c50f1f;
+}
+
+.detail-loading {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 40px 0;
+}
+
+.detail-value {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-panel);
+}
+
+.detail-text {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-panel);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.55;
+  min-height: 100px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.detail-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+.detail-meta-grid label {
+  margin-bottom: 6px;
 }
 
 .card-footer {

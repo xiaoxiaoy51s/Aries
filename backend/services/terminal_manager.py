@@ -73,6 +73,23 @@ class _TerminalSession:
         except Exception:
             return False
 
+    def is_alive(self) -> bool:
+        """保持与 _TerminalSession.close 配套使用：返回会话是否在运行。"""
+        return self.is_running()
+
+    def set_interrupt_action_for_all(self, action: str) -> None:
+        """将该 action 写入 TerminalManager._interrupt_actions 的所有 invocation。
+
+        由于 invocation_id 在跨模块时不一定一致，这里用 sentinel 把所有未消费的
+        action 一次性设成同一行为，等待下一次轮询时被 consume。
+        """
+        try:
+            with TerminalManager._interrupt_lock:
+                for key in list(TerminalManager._interrupt_actions.keys()):
+                    TerminalManager._interrupt_actions[key] = action
+        except Exception:
+            pass
+
     def clear_output_buffer(self) -> None:
         with self.lock:
             self._output_buffer = ""
@@ -523,6 +540,42 @@ class TerminalManager:
     def consume_interrupt_action(cls, invocation_id: str) -> str | None:
         with cls._interrupt_lock:
             return cls._interrupt_actions.pop(invocation_id, None)
+
+    @classmethod
+    def terminate_all_active(cls, action: str = "terminate") -> list[str]:
+        """终止所有 PTY 会话中的运行中命令。
+
+        返回被关闭的 session id 列表。
+        """
+        closed: list[str] = []
+        instance = cls.get_instance()
+        with instance._session_lock:
+            session_ids = list(instance._sessions.keys())
+        for sid in session_ids:
+            try:
+                session = instance._sessions.get(sid)
+                if session is None:
+                    continue
+                if action:
+                    try:
+                        session.set_interrupt_action_for_all(action)
+                    except Exception:
+                        pass
+                if session.is_alive():
+                    session.close()
+                    closed.append(sid)
+            except Exception:
+                pass
+        return closed
+
+    @classmethod
+    def clear_runtime_dir(cls) -> int:
+        """清理 ~/.MIMOClaw/temp/cli_runtime 下的 PTY/捕获残留文件。"""
+        try:
+            from utils.cli_executor import CLIExecutor
+            return CLIExecutor.clear_runtime_dir()
+        except Exception:
+            return 0
 
     @staticmethod
     def _run_command_in_agent_pty(

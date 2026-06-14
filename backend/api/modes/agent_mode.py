@@ -107,6 +107,30 @@ async def _should_stop_stream(
     return False
 
 
+def _cancel_cli_invocations() -> None:
+    """用户停止/取消时调用：终止所有正在运行的 CLI 进程并清理临时日志。
+
+    防止上一次未结束的 ps1/cmd 调度文件或 done 文件被下一轮误读，
+    也避免后台进程占用 PTY 句柄导致后续命令死锁。
+    """
+    try:
+        from utils.cli_executor import CLIExecutor
+        CLIExecutor.terminate_all_active(action="terminate")
+    except Exception:
+        pass
+    try:
+        from utils.cli_executor import CLIExecutor as _CE
+        _CE.clear_runtime_dir()
+    except Exception:
+        pass
+    try:
+        from services.terminal_manager import TerminalManager
+        TerminalManager.terminate_all_active(action="terminate")
+        TerminalManager.clear_runtime_dir()
+    except Exception:
+        pass
+
+
 def build_agent_system_prompt(skills_context: str, work_dir: str | None = None) -> str:
     """构建 Agent 模式的系统提示词（精简版）
 
@@ -121,7 +145,7 @@ def build_agent_system_prompt(skills_context: str, work_dir: str | None = None) 
         tmp_dir = str(Path(wd) / ".MIMOClaw_tmp")
         target_note = wd
     else:
-        wd = str(Path.home() / ".MIMOClaw")
+        wd = str(Path.home() / ".MIMOClaw" / "work_dir")
         tmp_dir = str(Path.home() / ".MIMOClaw" / "tmp")
         target_note = f"{wd}\\{today_str}"
 
@@ -185,27 +209,31 @@ async def stream_agent_mode(
     from utils.url_utils import normalize_base_url
     import httpx
 
-    assistant_message_id = save_message(session_id, "assistant", "", message_snapshot_json="", mode="agent")
-    snapshot = create_assistant_snapshot(assistant_message_id)
-
-    logger = SessionLogger(session_id=session_id, message_id=assistant_message_id)
-
-    skills_context, tool_definitions = get_agent_skills_and_tools()
-
-    system_prompt = build_agent_system_prompt(skills_context, work_dir=work_dir)
-
-    current_messages = [{"role": "system", "content": system_prompt}]
-    current_messages.extend(messages)
-
-    base_url = normalize_base_url(request.baseUrl)
     final_content = ""
     cancelled = False
+    assistant_message_id = None
+    logger = None
+    snapshot = ""
 
     try:
+        assistant_message_id = save_message(session_id, "assistant", "", message_snapshot_json="", mode="agent")
+        logger = SessionLogger(session_id=session_id, message_id=assistant_message_id)
+        snapshot = create_assistant_snapshot(session_id, logger)
+
+        skills_context, tool_definitions = get_agent_skills_and_tools()
+
+        system_prompt = build_agent_system_prompt(skills_context, work_dir=work_dir)
+
+        current_messages = [{"role": "system", "content": system_prompt}]
+        current_messages.extend(messages)
+
+        base_url = normalize_base_url(request.baseUrl)
+
         async with httpx.AsyncClient(timeout=300.0, trust_env=False) as client:
             for round_no in range(1, MAX_TOOL_ROUNDS + 1):
                 if await _should_stop_stream(cancel_event, disconnect_check):
                     cancelled = True
+                    _cancel_cli_invocations()
                     break
                 current_payload = {
                     "model": request.model,
@@ -240,6 +268,7 @@ async def stream_agent_mode(
                         if await _should_stop_stream(cancel_event, disconnect_check):
                             final_content = full_content
                             cancelled = True
+                            _cancel_cli_invocations()
                             break
                         if line.startswith("data: "):
                             data = line[6:]
@@ -320,6 +349,7 @@ async def stream_agent_mode(
                     if await _should_stop_stream(cancel_event, disconnect_check):
                         cancelled = True
                         final_content = full_content
+                        _cancel_cli_invocations()
                         break
                     tool_name = tc.get("function", {}).get("name", "")
                     args_str = tc.get("function", {}).get("arguments", "{}")
@@ -423,21 +453,25 @@ async def stream_agent_mode(
                         "content": tr["content"]
                     })
     finally:
-        # 保存到数据库（即使中途暂停/异常也要保存已有内容）
-        logger.flush_assistant_round()
-        db_content = logger.build_db_content() or final_content or ""
-        if db_content:
-            set_summary_block(snapshot, db_content)
-            finalize_snapshot(snapshot)
-        elif cancelled:
-            logger.flush_reasoning_segment()
+        # 收尾：取消/异常时主动终止所有 ps1/cmd 调度进程 + 清空 temp/cli_runtime 残留
+        if cancelled:
+            _cancel_cli_invocations()
+        if assistant_message_id is not None and logger is not None:
+            # 保存到数据库（即使中途暂停/异常也要保存已有内容）
+            logger.flush_assistant_round()
+            db_content = logger.build_db_content() or final_content or ""
+            if db_content:
+                set_summary_block(snapshot, db_content)
+                finalize_snapshot(snapshot)
+            elif cancelled:
+                logger.flush_reasoning_segment()
 
-        stop_note = "（用户中断）" if cancelled and not db_content else ""
-        update_message(
-            assistant_message_id,
-            content=db_content or stop_note or "（无响应）",
-            message_snapshot_json=logger.jsonl_path_str(),
-            reasoning_content=logger.build_db_reasoning()
-        )
+            stop_note = "（用户中断）" if cancelled and not db_content else ""
+            update_message(
+                assistant_message_id,
+                content=db_content or stop_note or "（无响应）",
+                message_snapshot_json=logger.jsonl_path_str(),
+                reasoning_content=logger.build_db_reasoning()
+            )
 
-        logger.finalize()
+            logger.finalize()

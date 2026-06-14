@@ -1,15 +1,34 @@
 const { app, BrowserWindow } = require('electron')
 const path = require('path')
 const { spawn } = require('child_process')
+const http = require('http')
+
+const BACKEND_PORT = process.env.BACKEND_PORT || '30000'
 
 let mainWindow = null
 let backendProcess = null
 
-function startBackend() {
+function checkBackendRunning(port) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/health', timeout: 1000 }, (res) => {
+      resolve(res.statusCode >= 200 && res.statusCode < 500)
+    })
+    req.on('error', () => resolve(false))
+    req.on('timeout', () => { req.destroy(); resolve(false) })
+  })
+}
+
+async function startBackend() {
+  // 若用户已手动启动后端（端口探测返回健康），直接复用，避免端口/进程冲突
+  const alreadyUp = await checkBackendRunning(BACKEND_PORT)
+  if (alreadyUp) {
+    console.log(`[Backend] detected running on :${BACKEND_PORT}, skip spawn`)
+    return
+  }
   const backendDir = path.join(__dirname, '..', '..', 'backend')
   backendProcess = spawn('python', ['main.py'], {
     cwd: backendDir,
-    env: { ...process.env, BACKEND_PORT: '2026' },
+    env: { ...process.env, BACKEND_PORT },
     stdio: 'pipe',
   })
   backendProcess.stdout.on('data', (data) => console.log(`[Backend] ${data}`))

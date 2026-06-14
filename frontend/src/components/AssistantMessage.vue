@@ -23,7 +23,7 @@
             :content="block.text || ''" 
             :text-color="block.phase === 'work' ? '#64748b' : textColor" 
             :font-size="block.phase === 'work' ? Math.max(12, fontSize - 2) : fontSize" 
-            :show-actions="block.phase !== 'work'" 
+            :show-actions="block.phase !== 'work' && blockIndex === lastTextBlockIndex" 
             :is-streaming="isLoading"
           />
         </div>
@@ -142,6 +142,18 @@ const showReasoning = ref(false)
 
 const textColor = computed(() => props.textColor || '#1a1a1a')
 const fontSize = computed(() => props.fontSize || 15)
+
+// 计算最后一个 text/summary block 的索引，用于控制复制按钮只出现在最后一条
+const lastTextBlockIndex = computed(() => {
+  if (!props.blocks || props.blocks.length === 0) return -1
+  for (let i = props.blocks.length - 1; i >= 0; i--) {
+    const b = props.blocks[i]
+    if (b.type === 'text' || b.type === 'summary') {
+      return i
+    }
+  }
+  return -1
+})
 </script>
 
 <style scoped>

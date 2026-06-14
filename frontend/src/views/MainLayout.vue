@@ -132,13 +132,17 @@
     <main class="workspace">
       <div class="workspace-panel">
         <!-- 对话页面 -->
-        <ChatPage v-if="currentPage === 'chat'" />
+        <ChatPage
+          v-if="currentPage === 'chat'"
+          :session-id-to-load="sessionIdToLoad"
+          @session-loaded="sessionIdToLoad = null"
+        />
 
         <!-- 技能页面 -->
         <SkillsPage v-else-if="currentPage === 'skills'" />
 
         <!-- 定时任务页面 -->
-        <ScheduledTasksPage v-else-if="currentPage === 'scheduled-tasks'" />
+        <AutomationPage v-else-if="currentPage === 'scheduled-tasks'" />
       </div>
     </main>
 
@@ -151,14 +155,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import ChatPage from './ChatPage.vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import ChatPage from './chatPage.vue'
 import SkillsPage from './SkillsPage.vue'
-import ScheduledTasksPage from './ScheduledTasksPage.vue'
+import AutomationPage from './AutomationPage.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import SearchDialog from '@/components/SearchDialog.vue'
 import { listProjects, updateSessionMeta } from '@/api/sessions'
 import { useModelStore } from '@/stores/model'
+
+const modelStore = useModelStore()
 
 interface ProjectSession {
   session_id: string
@@ -177,6 +183,7 @@ const currentPage = ref<'chat' | 'skills' | 'scheduled-tasks'>('chat')
 const showSettings = ref(false)
 const showSearch = ref(false)
 const currentSessionId = ref<string | null>(null)
+const sessionIdToLoad = ref<string | null>(null)
 const projects = ref<Project[]>([])
 const currentProject = ref<Project | null>(null)
 const expandedProjects = ref<Set<string>>(new Set())
@@ -192,25 +199,35 @@ function isPlatformId(id: string) {
   return id === '__feishu__' || id === '__qq__' || id === '__wechat__'
 }
 
-async function loadProjects() {
-  try {
-    const data = await listProjects()
-    projects.value = (data.projects || []) as Project[]
-  } catch (e) {
-    console.error('加载项目失败', e)
-    projects.value = []
+async function loadProjects(retries = 5, delay = 1500) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const data = await listProjects()
+      projects.value = (data.projects || []) as Project[]
+      return
+    } catch (e) {
+      if (i < retries - 1) {
+        console.warn(`加载项目失败，${delay}ms 后重试 (${i + 1}/${retries})`, e)
+        await new Promise(r => setTimeout(r, delay))
+      } else {
+        console.error('加载项目失败（已重试耗尽）', e)
+        projects.value = []
+      }
+    }
   }
 }
 
 onMounted(async () => {
-  await loadProjects()
+  await Promise.all([loadProjects(), modelStore.loadModels()])
   window.addEventListener('mimo:refresh-sessions', loadProjects)
   window.addEventListener('mimo:workdir-changed', loadProjects)
+  window.addEventListener('mimo:open-session', onOpenSession)
 })
 
 onUnmounted(() => {
   window.removeEventListener('mimo:refresh-sessions', loadProjects)
   window.removeEventListener('mimo:workdir-changed', loadProjects)
+  window.removeEventListener('mimo:open-session', onOpenSession)
 })
 
 function createNewChat() {
@@ -246,7 +263,6 @@ function createNewChatInProject(project: Project) {
 
 async function openProjectDir(project: Project) {
   try {
-    const modelStore = useModelStore()
     const baseUrl = modelStore.getBaseUrl()
     const res = await fetch(`${baseUrl}/system/select-directory`, { method: 'POST' })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -265,17 +281,23 @@ async function openProjectDir(project: Project) {
   }
 }
 
-function selectSession(id: string) {
+async function selectSession(id: string) {
   currentSessionId.value = id
+  sessionIdToLoad.value = id
   currentPage.value = 'chat'
   if (isPlatformId(id)) {
     currentProject.value = null
   } else {
-    // 找到该 session 所属的项目
     const proj = projects.value.find(p => p.sessions.some(s => s.session_id === id))
     currentProject.value = proj || null
   }
+  await nextTick()
   window.dispatchEvent(new CustomEvent('mimo:load-session', { detail: id }))
+}
+
+function onOpenSession(e: Event) {
+  const id = (e as CustomEvent<string>).detail
+  if (id) void selectSession(id)
 }
 
 function onSearchSelect(sessionId: string) {

@@ -65,6 +65,18 @@ class CLIExecutor:
     _active_processes: dict[str, subprocess.Popen[str]] = {}
     _interrupt_actions: dict[str, str] = {}
 
+    @classmethod
+    def _runtime_root(cls) -> Path:
+        """ps1 调度/日志/done 文件的根目录。
+
+        统一使用 ~/.MIMOClaw/temp/cli_runtime，避免：
+        1. 把临时文件散落到系统 TEMP 中；
+        2. 避免 AI 进程把日志写到 work_dir 时造成的死锁/误读。
+        """
+        root = Path.home() / ".MIMOClaw" / "temp" / "cli_runtime"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
     def __init__(self, user_email: str | None = None, work_dir: str | None = None) -> None:
         from utils.user_file_manager import UserFileManager
         self.manager = UserFileManager(work_dir=work_dir)
@@ -280,7 +292,7 @@ class CLIExecutor:
     @classmethod
     def _shared_shell_bootstrap_command(cls, bootstrap_dir: Path) -> str:
         qd = cls._escape_ps_single_quoted(str(bootstrap_dir.resolve()))
-        dispatch_dir = Path(tempfile.gettempdir()) / "NonoClaw_cli_runtime" / "shared_dispatch"
+        dispatch_dir = cls._runtime_root() / "shared_dispatch"
         qdispatch = cls._escape_ps_single_quoted(str(dispatch_dir.resolve()))
         return (
             f"Set-Location -LiteralPath '{qd}'; "
@@ -305,7 +317,7 @@ class CLIExecutor:
 
     @classmethod
     def _cleanup_old_runtime_files(cls) -> None:
-        runtime_dir = Path(tempfile.gettempdir()) / "NonoClaw_cli_runtime"
+        runtime_dir = cls._runtime_root()
         if not runtime_dir.exists():
             return
         try:
@@ -336,7 +348,7 @@ class CLIExecutor:
             powershell_exe = cls._resolve_classic_powershell_exe()
             create_new_console = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
             bootstrap = cls._shared_shell_bootstrap_command(bootstrap_dir)
-            dispatch_dir = Path(tempfile.gettempdir()) / "NonoClaw_cli_runtime" / "shared_dispatch"
+            dispatch_dir = cls._runtime_root() / "shared_dispatch"
             with cls._log_lock:
                 dispatch_dir.mkdir(parents=True, exist_ok=True)
             shell = subprocess.Popen(
@@ -362,7 +374,7 @@ class CLIExecutor:
             return shell
 
     def _prepare_done_file(self, target_dir: Path) -> Path:
-        logs_dir = Path(tempfile.gettempdir()) / "NonoClaw_cli_runtime"
+        logs_dir = self._runtime_root()
         with self._log_lock:
             logs_dir.mkdir(parents=True, exist_ok=True)
         filename = f"done_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.txt"
@@ -395,7 +407,7 @@ class CLIExecutor:
         quoted_done = self._escape_ps_single_quoted(str(done_file))
         quoted_cap = self._escape_ps_single_quoted(str(capture_file.resolve()))
         unique_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
-        dispatch_dir = Path(tempfile.gettempdir()) / "NonoClaw_cli_runtime" / f"dispatch_{unique_id}"
+        dispatch_dir = self._runtime_root() / f"dispatch_{unique_id}"
         with self._log_lock:
             dispatch_dir.mkdir(parents=True, exist_ok=True)
         dispatch_file = dispatch_dir / "dispatch.ps1"
@@ -1016,3 +1028,68 @@ class CLIExecutor:
     def _consume_interrupt_action(cls, invocation_id: str) -> str | None:
         with cls._visible_shell_lock:
             return cls._interrupt_actions.pop(invocation_id, None)
+
+    @classmethod
+    def set_interrupt_action(cls, invocation_id: str, action: str) -> None:
+        """公开 API：外部（agent_mode 收到 cancel_event）设置某个 invocation 的中断动作。
+
+        action 取值：
+        - "terminate": 立即强制结束进程（taskkill /T /F）
+        - "skip": 跳过等待（共享 PowerShell 模式下让命令在后台继续）
+        """
+        if not invocation_id or not action:
+            return
+        with cls._visible_shell_lock:
+            cls._interrupt_actions[invocation_id] = action
+
+    @classmethod
+    def terminate_all_active(cls, action: str = "terminate") -> list[int]:
+        """终止所有正在运行的子进程（外部取消/退出时调用）。
+
+        返回被终止的 pid 列表。
+        """
+        terminated: list[int] = []
+        with cls._visible_shell_lock:
+            targets = list(cls._active_processes.items())
+            for inv_id, process in targets:
+                if action:
+                    cls._interrupt_actions[inv_id] = action
+                try:
+                    if process.poll() is None:
+                        pid = int(process.pid)
+                        cls._terminate_process(process, force=(action == "terminate"))
+                        terminated.append(pid)
+                except Exception:
+                    pass
+        return terminated
+
+    @classmethod
+    def get_active_invocations(cls) -> list[str]:
+        """返回当前所有活动 invocation_id，用于外部清理时引用。"""
+        with cls._visible_shell_lock:
+            return list(cls._active_processes.keys())
+
+    @classmethod
+    def clear_runtime_dir(cls) -> int:
+        """清理 ~/.MIMOClaw/temp/cli_runtime 下的残留文件（dispatch_*/done_*）。
+
+        适用于：用户暂停/关闭文件/切换会话时，确保下一轮不会误读上一次未结束的日志。
+        """
+        runtime_dir = cls._runtime_root()
+        removed = 0
+        if not runtime_dir.exists():
+            return 0
+        try:
+            for item in runtime_dir.iterdir():
+                try:
+                    if item.is_dir():
+                        shutil.rmtree(item, ignore_errors=True)
+                        removed += 1
+                    elif item.is_file():
+                        item.unlink(missing_ok=True)
+                        removed += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return removed

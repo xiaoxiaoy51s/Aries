@@ -72,6 +72,26 @@ def init_database():
         cursor.execute(
             "ALTER TABLE scheduled_tasks ADD COLUMN interval_seconds INTEGER"
         )
+    if "interval_minutes" not in cols:
+        cursor.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN interval_minutes INTEGER"
+        )
+    if "schedule_type" not in cols:
+        cursor.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN schedule_type TEXT NOT NULL DEFAULT 'once'"
+        )
+    if "schedule_config" not in cols:
+        cursor.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN schedule_config TEXT"
+        )
+    if "notify_type" not in cols:
+        cursor.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN notify_type TEXT NOT NULL DEFAULT 'none'"
+        )
+    if "notify_config" not in cols:
+        cursor.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN notify_config TEXT"
+        )
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sessions (

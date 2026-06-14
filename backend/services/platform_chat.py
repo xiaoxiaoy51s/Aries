@@ -68,6 +68,8 @@ async def run_agent_in_session(session_id: str, text: str) -> str:
     _meta = get_session(session_id) or {}
     work_dir = (_meta.get("work_dir") or "").strip() or None
 
+    save_message(session_id, "user", text, mode="agent")
+
     skills_context, _ = get_agent_skills_and_tools()
     system_prompt = build_agent_system_prompt(skills_context, work_dir=work_dir)
 

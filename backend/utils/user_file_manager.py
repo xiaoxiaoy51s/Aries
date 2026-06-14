@@ -10,12 +10,15 @@ from typing import Any
 class UserFileManager:
     def __init__(self, user_email: str | None = None, work_dir: str | None = None) -> None:
         self.user_email = user_email or os.environ.get("USER_EMAIL", "")
+        # 默认存储根目录：~/.MIMOClaw（与 skills/session/uploads/temp 平级）
         self.default_base = Path.home() / ".MIMOClaw"
-        # 如果显式传了 work_dir 就用它，否则用默认 ~/.MIMOClaw
+        # 用户工作区：默认存到 ~/.MIMOClaw/work_dir 下，让日期子目录更整洁；
+        # 显式传 work_dir 时优先使用自定义目录。
+        self.default_work_dir = self.default_base / "work_dir"
         if work_dir and work_dir.strip():
             self.base_dir = Path(work_dir).expanduser().resolve()
         else:
-            self.base_dir = self.default_base
+            self.base_dir = self.default_work_dir
         self.user_dir = self.base_dir
         self._ensure_directories()
 
@@ -81,7 +84,7 @@ class UserFileManager:
 
         path_str = str(candidate).replace("\\", "/")
         # 如果工作目录是用户自定义的，就不要再套日期子目录
-        is_custom_work_dir = self.base_dir != self.default_base
+        is_custom_work_dir = self.base_dir != self.default_work_dir
 
         user_dir_str = str(self.user_dir).replace("\\", "/")
         today_str = datetime.now().strftime("%Y-%m-%d")
