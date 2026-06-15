@@ -256,7 +256,9 @@ async def stream_chat(request: ChatRequest, http_request: Request) -> AsyncGener
     # 取该 session 的工作目录（DB 优先，request 兜底）
     _meta = get_session(session_id) or {}
     effective_work_dir = (_meta.get("work_dir") or request.work_dir or "").strip() or None
-    system_prompt = build_agent_system_prompt(skills_context, work_dir=effective_work_dir)
+    system_prompt = build_agent_system_prompt(
+        skills_context, work_dir=effective_work_dir, session_id=session_id
+    )
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history_messages)
@@ -355,7 +357,9 @@ async def chat_completions(request: ChatRequest, http_request: Request):
     # 取该 session 的工作目录（DB 优先，request 兜底）
     _meta = get_session(session_id) or {}
     effective_work_dir = (_meta.get("work_dir") or request.work_dir or "").strip() or None
-    system_prompt = build_agent_system_prompt(skills_context, work_dir=effective_work_dir)
+    system_prompt = build_agent_system_prompt(
+        skills_context, work_dir=effective_work_dir, session_id=session_id
+    )
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history_messages)
@@ -422,7 +426,9 @@ async def chat_completions(request: ChatRequest, http_request: Request):
                 tool_call_id = tool_call.get("id", "") or f"tool_0_{call_index}"
 
                 logger.write_tool_call(tool_call_id, tool_name, tool_args)
-                tool_result = execute_tool(tool_name, tool_args, work_dir=effective_work_dir)
+                tool_result = execute_tool(
+                    tool_name, tool_args, work_dir=effective_work_dir, session_id=session_id
+                )
 
                 tool_status = "completed" if tool_result.get("success") else "error"
                 logger.write_tool_result(

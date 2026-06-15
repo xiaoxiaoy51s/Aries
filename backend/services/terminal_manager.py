@@ -717,18 +717,27 @@ class TerminalManager:
         target_dir = self._normalize_work_dir(work_dir)
         mode = str(visible_terminal_mode or "shared").strip().lower()
 
-        if mode == "new":
-            launch = self._launch_detached_command(command, target_dir)
+        if mode == "new" and os.name == "nt":
+            from utils.cli_executor import CLIExecutor
+
+            executor = CLIExecutor(work_dir=target_dir)
+            result = executor.execute(
+                command=command,
+                working_dir=target_dir,
+                timeout=timeout,
+                skip_confirmation=True,
+                invocation_id=invocation_id,
+                visible_terminal_mode="new",
+            )
             return {
-                "success": True,
-                "return_code": 0,
-                "detached": True,
-                "pid": launch.get("pid"),
-                "output_capture": "",
-                "auto_detached": False,
-                "timed_out": False,
-                "interrupted_action": None,
+                "success": bool(result.get("success")),
+                "return_code": int(result.get("return_code") or 0),
+                "output_capture": str(result.get("captured_output") or ""),
+                "auto_detached": bool(result.get("auto_detached")),
+                "timed_out": "timed out" in str(result.get("error") or "").lower(),
+                "interrupted_action": result.get("interrupted_action"),
                 "working_dir": target_dir,
+                "pid": result.get("pid"),
             }
 
         # 优先尝试 agent PTY（ConsolePanel 可见），无连接时 fallback 到隐藏子进程

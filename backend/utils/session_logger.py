@@ -53,15 +53,17 @@ class SessionLogger:
         self._reasoning_buffer += text
         self._reasoning_all += text
 
-    def flush_reasoning_segment(self) -> None:
+    def flush_reasoning_segment(self) -> str:
         if not self._reasoning_buffer:
-            return
+            return ""
+        text = self._reasoning_buffer
         _append_event(self.path, {
             "type": "reasoning_text",
-            "text": self._reasoning_buffer,
+            "text": text,
             "timestamp": _utc_now(),
         })
         self._reasoning_buffer = ""
+        return text
 
     def write_tool_call(
         self,
@@ -69,8 +71,8 @@ class SessionLogger:
         tool_name: str,
         args: dict[str, Any],
         started_at: str | None = None,
-    ) -> None:
-        self.flush_reasoning_segment()
+    ) -> str:
+        reasoning = self.flush_reasoning_segment()
         ts = started_at or _utc_now()
         self._tool_log.append({
             "tool_call_id": tool_call_id,
@@ -86,6 +88,7 @@ class SessionLogger:
             "status": "running",
             "started_at": ts,
         })
+        return reasoning
 
     def write_tool_result(
         self,
@@ -116,18 +119,19 @@ class SessionLogger:
         if text:
             self._assistant_all += text
 
-    def flush_assistant_round(self) -> None:
+    def flush_assistant_round(self) -> tuple[str, str]:
         """将本轮新增的 assistant 文本写入 JSONL（多轮工具调用时每轮调用一次）。"""
+        reasoning = self.flush_reasoning_segment()
         new_text = self._assistant_all[self._assistant_flushed_len:]
         if not new_text:
-            return
-        self.flush_reasoning_segment()
+            return reasoning, ""
         _append_event(self.path, {
             "type": "assistant_text",
             "text": new_text,
             "timestamp": _utc_now(),
         })
         self._assistant_flushed_len = len(self._assistant_all)
+        return reasoning, new_text
 
     def write_assistant_segment(self, text: str) -> None:
         if not text:

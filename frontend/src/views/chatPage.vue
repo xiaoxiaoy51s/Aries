@@ -145,31 +145,14 @@
         </div>
       </div>
       <div class="composer composer-bottom composer-with-slash">
-        <div v-if="pendingToolConfirmation" class="danger-confirm-bar">
-          <div class="danger-confirm-left">
-            <span class="danger-confirm-label">危险命令</span>
-            <span class="danger-confirm-detail" :title="pendingToolConfirmation.detail">
-              {{ pendingToolConfirmation.detail }}
-            </span>
-            <span class="danger-confirm-timer">{{ confirmCountdown }}s</span>
-          </div>
-          <div class="danger-confirm-actions">
-            <button
-              type="button"
-              class="danger-btn danger-btn--reject"
-              @click="onToolCancel(pendingToolConfirmation.toolCallId)"
-            >
-              拒绝
-            </button>
-            <button
-              type="button"
-              class="danger-btn danger-btn--accept"
-              @click="onToolConfirm(pendingToolConfirmation.toolCallId)"
-            >
-              接受
-            </button>
-          </div>
-        </div>
+        <DangerCommandConfirm
+          v-if="pendingToolConfirmation"
+          :description="confirmDescription"
+          :command="pendingToolConfirmation.command"
+          :countdown="confirmCountdown"
+          @submit="onDangerConfirmSubmit"
+          @skip="onToolCancel(pendingToolConfirmation.toolCallId)"
+        />
         <SlashComposerInput
           ref="activeComposerRef"
           v-model:plain-text="inputMessage"
@@ -257,7 +240,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useModelStore } from '@/stores/model'
-import { usePrivacyStore } from '@/stores/privacy'
+import { usePrivacyStore, extractCommandPrefix } from '@/stores/privacy'
 import { streamChat, streamVision, stopChat, type StreamEvent } from '@/api/chat'
 import { confirmTool } from '@/api/git'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -276,6 +259,7 @@ import {
 } from '@/api/computerUse'
 import { getSessionMessages, getSession, updateSessionMeta } from '@/api/sessions'
 import AssistantMessage from '@/components/AssistantMessage.vue'
+import DangerCommandConfirm from '@/components/DangerCommandConfirm.vue'
 import SlashComposerInput, { type ComposerImage } from '@/components/SlashComposerInput.vue'
 import UserMessageContent from '@/components/UserMessageContent.vue'
 import { parseSnapshotEventObjects } from '@/utils/snapshotParser'
@@ -406,7 +390,7 @@ const CONFIRM_TIMEOUT_SECONDS = 120
 
 interface PendingToolConfirmation {
   toolCallId: string
-  detail: string
+  command: string
   dangerInfo: string
   dangerTypes: string[]
 }
@@ -423,7 +407,7 @@ const pendingToolConfirmation = computed((): PendingToolConfirmation | null => {
         const dangerTypes = block.danger_types || []
         return {
           toolCallId: block.tool_call_id,
-          detail: command || dangerInfo || block.tool_name || '待确认命令',
+          command: command || dangerInfo || block.tool_name || '待确认命令',
           dangerInfo,
           dangerTypes,
         }
@@ -431,6 +415,18 @@ const pendingToolConfirmation = computed((): PendingToolConfirmation | null => {
     }
   }
   return null
+})
+
+const confirmDescription = computed(() => {
+  const pending = pendingToolConfirmation.value
+  if (!pending) return ''
+  if (pending.dangerInfo) {
+    return `此命令涉及${pending.dangerInfo}，需要您的批准后才能执行。`
+  }
+  if (pending.dangerTypes.length) {
+    return `此命令涉及：${pending.dangerTypes.join('、')}，需要您的批准后才能执行。`
+  }
+  return '此命令可能具有风险，需要您的批准后才能执行。'
 })
 
 const confirmCountdown = ref(CONFIRM_TIMEOUT_SECONDS)
@@ -1101,6 +1097,25 @@ async function onToolCancel(toolCallId: string) {
   }
 }
 
+async function onDangerConfirmSubmit(mode: 'yes' | 'yes_remember' | 'no') {
+  const pending = pendingToolConfirmation.value
+  if (!pending) return
+  if (mode === 'yes_remember') {
+    const prefix = extractCommandPrefix(pending.command)
+    if (prefix) privacyStore.addCommandPrefix(prefix)
+    await onToolConfirm(pending.toolCallId)
+    return
+  }
+  if (mode === 'yes') {
+    await onToolConfirm(pending.toolCallId)
+    return
+  }
+  await onToolCancel(pending.toolCallId)
+  inputMessage.value = '请不要执行上述命令，'
+  await nextTick()
+  activeComposerRef.value?.focus?.()
+}
+
 watch(pendingToolConfirmation, (pending) => {
   clearConfirmCountdownTimer()
   if (!pending) return
@@ -1134,6 +1149,28 @@ async function stopGeneration() {
     stopDesktopTask().catch(() => {})
   }
   streamAbortController?.abort()
+  isSending.value = false
+  isComputerUseActive.value = false
+  const lastAssistant = [...messages.value].reverse().find((m) => m.role === 'assistant')
+  if (lastAssistant) {
+    lastAssistant.isLoading = false
+    if (lastAssistant.blocks) {
+      for (const block of lastAssistant.blocks) {
+        if (block.type === 'tool' && block.status === 'running') {
+          block.status = 'error'
+          block.output = block.output || '已停止'
+        }
+      }
+    }
+    if (lastAssistant.tools) {
+      for (const tool of lastAssistant.tools) {
+        if (tool.status === 'running') {
+          tool.status = 'error'
+          tool.output = tool.output || '已停止'
+        }
+      }
+    }
+  }
 }
 
 async function runAssistantStream(
@@ -1154,7 +1191,8 @@ async function runAssistantStream(
       // 自动确认：如果用户关闭了该类危险命令的确认，直接放行
       if (event.type === 'confirmation_required' && event.data) {
         const dangerTypes: string[] = event.data.danger_types || []
-        const needsConfirm = dangerTypes.some((dt: string) => privacyStore.shouldConfirmByType(dt))
+        const command = String(event.data.command || '').trim()
+        const needsConfirm = privacyStore.needsConfirmation(dangerTypes, command)
         if (!needsConfirm) {
           const toolCallId = event.data.tool_call_id as string
           // 同步清除 assistantMsg 中的 pending 状态，防止确认条闪烁
@@ -1749,87 +1787,6 @@ function scrollToBottom() {
   width: 100%;
   flex-shrink: 0;
   margin-top: 8px;
-}
-
-.danger-confirm-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 14px;
-  margin-bottom: 0;
-  border: 1px solid var(--border);
-  border-bottom: none;
-  background: #fff;
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-}
-
-.danger-confirm-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  flex: 1;
-}
-
-.danger-confirm-label {
-  flex-shrink: 0;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
-.danger-confirm-detail {
-  flex: 1;
-  min-width: 0;
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-family: ui-monospace, monospace;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.danger-confirm-timer {
-  flex-shrink: 0;
-  font-size: 11px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.danger-confirm-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.danger-btn {
-  border: none;
-  border-radius: 8px;
-  padding: 6px 14px;
-  font-size: 12px;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-
-.danger-btn--reject {
-  background: transparent;
-  color: var(--text-secondary);
-}
-
-.danger-btn--reject:hover {
-  background: var(--accent-hover);
-  color: var(--text);
-}
-
-.danger-btn--accept {
-  background: #1a1a18;
-  color: #fff;
-}
-
-.danger-btn--accept:hover {
-  background: #33332f;
 }
 
 .composer-bottom textarea {

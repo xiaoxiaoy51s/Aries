@@ -250,9 +250,21 @@ class WeChatRunner:
                 _log.warning("[微信] 清理积压失败: %s", e)
 
             def handle(text: str) -> tuple[str, list[str]]:
+                client = self.client
                 try:
+                    async def _send_segment(seg: str):
+                        if not client:
+                            return
+                        client.send_message(
+                            seg,
+                            to_user_id=client._recipient_user_id(),
+                            context_token=client.context_token,
+                        )
+
                     return loop.run_until_complete(
-                        process_inbound_message_async("wechat", text)
+                        process_inbound_message_async(
+                            "wechat", text, send_segment=_send_segment
+                        )
                     )
                 except RuntimeError as e:
                     if "shutdown" in str(e).lower():

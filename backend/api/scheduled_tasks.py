@@ -10,9 +10,8 @@ from db.scheduled_task import (
     delete_task,
     get_task_by_id,
     list_tasks,
+    normalize_task_create_payload,
 )
-from utils.time_utils import local_now, normalize_local_iso
-from datetime import timedelta
 from db.chat import list_recent_sessions
 from db.sessions import list_sessions as list_session_meta
 
@@ -31,48 +30,16 @@ class CreateTaskRequest(BaseModel):
 
 
 def _normalize_create_request(body: CreateTaskRequest) -> dict:
-    schedule_type = (body.schedule_type or SCHEDULE_ONCE).strip()
-    if schedule_type == "recurring":
-        schedule_type = SCHEDULE_INTERVAL
-
-    session_id = (body.session_id or "").strip() or None
-    if body.session_mode == "new":
-        session_id = None
-
-    notify_type = (body.notify_type or "none").strip()
-    if notify_type in ("wechat", "qq", "feishu") and not session_id:
-        session_id = f"__{notify_type}__"
-
-    task_content = (body.task_content or "").strip()
-    if not task_content:
-        raise ValueError("要求说明不能为空")
-
-    interval_minutes: int | None = None
-    scheduled_at = body.scheduled_at
-
-    if schedule_type == SCHEDULE_INTERVAL:
-        interval_minutes = int(body.interval_minutes or 0)
-        if interval_minutes <= 0:
-            raise ValueError("间隔任务必须提供 interval_minutes")
-        if not scheduled_at:
-            scheduled_at = normalize_local_iso(
-                (local_now() + timedelta(minutes=interval_minutes)).isoformat()
-            )
-    elif schedule_type == SCHEDULE_DAILY:
-        if not scheduled_at:
-            raise ValueError("每天任务必须提供 scheduled_at")
-    else:
-        if not scheduled_at:
-            raise ValueError("单次任务必须提供 scheduled_at")
-
-    return {
-        "title": (body.title or "").strip(),
-        "scheduled_at": normalize_local_iso(scheduled_at),
-        "task_content": task_content,
-        "session_id": session_id,
-        "schedule_type": schedule_type,
-        "interval_minutes": interval_minutes,
-    }
+    return normalize_task_create_payload(
+        title=body.title,
+        task_content=body.task_content,
+        scheduled_at=body.scheduled_at,
+        session_id=body.session_id,
+        session_mode=body.session_mode,
+        schedule_type=body.schedule_type,
+        interval_minutes=body.interval_minutes,
+        notify_type=body.notify_type,
+    )
 
 
 @router.post("/")

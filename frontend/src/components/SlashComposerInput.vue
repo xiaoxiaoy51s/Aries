@@ -140,7 +140,11 @@ function clearImages() {
   emit('update:attached-images', [])
 }
 
-defineExpose({ openFilePicker, clearImages })
+function focus() {
+  textareaRef.value?.focus()
+}
+
+defineExpose({ openFilePicker, clearImages, focus })
 </script>
 
 <style scoped>

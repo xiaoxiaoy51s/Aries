@@ -4,9 +4,11 @@ import asyncio
 import logging
 import os
 import re
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 
 import httpx
 
@@ -18,9 +20,12 @@ from api.modes.agent_mode import (
 from db.chat import get_conversation_history, get_recent_messages, save_message
 from db.sessions import get_session
 from models.model_manager import resolve_active_model_config
+from services.platform_segment import PlatformStreamSink
 from utils.url_utils import normalize_base_url
 
 _log = logging.getLogger(__name__)
+
+SendSegmentFn = Callable[[str], Awaitable[None]]
 
 PLATFORMS = ("qq", "wechat", "feishu")
 HISTORY_ROUNDS = 14
@@ -54,7 +59,11 @@ async def run_agent_async(platform: str, text: str) -> str:
     return await run_agent_in_session(session_id, text)
 
 
-async def run_agent_in_session(session_id: str, text: str) -> str:
+async def run_agent_in_session(
+    session_id: str,
+    text: str,
+    segment_sink: Optional[PlatformStreamSink] = None,
+) -> str:
     """在指定 session 中以 agent 模式跑一轮对话，返回最终助手回复。
 
     适用于：项目会话、平台会话（__wechat__/__feishu__/__qq__）、定时任务等。
@@ -71,7 +80,9 @@ async def run_agent_in_session(session_id: str, text: str) -> str:
     save_message(session_id, "user", text, mode="agent")
 
     skills_context, _ = get_agent_skills_and_tools()
-    system_prompt = build_agent_system_prompt(skills_context, work_dir=work_dir)
+    system_prompt = build_agent_system_prompt(
+        skills_context, work_dir=work_dir, session_id=session_id
+    )
 
     # 平台会话追加额外提示
     if session_id in (session_id_for("wechat"), session_id_for("qq"), session_id_for("feishu")):
@@ -88,7 +99,7 @@ async def run_agent_in_session(session_id: str, text: str) -> str:
         session_id,
         limit=HISTORY_LIMIT,
         max_assistant_len=ASSISTANT_MAX_LEN,
-        include_last=True,
+        include_last=False,
     )
     messages = [{"role": "system", "content": system_prompt}]
     reasoning_ctx = build_agent_reasoning_context(session_id, rounds=REASONING_ROUNDS)
@@ -104,7 +115,11 @@ async def run_agent_in_session(session_id: str, text: str) -> str:
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
     payload = {"model": model, "messages": messages, "stream": True}
 
-    async for _event in stream_agent_mode(request, messages, headers, payload, session_id, work_dir=work_dir):
+    async for _event in stream_agent_mode(
+        request, messages, headers, payload, session_id,
+        work_dir=work_dir,
+        segment_sink=segment_sink,
+    ):
         pass
 
     recent = get_recent_messages(session_id, limit=1)
@@ -146,22 +161,32 @@ def extract_files_from_reply(reply: str) -> list[str]:
 
 
 async def process_inbound_message_async(
-    platform: str, text: str
+    platform: str,
+    text: str,
+    send_segment: Optional[SendSegmentFn] = None,
 ) -> tuple[str, list[str]]:
     text = (text or "").strip()
     if not text:
         return "", []
 
-    session_id = session_id_for(platform)
-    save_message(session_id, "user", text, mode="agent")
+    segment_sink = PlatformStreamSink(send_segment) if send_segment else None
 
     try:
-        reply = await run_agent_async(platform, text)
+        reply = await run_agent_in_session(
+            session_id_for(platform),
+            text,
+            segment_sink=segment_sink,
+        )
     except Exception as e:
         _log.error("[平台 %s] agent 调用失败: %s", platform, e)
         reply = f"（Agent 执行失败: {e}）"
+        if send_segment:
+            await send_segment(reply)
 
     files = extract_files_from_reply(reply)
+    # 已分段推送时不再重复发送完整回复
+    if send_segment:
+        return "", files
     return reply, files
 
 

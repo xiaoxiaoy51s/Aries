@@ -1,8 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from utils.skills_manager import discover_skills
-from db.skill_status import set_skill_status
+from utils.skills_manager import discover_skills, set_skill_enabled
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
@@ -29,5 +28,10 @@ async def update_skill_status(folder_name: str, body: SkillStatusUpdate):
             break
     if found is None:
         raise HTTPException(status_code=404, detail=f"技能 {folder_name} 不存在")
-    set_skill_status(folder_name, body.enabled)
+    try:
+        set_skill_enabled(folder_name, body.enabled)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     return {"folder_name": folder_name, "enabled": body.enabled}

@@ -20,5 +20,10 @@ def request_cancel(session_id: str) -> bool:
     cancel_event = _streams.get(session_id)
     if cancel_event:
         cancel_event.set()
+        try:
+            from api.modes.agent_mode import _cancel_cli_invocations
+            _cancel_cli_invocations()
+        except Exception:
+            pass
         return True
     return False

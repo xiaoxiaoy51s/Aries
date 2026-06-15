@@ -103,6 +103,66 @@ def compute_next_scheduled_at(task: dict, *, base_time=None) -> str:
     raise ValueError("一次性任务无需计算下次执行时间")
 
 
+def normalize_task_create_payload(
+    *,
+    title: str = "",
+    task_content: str = "",
+    scheduled_at: str | None = None,
+    session_id: str | None = None,
+    session_mode: str | None = None,
+    schedule_type: str = SCHEDULE_ONCE,
+    interval_minutes: int | None = None,
+    notify_type: str | None = None,
+    default_session_id: str | None = None,
+) -> dict:
+    """规范化创建定时任务的字段，供 API 与 agent 工具共用。"""
+    schedule_type = (schedule_type or SCHEDULE_ONCE).strip()
+    if schedule_type == "recurring":
+        schedule_type = SCHEDULE_INTERVAL
+    if schedule_type not in SCHEDULE_TYPES:
+        raise ValueError(f"schedule_type 必须是 {SCHEDULE_TYPES} 之一")
+
+    session_id = (session_id or "").strip() or None
+    if session_mode == "new":
+        session_id = None
+
+    notify = (notify_type or "none").strip()
+    if notify in PLATFORM_SESSION_MAP.values() and not session_id:
+        session_id = f"__{notify}__"
+    elif not session_id and default_session_id:
+        session_id = (default_session_id or "").strip() or None
+
+    task_content = (task_content or "").strip()
+    if not task_content:
+        raise ValueError("要求说明不能为空")
+
+    stored_interval: int | None = None
+
+    if schedule_type == SCHEDULE_INTERVAL:
+        stored_interval = int(interval_minutes or 0)
+        if stored_interval <= 0:
+            raise ValueError("间隔任务必须提供 interval_minutes")
+        if not scheduled_at:
+            scheduled_at = normalize_local_iso(
+                (local_now() + timedelta(minutes=stored_interval)).isoformat()
+            )
+    elif schedule_type == SCHEDULE_DAILY:
+        if not scheduled_at:
+            raise ValueError("每天任务必须提供 scheduled_at")
+    else:
+        if not scheduled_at:
+            raise ValueError("单次任务必须提供 scheduled_at")
+
+    return {
+        "title": (title or "").strip(),
+        "scheduled_at": normalize_local_iso(scheduled_at),
+        "task_content": task_content,
+        "session_id": session_id,
+        "schedule_type": schedule_type,
+        "interval_minutes": stored_interval,
+    }
+
+
 def create_task(
     title: str,
     scheduled_at: str,

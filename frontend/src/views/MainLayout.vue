@@ -1,5 +1,5 @@
 <template>
-  <div class="app-container">
+  <div class="app-container" :class="{ 'sidebar-collapsed': !sidebarOpen }">
     <!-- 侧边栏 -->
     <aside class="sidebar">
       <div class="sidebar-actions">
@@ -155,7 +155,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import ChatPage from './chatPage.vue'
 import SkillsPage from './SkillsPage.vue'
 import AutomationPage from './AutomationPage.vue'
@@ -163,8 +163,10 @@ import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import SearchDialog from '@/components/SearchDialog.vue'
 import { listProjects, updateSessionMeta } from '@/api/sessions'
 import { useModelStore } from '@/stores/model'
+import { useSidebar } from '@/composables/useSidebar'
 
 const modelStore = useModelStore()
+const { sidebarOpen } = useSidebar()
 
 interface ProjectSession {
   session_id: string
@@ -217,16 +219,20 @@ async function loadProjects(retries = 5, delay = 1500) {
   }
 }
 
+function onRefreshProjects() {
+  void loadProjects()
+}
+
 onMounted(async () => {
   await Promise.all([loadProjects(), modelStore.loadModels()])
-  window.addEventListener('mimo:refresh-sessions', loadProjects)
-  window.addEventListener('mimo:workdir-changed', loadProjects)
+  window.addEventListener('mimo:refresh-sessions', onRefreshProjects)
+  window.addEventListener('mimo:workdir-changed', onRefreshProjects)
   window.addEventListener('mimo:open-session', onOpenSession)
 })
 
 onUnmounted(() => {
-  window.removeEventListener('mimo:refresh-sessions', loadProjects)
-  window.removeEventListener('mimo:workdir-changed', loadProjects)
+  window.removeEventListener('mimo:refresh-sessions', onRefreshProjects)
+  window.removeEventListener('mimo:workdir-changed', onRefreshProjects)
   window.removeEventListener('mimo:open-session', onOpenSession)
 })
 
@@ -312,6 +318,20 @@ function onSearchSelect(sessionId: string) {
   width: 100%;
 }
 
+.app-container.sidebar-collapsed .sidebar {
+  width: 0;
+  min-width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  border-right-color: transparent;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.app-container.sidebar-collapsed .workspace {
+  padding-left: 12px;
+}
+
 /* —— 侧边栏 —— */
 .sidebar {
   width: var(--sidebar-width);
@@ -320,8 +340,10 @@ function onSearchSelect(sessionId: string) {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 12px 10px;
+  padding: 44px 10px 12px;
   gap: 4px;
+  transition: width 0.2s ease, min-width 0.2s ease, padding 0.2s ease, border-color 0.2s ease;
+  flex-shrink: 0;
 }
 
 .sidebar-actions {
@@ -602,6 +624,7 @@ function onSearchSelect(sessionId: string) {
   flex-direction: column;
   min-width: 0;
   padding: 10px 12px 12px 0;
+  transition: padding 0.2s ease;
 }
 
 .workspace-panel {

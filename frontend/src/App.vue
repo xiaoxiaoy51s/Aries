@@ -1,11 +1,27 @@
 <template>
-  <div id="app">
+  <div id="app" :class="{ 'sidebar-collapsed': !sidebarOpen }">
+    <button
+      type="button"
+      class="sidebar-toggle"
+      :title="sidebarOpen ? '收起侧边栏' : '展开侧边栏'"
+      :aria-label="sidebarOpen ? '收起侧边栏' : '展开侧边栏'"
+      @click="toggleSidebar"
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="3" width="18" height="18" rx="2"/>
+        <path v-if="sidebarOpen" d="M9 3v18"/>
+        <path v-else d="M9 3v18M3 9h6"/>
+      </svg>
+    </button>
     <RouterView />
   </div>
 </template>
 
 <script setup lang="ts">
 import { RouterView } from 'vue-router'
+import { useSidebar } from '@/composables/useSidebar'
+
+const { sidebarOpen, toggleSidebar } = useSidebar()
 </script>
 
 <style>
@@ -50,6 +66,35 @@ body {
   display: flex;
   width: 100vw;
   height: 100vh;
+  position: relative;
+}
+
+.sidebar-toggle {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  cursor: pointer;
+  box-shadow: var(--shadow-panel);
+  transition: background 0.15s, color 0.15s, left 0.2s ease;
+}
+
+.sidebar-toggle:hover {
+  background: var(--accent-hover);
+  color: var(--text);
+}
+
+#app.sidebar-collapsed .sidebar-toggle {
+  left: 12px;
 }
 
 /* 滚动条 */

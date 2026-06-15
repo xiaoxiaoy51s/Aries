@@ -2,18 +2,25 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# Skills 目录
+# Skills 目录：available 可加载，unavailable 仅展示不可加载
 SKILLS_ROOT = Path.home() / ".MIMOClaw" / "skills"
+SKILLS_AVAILABLE_DIR = SKILLS_ROOT / "available"
+SKILLS_UNAVAILABLE_DIR = SKILLS_ROOT / "unavailable"
+RESERVED_SKILL_DIRS = frozenset({"available", "unavailable"})
 
 # 将 skills 目录的父目录添加到 Python 路径，以便导入 skills 模块
 _skills_parent = SKILLS_ROOT.parent
 if str(_skills_parent) not in sys.path:
     sys.path.insert(0, str(_skills_parent))
+
+_layout_initialized = False
+_legacy_cleanup_failed: set[str] = set()
 FRONTMATTER_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 
 
@@ -87,50 +94,223 @@ def parse_skill_markdown(skill_md_path: Path, default_name: str) -> dict[str, An
     }
 
 
-def discover_skills() -> list[SkillEntry]:
-    from db.skill_status import get_skill_status
+def _is_skill_dir(path: Path) -> bool:
+    if not path.is_dir() or path.name.startswith("."):
+        return False
+    return (path / "SKILL.md").is_file() or (path / "skill.md").is_file()
 
+
+def _touch_package_init(path: Path) -> None:
+    init_file = path / "__init__.py"
+    if not init_file.exists():
+        init_file.write_text("", encoding="utf-8")
+
+
+def _clear_skill_module_cache(folder_name: str) -> None:
+    for key in (
+        f"skills.available.{folder_name}",
+        f"skills.unavailable.{folder_name}",
+        f"skills.{folder_name}",
+    ):
+        sys.modules.pop(key, None)
+
+
+def _cleanup_empty_legacy_skill_dir(path: Path) -> None:
+    """迁移失败后可能留下空目录，尽力清理一次；失败则静默跳过（不影响使用）。"""
+    if path.parent != SKILLS_ROOT or not path.is_dir():
+        return
+    if path.name in RESERVED_SKILL_DIRS or path.name.startswith("."):
+        return
+    if path.name in _legacy_cleanup_failed:
+        return
+    try:
+        if any(path.iterdir()):
+            return
+        path.rmdir()
+    except OSError as exc:
+        # WinError 32：目录被其他进程占用（常见于后端/IDE/Playwright 曾加载过该路径）
+        # 空壳目录不影响 skill 加载（available/ 下已有完整副本），不再重复告警
+        winerr = getattr(exc, "winerror", None)
+        if winerr == 32 or exc.errno in (13, 16, 32):
+            _legacy_cleanup_failed.add(path.name)
+            return
+        print(f"[skills] 清理空目录 {path.name} 失败: {exc}")
+
+
+def _migrate_legacy_layout() -> None:
+    """一次性迁移：顶层 skill 目录 → available；数据库中禁用的 → unavailable。"""
+    SKILLS_ROOT.mkdir(parents=True, exist_ok=True)
+    SKILLS_AVAILABLE_DIR.mkdir(parents=True, exist_ok=True)
+    SKILLS_UNAVAILABLE_DIR.mkdir(parents=True, exist_ok=True)
+    _touch_package_init(SKILLS_ROOT)
+    _touch_package_init(SKILLS_AVAILABLE_DIR)
+    _touch_package_init(SKILLS_UNAVAILABLE_DIR)
+
+    for child in sorted(SKILLS_ROOT.iterdir()):
+        if not child.is_dir() or child.name in RESERVED_SKILL_DIRS or child.name.startswith("."):
+            continue
+        target = SKILLS_AVAILABLE_DIR / child.name
+        if target.exists():
+            _cleanup_empty_legacy_skill_dir(child)
+            continue
+        if not _is_skill_dir(child):
+            continue
+        try:
+            shutil.move(str(child), str(target))
+        except OSError as exc:
+            print(f"[skills] 迁移 {child.name} 到 available 失败: {exc}")
+            if target.exists():
+                _cleanup_empty_legacy_skill_dir(child)
+
+    try:
+        from db.database import get_connection
+
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT folder_name FROM skills WHERE enabled = 0"
+            ).fetchall()
+        finally:
+            conn.close()
+        for row in rows:
+            folder_name = (row["folder_name"] or "").strip()
+            if not folder_name:
+                continue
+            src = SKILLS_AVAILABLE_DIR / folder_name
+            dst = SKILLS_UNAVAILABLE_DIR / folder_name
+            if src.is_dir() and not dst.exists():
+                try:
+                    shutil.move(str(src), str(dst))
+                    _clear_skill_module_cache(folder_name)
+                except OSError as exc:
+                    print(f"[skills] 迁移 {folder_name} 到 unavailable 失败: {exc}")
+    except Exception:
+        pass
+
+
+def ensure_skills_layout() -> None:
+    global _layout_initialized
+    if _layout_initialized:
+        return
+    _migrate_legacy_layout()
+    _layout_initialized = True
+
+
+def skill_import_path(folder_name: str, *, enabled: bool = True, skill_path: Path | None = None) -> str:
+    if skill_path is not None:
+        if skill_path.parent == SKILLS_AVAILABLE_DIR:
+            return f"skills.available.{folder_name}"
+        if skill_path.parent == SKILLS_UNAVAILABLE_DIR:
+            return f"skills.unavailable.{folder_name}"
+        return f"skills.{folder_name}"
+    bucket = "available" if enabled else "unavailable"
+    return f"skills.{bucket}.{folder_name}"
+
+
+def find_skill_dir(folder_name: str) -> tuple[Path, bool] | None:
+    """返回 (skill_path, enabled)。"""
+    ensure_skills_layout()
+    available = SKILLS_AVAILABLE_DIR / folder_name
+    if available.is_dir() and _is_skill_dir(available):
+        return available, True
+    unavailable = SKILLS_UNAVAILABLE_DIR / folder_name
+    if unavailable.is_dir() and _is_skill_dir(unavailable):
+        return unavailable, False
+    legacy = SKILLS_ROOT / folder_name
+    if legacy.is_dir() and _is_skill_dir(legacy):
+        return legacy, True
+    return None
+
+
+def is_skill_enabled(folder_name: str) -> bool:
+    found = find_skill_dir(folder_name)
+    return found is not None and found[1]
+
+
+def set_skill_enabled(folder_name: str, enabled: bool) -> None:
+    ensure_skills_layout()
+    found = find_skill_dir(folder_name)
+    if found is None:
+        raise FileNotFoundError(f"技能 {folder_name} 不存在")
+
+    current_path, currently_enabled = found
+    if currently_enabled == enabled:
+        return
+
+    target_root = SKILLS_AVAILABLE_DIR if enabled else SKILLS_UNAVAILABLE_DIR
+    target_path = target_root / folder_name
+    if target_path.exists():
+        raise FileExistsError(f"目标目录已存在: {target_path}")
+
+    try:
+        shutil.move(str(current_path), str(target_path))
+    except OSError as exc:
+        raise OSError(f"迁移技能目录失败: {exc}") from exc
+    _clear_skill_module_cache(folder_name)
+
+
+def _iter_skill_dirs() -> list[tuple[Path, bool]]:
+    ensure_skills_layout()
+    items: list[tuple[Path, bool]] = []
+    seen: set[str] = set()
+
+    for child in sorted(SKILLS_AVAILABLE_DIR.iterdir()):
+        if _is_skill_dir(child):
+            items.append((child, True))
+            seen.add(child.name)
+    for child in sorted(SKILLS_UNAVAILABLE_DIR.iterdir()):
+        if _is_skill_dir(child):
+            items.append((child, False))
+            seen.add(child.name)
+
+    # 兼容尚未迁移成功的顶层 skill 目录
+    if SKILLS_ROOT.exists():
+        for child in sorted(SKILLS_ROOT.iterdir()):
+            if child.name in seen or child.name in RESERVED_SKILL_DIRS or child.name.startswith("."):
+                continue
+            if _is_skill_dir(child):
+                items.append((child, True))
+                seen.add(child.name)
+
+    return items
+
+
+def discover_skills() -> list[SkillEntry]:
     if not SKILLS_ROOT.exists():
         return []
 
     entries: list[SkillEntry] = []
 
-    for child in sorted(SKILLS_ROOT.iterdir()):
-        if child.name.startswith("."):
+    for child, enabled in _iter_skill_dirs():
+        skill_md_path = child / "SKILL.md"
+        if not skill_md_path.is_file():
+            skill_md_path = child / "skill.md"
+        try:
+            parsed = parse_skill_markdown(skill_md_path, default_name=child.name)
+        except UnicodeDecodeError:
             continue
 
-        if child.is_dir():
-            skill_md_path = child / "SKILL.md"
-            if not skill_md_path.is_file():
-                skill_md_path = child / "skill.md"
-            if not skill_md_path.is_file():
-                continue
-            try:
-                parsed = parse_skill_markdown(skill_md_path, default_name=child.name)
-            except UnicodeDecodeError:
-                continue
-
-            enabled = get_skill_status(child.name)
-
-            entries.append(
-                SkillEntry(
-                    name=parsed["name"],
-                    description=parsed["description"],
-                    folder_name=child.name,
-                    skill_path=child,
-                    skill_md_path=skill_md_path,
-                    content=parsed["content"],
-                    body=parsed["body"],
-                    frontmatter=parsed["frontmatter"],
-                    enabled=enabled,
-                )
+        entries.append(
+            SkillEntry(
+                name=parsed["name"],
+                description=parsed["description"],
+                folder_name=child.name,
+                skill_path=child,
+                skill_md_path=skill_md_path,
+                content=parsed["content"],
+                body=parsed["body"],
+                frontmatter=parsed["frontmatter"],
+                enabled=enabled,
             )
+        )
 
     return entries
 
 
-def get_skill_by_name(name: str) -> SkillEntry | None:
+def get_skill_by_name(name: str, *, enabled_only: bool = True) -> SkillEntry | None:
     for entry in discover_skills():
+        if enabled_only and not entry.enabled:
+            continue
         if entry.name == name or entry.folder_name == name:
             return entry
     return None
@@ -191,6 +371,7 @@ CORE_TOOL_NAMES = {
     "read_file", "write_file", "edit_file", "list_files", "search_file",
     "cli_executor",
     "read_skill_file",
+    "create_scheduled_task",
 }
 
 
@@ -213,7 +394,7 @@ def get_all_tool_definitions() -> list[dict]:
 
         try:
             skill_module = __import__(
-                f"skills.{entry.folder_name}",
+                skill_import_path(entry.folder_name, enabled=True, skill_path=entry.skill_path),
                 fromlist=["get_tool_definition", "get_tool_definitions"]
             )
 
@@ -242,7 +423,13 @@ def get_all_tool_definitions() -> list[dict]:
     return tools
 
 
-def execute_tool(tool_name: str, arguments: dict[str, Any] | None = None, work_dir: str | None = None) -> dict[str, Any]:
+def execute_tool(
+    tool_name: str,
+    arguments: dict[str, Any] | None = None,
+    work_dir: str | None = None,
+    session_id: str | None = None,
+    invocation_id: str | None = None,
+) -> dict[str, Any]:
     if arguments is None:
         arguments = {}
 
@@ -250,7 +437,13 @@ def execute_tool(tool_name: str, arguments: dict[str, Any] | None = None, work_d
     if tool_name in CORE_TOOL_NAMES:
         try:
             from utils.agent_tools import execute as execute_agent_tool
-            return execute_agent_tool(tool=tool_name, work_dir=work_dir, **arguments)
+            return execute_agent_tool(
+                tool=tool_name,
+                work_dir=work_dir,
+                session_id=session_id,
+                invocation_id=invocation_id,
+                **arguments,
+            )
         except Exception as e:
             return {
                 "success": False,
@@ -265,7 +458,7 @@ def execute_tool(tool_name: str, arguments: dict[str, Any] | None = None, work_d
         
         try:
             skill_module = __import__(
-                f"skills.{entry.folder_name}",
+                skill_import_path(entry.folder_name, enabled=True, skill_path=entry.skill_path),
                 fromlist=["execute", "get_tool_definition", "get_tool_definitions"]
             )
             

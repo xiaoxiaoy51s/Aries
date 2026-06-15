@@ -65,9 +65,59 @@ export const usePrivacyStore = defineStore('privacy', () => {
     return item ? item.confirm : true // 未知类型默认需要确认
   }
 
+  const commandPrefixes = ref<string[]>(loadCommandPrefixes())
+
+  watch(commandPrefixes, (val) => {
+    try {
+      localStorage.setItem(COMMAND_PREFIX_KEY, JSON.stringify(val))
+    } catch {}
+  }, { deep: true })
+
+  function addCommandPrefix(prefix: string) {
+    const p = prefix.trim()
+    if (!p || commandPrefixes.value.includes(p)) return
+    commandPrefixes.value = [...commandPrefixes.value, p]
+  }
+
+  function isCommandPrefixWhitelisted(command: string): boolean {
+    const prefix = extractCommandPrefix(command)
+    return prefix ? commandPrefixes.value.includes(prefix) : false
+  }
+
+  /** 综合危险类型与命令前缀，判断是否需要弹出确认 */
+  function needsConfirmation(dangerTypes: string[], command: string): boolean {
+    if (isCommandPrefixWhitelisted(command)) return false
+    if (!dangerTypes.length) return true
+    return dangerTypes.some((dt) => shouldConfirmByType(dt))
+  }
+
   return {
     settings,
     toggleConfirm,
     shouldConfirmByType,
+    addCommandPrefix,
+    isCommandPrefixWhitelisted,
+    needsConfirmation,
   }
 })
+
+const COMMAND_PREFIX_KEY = 'mimo:privacy_command_prefixes'
+
+function loadCommandPrefixes(): string[] {
+  try {
+    const raw = localStorage.getItem(COMMAND_PREFIX_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((p) => typeof p === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+/** 提取命令前缀（首个 token），用于「不再询问」白名单 */
+export function extractCommandPrefix(command: string): string {
+  const trimmed = (command || '').trim()
+  if (!trimmed) return ''
+  const match = trimmed.match(/^[^\s]+/)
+  return match ? match[0] : ''
+}

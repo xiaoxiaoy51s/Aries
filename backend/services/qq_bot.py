@@ -119,7 +119,12 @@ class NonoQQBot(botpy.Client if BOTPY_AVAILABLE else object):
             self.last_user_openid = str(user_openid)
 
         try:
-            reply, files = await process_inbound_message_async("qq", content)
+            async def _send_segment(seg: str):
+                await _reply_qq_message(message, seg)
+
+            reply, files = await process_inbound_message_async(
+                "qq", content, send_segment=_send_segment
+            )
         except RuntimeError as e:
             if "shutdown" in str(e).lower():
                 _log.warning("[QQ] 进程关闭中，跳过消息处理")

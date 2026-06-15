@@ -3,7 +3,10 @@ import os
 import platform
 import asyncio
 from datetime import datetime
-from typing import AsyncGenerator, List, Dict, Any, Optional
+from typing import AsyncGenerator, List, Dict, Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from services.platform_segment import PlatformStreamSink
 
 from utils.url_utils import normalize_base_url
 from utils.skills_manager import (
@@ -22,6 +25,10 @@ from db.chat import save_message, update_message
 
 MAX_TOOL_ROUNDS = 30
 CONFIRMATION_TIMEOUT_SECONDS = 120.0
+LLM_CONNECT_TIMEOUT_SECONDS = 30.0
+LLM_READ_TIMEOUT_SECONDS = 900.0
+LLM_WRITE_TIMEOUT_SECONDS = 120.0
+TOOL_EXECUTION_TIMEOUT_SECONDS = 600.0
 
 _pending_confirmations: dict[str, asyncio.Event] = {}
 _pending_confirmation_results: dict[str, bool] = {}
@@ -115,6 +122,8 @@ def _cancel_cli_invocations() -> None:
     """
     try:
         from utils.cli_executor import CLIExecutor
+        for inv_id in CLIExecutor.get_active_invocations():
+            CLIExecutor.set_interrupt_action(inv_id, "terminate")
         CLIExecutor.terminate_all_active(action="terminate")
     except Exception:
         pass
@@ -131,10 +140,38 @@ def _cancel_cli_invocations() -> None:
         pass
 
 
-def build_agent_system_prompt(skills_context: str, work_dir: str | None = None) -> str:
+def _session_context_note(session_id: str | None) -> str:
+    """生成当前会话说明，供 system prompt 与工具默认行为使用。"""
+    sid = (session_id or "").strip()
+    if not sid:
+        return "当前 session_id：未知"
+
+    from db.scheduled_task import infer_platform
+
+    platform = infer_platform(sid)
+    platform_labels = {"wechat": "微信", "qq": "QQ", "feishu": "飞书"}
+    if platform:
+        label = platform_labels.get(platform, platform)
+        return (
+            f"当前 session_id：`{sid}`\n"
+            f"消息来源：{label}（用户从此平台发来消息；"
+            f"创建定时任务时若用户未指定推送平台，默认推送到{label}）"
+        )
+    return (
+        f"当前 session_id：`{sid}`\n"
+        "消息来源：网页聊天（创建定时任务时若用户未指定推送平台，默认在当前网页会话中继续）"
+    )
+
+
+def build_agent_system_prompt(
+    skills_context: str,
+    work_dir: str | None = None,
+    session_id: str | None = None,
+) -> str:
     """构建 Agent 模式的系统提示词（精简版）
 
     work_dir: 当前 session 的工作目录；为空时回退到默认 ~/.MIMOClaw
+    session_id: 当前会话 ID；每次用户发消息时传入，供 AI 识别来源与默认推送目标
     """
     from pathlib import Path
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -154,6 +191,9 @@ def build_agent_system_prompt(skills_context: str, work_dir: str | None = None) 
         "你是一个强大的多用途 AI 助手，擅长任务规划、文档创建、网络研究和代码执行。"
         f"今天的日期是 {today_str}，当前操作系统：{platform.system()}。\n"
         "\n"
+        "# 当前会话\n"
+        f"{_session_context_note(session_id)}\n"
+        "\n"
         "# 工作目录\n"
         f"工作目录：`{wd}`\n"
         f"临时脚本目录：`{tmp_dir}`\n"
@@ -166,13 +206,7 @@ def build_agent_system_prompt(skills_context: str, work_dir: str | None = None) 
         "- 所有工具失败时：2次尝试内停止，告知障碍，禁止伪造结果\n"
         "\n"
         "# Skill 使用规范\n"
-        "⚠️ 文件操作必须先判断是否有专用 skill！\n"
-        "优先级：专用 skill > cli_executor + 脚本 > 自己写代码\n"
-        f"脚本位置：`{Path.home() / '.MIMOClaw' / 'skills'}`\n"
-        "- Skill 分两种类型：\n"
-        "  1. 有脚本的 skill（如 pdf/docx/xlsx/pptx）：通过 cli_executor 调用 scripts 目录下的脚本\n"
-        "  2. 纯文档 skill（如 ui-ux-pro-max）：只有 SKILL.md，直接阅读文档获取规范，无需调用脚本\n"
-        "- 调用 skill 前先阅读 SKILL.md 确认类型\n"
+        "在使用skill前，必须阅读SKILL.md文件，了解技能的用途和使用方法。不要直接上来就调用工具，有些工具虽然可以通过描述知道对应的使用方法，但是md文件中会有更加详细的使用说明。"
     )
 
     if skills_context:
@@ -201,6 +235,7 @@ async def stream_agent_mode(
     work_dir: str | None = None,
     cancel_event: Optional[asyncio.Event] = None,
     disconnect_check: Optional[Any] = None,
+    segment_sink: Optional["PlatformStreamSink"] = None,
 ) -> AsyncGenerator[str, None]:
     """Agent 模式 - 支持多轮工具调用
 
@@ -222,19 +257,28 @@ async def stream_agent_mode(
 
         skills_context, tool_definitions = get_agent_skills_and_tools()
 
-        system_prompt = build_agent_system_prompt(skills_context, work_dir=work_dir)
+        system_prompt = build_agent_system_prompt(
+            skills_context, work_dir=work_dir, session_id=session_id
+        )
 
         current_messages = [{"role": "system", "content": system_prompt}]
         current_messages.extend(messages)
 
         base_url = normalize_base_url(request.baseUrl)
+        llm_timeout = httpx.Timeout(
+            connect=LLM_CONNECT_TIMEOUT_SECONDS,
+            read=LLM_READ_TIMEOUT_SECONDS,
+            write=LLM_WRITE_TIMEOUT_SECONDS,
+            pool=30.0,
+        )
 
-        async with httpx.AsyncClient(timeout=300.0, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=llm_timeout, trust_env=False) as client:
             for round_no in range(1, MAX_TOOL_ROUNDS + 1):
                 if await _should_stop_stream(cancel_event, disconnect_check):
                     cancelled = True
                     _cancel_cli_invocations()
                     break
+                reasoning_emitted_before_content = False
                 current_payload = {
                     "model": request.model,
                     "messages": current_messages,
@@ -253,83 +297,100 @@ async def stream_agent_mode(
                 full_content = ""
                 tool_calls_buffer = []
 
-                async with client.stream(
-                    "POST",
-                    f"{base_url}/chat/completions",
-                    headers=headers,
-                    json=current_payload,
-                ) as response:
-                    if response.status_code != 200:
-                        error_text = await response.aread()
-                        yield f"data: {json.dumps({'error': error_text.decode()})}\n\n"
-                        return
+                try:
+                    async with client.stream(
+                        "POST",
+                        f"{base_url}/chat/completions",
+                        headers=headers,
+                        json=current_payload,
+                    ) as response:
+                        if response.status_code != 200:
+                            error_text = await response.aread()
+                            yield f"data: {json.dumps({'error': error_text.decode()})}\n\n"
+                            return
 
-                    async for line in response.aiter_lines():
-                        if await _should_stop_stream(cancel_event, disconnect_check):
-                            final_content = full_content
-                            cancelled = True
-                            _cancel_cli_invocations()
-                            break
-                        if line.startswith("data: "):
-                            data = line[6:]
-                            if data == "[DONE]":
+                        async for line in response.aiter_lines():
+                            if await _should_stop_stream(cancel_event, disconnect_check):
+                                final_content = full_content
+                                cancelled = True
+                                _cancel_cli_invocations()
                                 break
-                            try:
-                                chunk = json.loads(data)
-                                choices = chunk.get("choices", [])
-                                if not choices:
-                                    continue
-
-                                delta = choices[0].get("delta", {})
-                                finish_reason = choices[0].get("finish_reason")
-
-                                if "tool_calls" in delta and delta["tool_calls"]:
-                                    for tc_delta in delta["tool_calls"]:
-                                        index = tc_delta.get("index", 0)
-
-                                        while len(tool_calls_buffer) <= index:
-                                            tool_calls_buffer.append({
-                                                "id": "",
-                                                "type": "function",
-                                                "function": {"name": "", "arguments": ""}
-                                            })
-
-                                        tc = tool_calls_buffer[index]
-
-                                        if "id" in tc_delta and tc_delta["id"]:
-                                            tc["id"] = tc_delta["id"]
-                                        if "function" in tc_delta:
-                                            func_delta = tc_delta["function"]
-                                            if "name" in func_delta and func_delta["name"]:
-                                                tc["function"]["name"] = func_delta["name"]
-                                            if "arguments" in func_delta and func_delta["arguments"]:
-                                                tc["function"]["arguments"] += func_delta["arguments"]
-
-                                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                                    continue
-
-                                if "reasoning_content" in delta and delta["reasoning_content"]:
-                                    logger.append_reasoning_delta(delta["reasoning_content"])
-                                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                                    continue
-
-                                if "content" in delta and delta["content"]:
-                                    content = delta["content"]
-                                    full_content += content
-                                    logger.record_assistant_content(content)
-                                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-
-                                if finish_reason == "tool_calls":
+                            if line.startswith("data: "):
+                                data = line[6:]
+                                if data == "[DONE]":
                                     break
+                                try:
+                                    chunk = json.loads(data)
+                                    choices = chunk.get("choices", [])
+                                    if not choices:
+                                        continue
 
-                                if finish_reason == "stop":
-                                    break
+                                    delta = choices[0].get("delta", {})
+                                    finish_reason = choices[0].get("finish_reason")
 
-                            except json.JSONDecodeError:
-                                continue
+                                    if "tool_calls" in delta and delta["tool_calls"]:
+                                        for tc_delta in delta["tool_calls"]:
+                                            index = tc_delta.get("index", 0)
 
-                    if cancelled:
-                        break
+                                            while len(tool_calls_buffer) <= index:
+                                                tool_calls_buffer.append({
+                                                    "id": "",
+                                                    "type": "function",
+                                                    "function": {"name": "", "arguments": ""}
+                                                })
+
+                                            tc = tool_calls_buffer[index]
+
+                                            if "id" in tc_delta and tc_delta["id"]:
+                                                tc["id"] = tc_delta["id"]
+                                            if "function" in tc_delta:
+                                                func_delta = tc_delta["function"]
+                                                if "name" in func_delta and func_delta["name"]:
+                                                    tc["function"]["name"] = func_delta["name"]
+                                                if "arguments" in func_delta and func_delta["arguments"]:
+                                                    tc["function"]["arguments"] += func_delta["arguments"]
+
+                                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                                        continue
+
+                                    if "reasoning_content" in delta and delta["reasoning_content"]:
+                                        logger.append_reasoning_delta(delta["reasoning_content"])
+                                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                                        continue
+
+                                    if "content" in delta and delta["content"]:
+                                        if segment_sink and not reasoning_emitted_before_content:
+                                            reasoning_text = logger.flush_reasoning_segment()
+                                            if reasoning_text:
+                                                await segment_sink.on_reasoning(reasoning_text)
+                                            reasoning_emitted_before_content = True
+                                        content = delta["content"]
+                                        full_content += content
+                                        logger.record_assistant_content(content)
+                                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+                                    if finish_reason == "tool_calls":
+                                        break
+
+                                    if finish_reason == "stop":
+                                        break
+
+                                except json.JSONDecodeError:
+                                    continue
+
+                        if cancelled:
+                            break
+                except httpx.TimeoutException:
+                    error_msg = (
+                        f"模型 API 读取超时（{int(LLM_READ_TIMEOUT_SECONDS)} 秒内无新数据）。"
+                        "常见于 Playwright 等多轮工具任务后模型响应较慢，请稍后重试或拆分任务。"
+                    )
+                    yield f"data: {json.dumps({'error': error_msg}, ensure_ascii=False)}\n\n"
+                    break
+                except httpx.HTTPError as exc:
+                    error_msg = f"模型 API 请求失败：{exc}"
+                    yield f"data: {json.dumps({'error': error_msg}, ensure_ascii=False)}\n\n"
+                    break
 
                 final_content = full_content
 
@@ -337,10 +398,25 @@ async def stream_agent_mode(
                     break
 
                 if not tool_calls_buffer:
+                    if segment_sink:
+                        reasoning_text, assistant_text = logger.flush_assistant_round()
+                        from services.platform_segment import emit_logger_segments
+                        await emit_logger_segments(
+                            segment_sink,
+                            reasoning=reasoning_text,
+                            assistant=assistant_text,
+                        )
                     break
 
                 # 本轮分析文本落盘，再执行工具（避免多轮时只保存最后一轮）
-                logger.flush_assistant_round()
+                reasoning_text, assistant_text = logger.flush_assistant_round()
+                if segment_sink:
+                    from services.platform_segment import emit_logger_segments
+                    await emit_logger_segments(
+                        segment_sink,
+                        reasoning=reasoning_text,
+                        assistant=assistant_text,
+                    )
 
                 # 执行工具调用
                 tool_results = []
@@ -364,14 +440,36 @@ async def stream_agent_mode(
                     yield f"data: {json.dumps({'tool_call': {'tool_call_id': tool_id, 'tool_name': tool_name, 'status': 'running', 'args': args, 'round': round_no}}, ensure_ascii=False)}\n\n"
 
                     # 记录工具调用
-                    logger.write_tool_call(tool_id, tool_name, args)
+                    reasoning_text = logger.write_tool_call(tool_id, tool_name, args)
+                    if segment_sink:
+                        if reasoning_text:
+                            await segment_sink.on_reasoning(reasoning_text)
+                        await segment_sink.on_tool_start(tool_name)
 
                     # 执行工具（注入 session 的工作目录）
                     # 使用 run_in_executor 避免阻塞事件循环，使前端 WebSocket/PTY 输出能正常工作
                     loop = asyncio.get_running_loop()
-                    result = await loop.run_in_executor(
-                        None, lambda: execute_tool(tool_name, args, work_dir=work_dir)
-                    )
+                    invocation_id = f"{session_id}:{tool_id}"
+                    try:
+                        result = await asyncio.wait_for(
+                            loop.run_in_executor(
+                                None,
+                                lambda tn=tool_name, a=args, wd=work_dir, sid=session_id, iid=invocation_id: execute_tool(
+                                    tn, a, work_dir=wd, session_id=sid, invocation_id=iid
+                                ),
+                            ),
+                            timeout=TOOL_EXECUTION_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        _cancel_cli_invocations()
+                        result = {
+                            "success": False,
+                            "error": "Tool execution timed out",
+                            "output": (
+                                f"工具 `{tool_name}` 执行超时（>{int(TOOL_EXECUTION_TIMEOUT_SECONDS)} 秒）。"
+                                "Playwright 等浏览器任务可能页面加载过慢，请减少 wait_ms 或拆分步骤。"
+                            ),
+                        }
 
                     if isinstance(result, dict) and result.get("requires_confirmation"):
                         confirm_event = {
@@ -408,7 +506,10 @@ async def stream_agent_mode(
                             retry_args["skip_confirmation"] = True
                             yield f"data: {json.dumps({'tool_call': {'tool_call_id': tool_id, 'tool_name': tool_name, 'status': 'running', 'args': retry_args, 'round': round_no}}, ensure_ascii=False)}\n\n"
                             result = await loop.run_in_executor(
-                                None, lambda: execute_tool(tool_name, retry_args, work_dir=work_dir)
+                                None,
+                                lambda tn=tool_name, a=retry_args, wd=work_dir, sid=session_id: execute_tool(
+                                    tn, a, work_dir=wd, session_id=sid
+                                ),
                             )
 
                     tool_results.append({
@@ -420,14 +521,16 @@ async def stream_agent_mode(
                     # 记录工具结果
                     status = "completed" if not isinstance(result, dict) or not result.get("error") else "error"
                     error_msg = result.get("error", "") if isinstance(result, dict) else ""
+                    output = result.get("output", "") if isinstance(result, dict) else str(result)
                     logger.write_tool_result(
                         tool_id, tool_name, status,
                         result=json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result),
                         error=error_msg
                     )
+                    if segment_sink:
+                        await segment_sink.on_tool_done(tool_name, status, output)
 
                     # 发送工具结果事件
-                    output = result.get('output', '') if isinstance(result, dict) else str(result)
                     yield f"data: {json.dumps({'tool_result': {'tool_name': tool_name, 'tool_call_id': tool_id, 'status': status, 'output': output, 'round': round_no}}, ensure_ascii=False)}\n\n"
 
                     if stream_stopped:
@@ -458,7 +561,14 @@ async def stream_agent_mode(
             _cancel_cli_invocations()
         if assistant_message_id is not None and logger is not None:
             # 保存到数据库（即使中途暂停/异常也要保存已有内容）
-            logger.flush_assistant_round()
+            reasoning_text, assistant_text = logger.flush_assistant_round()
+            if segment_sink:
+                from services.platform_segment import emit_logger_segments
+                await emit_logger_segments(
+                    segment_sink,
+                    reasoning=reasoning_text,
+                    assistant=assistant_text,
+                )
             db_content = logger.build_db_content() or final_content or ""
             if db_content:
                 set_summary_block(snapshot, db_content)

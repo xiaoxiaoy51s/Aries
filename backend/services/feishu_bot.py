@@ -79,24 +79,24 @@ class _FeishuRunner:
             if chat_id:
                 self.last_chat_id = chat_id
             try:
-                reply, _files = await process_inbound_message_async("feishu", text)
-                _log.info("[飞书] Agent 回复长度=%d, chat_id=%s", len(reply or ""), chat_id)
+                async def _send_segment(seg: str):
+                    await self._channel.send(chat_id, {"text": seg})
+
+                reply, _files = await process_inbound_message_async(
+                    "feishu", text, send_segment=_send_segment
+                )
+                _log.info("[飞书] Agent 分段推送完成, chat_id=%s", chat_id)
             except RuntimeError as e:
                 if "shutdown" in str(e).lower():
                     _log.warning("[飞书] 进程关闭中，跳过消息处理")
                     return
                 raise
-            if not reply:
-                _log.warning("[飞书] Agent 未生成回复")
-                return
-            if not self._channel:
-                _log.error("[飞书] Channel 未连接，无法发送")
-                return
-            try:
-                await self._channel.send(chat_id, {"text": reply})
-                _log.info("[飞书] 已回复 chat_id=%s, len=%d", chat_id, len(reply))
-            except Exception as send_err:
-                _log.error("[飞书] 发送失败: %s", send_err)
+            if reply and self._channel:
+                try:
+                    await self._channel.send(chat_id, {"text": reply})
+                    _log.info("[飞书] 已回复 chat_id=%s, len=%d", chat_id, len(reply))
+                except Exception as send_err:
+                    _log.error("[飞书] 发送失败: %s", send_err)
         except Exception as e:
             _log.error("[飞书] 处理消息失败: %s", e)
 
