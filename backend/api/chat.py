@@ -3,6 +3,7 @@ import base64
 import os
 import re
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, AsyncGenerator, Union, List
 from uuid import uuid4
@@ -117,9 +118,12 @@ def load_file_as_base64_url(file_path: str, mime_type: Optional[str] = None) -> 
 
 def save_base64_image(base64_str: str, upload_dir: str = None) -> str:
     if upload_dir is None:
-        upload_path = Path.home() / ".MIMOClaw" / "uploads"
+        today = datetime.now().strftime("%Y/%m/%d")
+        upload_path = Path.home() / ".MIMOClaw" / "uploads" / today
+        url_prefix = f"/uploads/{today}"
     else:
         upload_path = Path(upload_dir)
+        url_prefix = "/uploads"
     upload_path.mkdir(parents=True, exist_ok=True)
 
     match = re.match(r'^data:image/(\w+);base64,(.+)$', base64_str)
@@ -137,7 +141,7 @@ def save_base64_image(base64_str: str, upload_dir: str = None) -> str:
     with open(file_path, "wb") as f:
         f.write(image_data)
 
-    return f"/uploads/{filename}"
+    return f"{url_prefix}/{filename}"
 
 
 def extract_and_save_images(user_content) -> tuple:
@@ -252,12 +256,12 @@ async def stream_chat(request: ChatRequest, http_request: Request) -> AsyncGener
     # 当前用户消息可能带图片，这里以原始 prepared 形式追加（含 images 字段）
     current_user_msg = prepared[-1] if prepared else None
 
-    skills_context, tool_definitions = get_agent_skills_and_tools()
+    skills_context, tool_definitions, mcp_context = get_agent_skills_and_tools()
     # 取该 session 的工作目录（DB 优先，request 兜底）
     _meta = get_session(session_id) or {}
     effective_work_dir = (_meta.get("work_dir") or request.work_dir or "").strip() or None
     system_prompt = build_agent_system_prompt(
-        skills_context, work_dir=effective_work_dir, session_id=session_id
+        skills_context, work_dir=effective_work_dir, session_id=session_id, mcp_context=mcp_context
     )
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -353,12 +357,12 @@ async def chat_completions(request: ChatRequest, http_request: Request):
         history_messages = history_messages[:-1]
     current_user_msg = prepared[-1] if prepared else None
 
-    skills_context, tool_definitions = get_agent_skills_and_tools()
+    skills_context, tool_definitions, mcp_context = get_agent_skills_and_tools()
     # 取该 session 的工作目录（DB 优先，request 兜底）
     _meta = get_session(session_id) or {}
     effective_work_dir = (_meta.get("work_dir") or request.work_dir or "").strip() or None
     system_prompt = build_agent_system_prompt(
-        skills_context, work_dir=effective_work_dir, session_id=session_id
+        skills_context, work_dir=effective_work_dir, session_id=session_id, mcp_context=mcp_context
     )
 
     messages = [{"role": "system", "content": system_prompt}]

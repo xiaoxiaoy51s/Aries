@@ -1,5 +1,11 @@
 <template>
-  <div class="slash-composer-input">
+  <div class="slash-composer-input" :class="{ 'has-images': imagePreviews.length > 0 }">
+    <div v-if="imagePreviews.length" class="image-previews">
+      <div v-for="(img, i) in imagePreviews" :key="i" class="image-preview">
+        <img :src="img" alt="" />
+        <button type="button" class="image-remove" @click="removeImage(i)">×</button>
+      </div>
+    </div>
     <textarea
       :value="plainText"
       :rows="computedRows"
@@ -11,12 +17,6 @@
       @focus="onFocus"
       ref="textareaRef"
     />
-    <div v-if="imagePreviews.length" class="image-previews">
-      <div v-for="(img, i) in imagePreviews" :key="i" class="image-preview">
-        <img :src="img" alt="" />
-        <button type="button" class="image-remove" @click="removeImage(i)">×</button>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -151,7 +151,48 @@ defineExpose({ openFilePicker, clearImages, focus })
 .slash-composer-input {
   display: flex;
   flex-direction: column;
+}
+
+.image-previews {
+  display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 12px 0;
+}
+
+.image-preview {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #f6f6f4;
+  flex-shrink: 0;
+}
+
+.image-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.image-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .composer-textarea {
@@ -167,9 +208,7 @@ defineExpose({ openFilePicker, clearImages, focus })
   min-height: calc(1.5em * v-bind(computedRows));
   transition: min-height 0.15s ease;
   overflow-y: auto;
-  /* 确保光标位置正确 */
   caret-color: var(--accent, #3b82f6);
-  /* 增加内边距，让文字与边框有间距 */
   padding: 10px 12px;
   box-sizing: border-box;
 }
@@ -178,41 +217,7 @@ defineExpose({ openFilePicker, clearImages, focus })
   color: var(--text-muted);
 }
 
-.image-previews {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.image-preview {
-  position: relative;
-  width: 60px;
-  height: 60px;
-  border-radius: 8px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-}
-
-.image-preview img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.image-remove {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: none;
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff;
-  font-size: 12px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.slash-composer-input.has-images .composer-textarea {
+  padding-top: 8px;
 }
 </style>

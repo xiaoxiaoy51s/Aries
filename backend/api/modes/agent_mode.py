@@ -167,6 +167,7 @@ def build_agent_system_prompt(
     skills_context: str,
     work_dir: str | None = None,
     session_id: str | None = None,
+    mcp_context: str = "",
 ) -> str:
     """构建 Agent 模式的系统提示词（精简版）
 
@@ -215,15 +216,21 @@ def build_agent_system_prompt(
             f"{skills_context}"
         )
 
+    if mcp_context:
+        prompt += f"\n# MCP 插件\n{mcp_context}"
+
     return prompt
 
 
 def get_agent_skills_and_tools():
+    from utils.mcp_runtime import build_mcp_prompt_context
+
     skills = discover_skills()
     enabled_skills = [s for s in skills if s.enabled]
     skills_context = build_skills_context_from_entries(enabled_skills)
     tool_definitions = get_all_tool_definitions()
-    return skills_context, tool_definitions
+    mcp_context = build_mcp_prompt_context()
+    return skills_context, tool_definitions, mcp_context
 
 
 async def stream_agent_mode(
@@ -255,10 +262,10 @@ async def stream_agent_mode(
         logger = SessionLogger(session_id=session_id, message_id=assistant_message_id)
         snapshot = create_assistant_snapshot(session_id, logger)
 
-        skills_context, tool_definitions = get_agent_skills_and_tools()
+        skills_context, tool_definitions, mcp_context = get_agent_skills_and_tools()
 
         system_prompt = build_agent_system_prompt(
-            skills_context, work_dir=work_dir, session_id=session_id
+            skills_context, work_dir=work_dir, session_id=session_id, mcp_context=mcp_context
         )
 
         current_messages = [{"role": "system", "content": system_prompt}]

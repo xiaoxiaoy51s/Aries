@@ -18,18 +18,11 @@ websockets>=12.0
 sqlalchemy>=2.0.0
 alembic>=1.13.0
 
-# Cache
-redis>=5.0.0
-
-# Authentication
-python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.4
-bcrypt==4.0.1
-
 # AI/LLM
 openai>=1.12.0
 langchain>=0.1.0
 langchain-text-splitters>=0.0.1
+mcp>=1.8.0
 
 # PDF Processing
 pypdf>=4.0.0
@@ -45,10 +38,3 @@ qrcode[pil]>=7.4.0
 # Platform Bots
 qq-botpy>=1.2.0
 lark-oapi>=1.4.0
-
-# Computer Use (desktop automation)
-pyautogui>=0.9.54
-opencv-python-headless>=4.9.0
-Pillow>=10.0.0
-pyperclip>=1.8.2
-pynput>=1.7.6

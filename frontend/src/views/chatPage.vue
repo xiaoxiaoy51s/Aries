@@ -74,6 +74,7 @@
               </svg>
             </button>
             <select v-model="selectedModel" class="model-select">
+              <option v-if="modelStore.modelList.length === 0" value="" disabled>暂无模型</option>
               <option v-for="model in modelStore.modelList" :key="model.id" :value="model.model">
                 {{ model.name }}
               </option>
@@ -109,7 +110,14 @@
 
     <!-- 对话中状态 -->
     <div v-else class="chat-active">
-      <div class="chat-messages" ref="messagesContainer">
+      <div
+        class="chat-messages"
+        ref="messagesContainer"
+        @mousemove="markPointerActivity"
+        @mousedown="markPointerActivity"
+        @wheel.passive="markPointerActivity"
+        @scroll="onMessagesScroll"
+      >
         <div 
           v-for="(msg, index) in messages" 
           :key="index"
@@ -134,12 +142,8 @@
               :tools="msg.tools || []"
               :blocks="msg.blocks || []"
               :is-loading="msg.isLoading"
-              :computer-use="assistantShowsCuLogs(msg)"
-              :show-copy-button="!!msg.hasSnapshot && !msg.isLoading"
               :text-color="textColor"
               :font-size="fontSize"
-              @tool-confirm="onToolConfirm"
-              @tool-cancel="onToolCancel"
             />
           </div>
         </div>
@@ -167,7 +171,6 @@
         <div class="composer-toolbar">
           <div class="composer-left">
             <button
-              v-if="!isComputerUseActive"
               type="button"
               class="icon-btn"
               title="上传图片"
@@ -175,14 +178,6 @@
               @click="openImagePicker"
             >
               +
-            </button>
-            <button
-              v-if="isComputerUseActive"
-              type="button"
-              class="stop-btn"
-              @click="stopDesktopTask"
-            >
-              停止操控
             </button>
           </div>
           <div class="composer-right">
@@ -244,25 +239,17 @@ import { usePrivacyStore, extractCommandPrefix } from '@/stores/privacy'
 import { streamChat, streamVision, stopChat, type StreamEvent } from '@/api/chat'
 import { confirmTool } from '@/api/git'
 import { useWorkspaceStore } from '@/stores/workspace'
-import {
-  streamComputerUse,
-  stopComputerUse,
-  parseComputerUseCommand,
-  buildComputerUseUserDisplay,
-  parseUserSlashMessage,
-  isComputerUseLogLine,
-  messageHasComputerUseLogs,
-  buildWorkBlocksFromReasoning,
-  splitComputerUseReasoningSegments,
-  type ComputerUseStreamEvent,
-  type SlashCommandDef,
-} from '@/api/computerUse'
 import { getSessionMessages, getSession, updateSessionMeta } from '@/api/sessions'
 import AssistantMessage from '@/components/AssistantMessage.vue'
 import DangerCommandConfirm from '@/components/DangerCommandConfirm.vue'
 import SlashComposerInput, { type ComposerImage } from '@/components/SlashComposerInput.vue'
 import UserMessageContent from '@/components/UserMessageContent.vue'
 import { parseSnapshotEventObjects } from '@/utils/snapshotParser'
+
+interface SlashCommandDef {
+  id: string
+  label?: string
+}
 
 const props = defineProps<{
   sessionIdToLoad?: string | null
@@ -284,17 +271,16 @@ const commandObjective = ref('')
 const selectedModel = ref('')
 const hasActiveChat = ref(false)
 const isSending = ref(false)
-const isComputerUseActive = ref(false)
 const messagesContainer = ref<HTMLElement>()
+const SCROLL_IDLE_MS = 5000
+let lastPointerActivityAt = 0
+let scrollIdleTimer: ReturnType<typeof setTimeout> | null = null
 const emptyComposerRef = ref<InstanceType<typeof SlashComposerInput>>()
 const activeComposerRef = ref<InstanceType<typeof SlashComposerInput>>()
 const currentSessionId = ref<string | undefined>(undefined)
 let streamAbortController: AbortController | null = null
 
 const canSend = computed(() => {
-  if (activeSlashCommand.value?.id === 'computer-use') {
-    return commandObjective.value.trim().length > 0
-  }
   return inputMessage.value.trim().length > 0 || attachedImages.value.length > 0
 })
 
@@ -355,7 +341,6 @@ interface ChatMessage {
   images?: string[]
   slashCommand?: string
   slashBody?: string
-  isComputerUse?: boolean
   mode?: string
   reasoning?: string[]
   tools?: ToolInfo[]
@@ -365,17 +350,13 @@ interface ChatMessage {
   hasSnapshot?: boolean
 }
 
-function assistantShowsCuLogs(msg: ChatMessage): boolean {
-  return !!msg.isComputerUse || messageHasComputerUseLogs(msg)
-}
-
 function enrichUserMessage(content: string): Pick<ChatMessage, 'content' | 'slashCommand' | 'slashBody'> {
-  const parsed = parseUserSlashMessage(content)
-  if (parsed) {
+  const match = content.match(/^(\/[\w-]+)\s*(.*)$/s)
+  if (match) {
     return {
       content,
-      slashCommand: parsed.slashCommand,
-      slashBody: parsed.slashBody,
+      slashCommand: match[1],
+      slashBody: match[2].trim(),
     }
   }
   return { content }
@@ -497,9 +478,16 @@ function loadWorkDirHistory() {
   try {
     const raw = localStorage.getItem('mimo:workdir_history')
     const list = raw ? (JSON.parse(raw) as string[]) : []
-    // 把当前 workDir 置顶
+    // 去重：使用 Set 去重后再转回数组
+    const uniqueList = Array.from(new Set(list))
+    // 把当前 workDir 置顶（如果不在列表中）
     const cur = workDir.value
-    workDirHistory.value = cur && !list.includes(cur) ? [cur, ...list].slice(0, 8) : list.slice(0, 8)
+    if (cur && !uniqueList.includes(cur)) {
+      uniqueList.unshift(cur)
+    }
+    workDirHistory.value = uniqueList.slice(0, 8)
+    // 同步更新 localStorage，确保下次读取也是去重的
+    localStorage.setItem('mimo:workdir_history', JSON.stringify(workDirHistory.value))
   } catch {
     workDirHistory.value = workDir.value ? [workDir.value] : []
   }
@@ -588,32 +576,17 @@ async function loadSessionById(id: string) {
       if (m.role === 'user') {
         Object.assign(base, enrichUserMessage(m.content || ''))
         base.images = parseStoredImagePaths(m.image_path)
-        if (m.mode === 'computer_use' && !base.slashCommand) {
-          const body = (m.content || '').replace(/^\/computer-use\s*/i, '').trim()
-          base.slashCommand = '/computer-use'
-          base.slashBody = body || m.content
-        }
       }
       return base
     })
 
-    for (let i = 0; i < msgs.length; i++) {
-      const m = msgs[i]
-      if (m.role === 'assistant') {
-        const prev = i > 0 ? msgs[i - 1] : null
-        if (m.mode === 'computer_use' || prev?.slashCommand || prev?.mode === 'computer_use') {
-          m.isComputerUse = true
-        }
-      }
-    }
-    
     // 先渲染不含快照的内容
     messages.value = msgs
     hasActiveChat.value = msgs.length > 0
     await nextTick()
-    scrollToBottom()
+    scheduleScrollToBottom(true)
     
-    // 异步加载每条助手消息的 JSONL 快照（优先 JSONL，无则回退 DB reasoning_content）
+    // 异步加载每条助手消息的 JSONL 快照
     for (let i = 0; i < msgs.length; i++) {
       if (msgs[i].role !== 'assistant') continue
       const raw = (data.messages[i] as any)
@@ -717,7 +690,6 @@ async function loadMessageSnapshot(
 
     messages.value[msgIndex] = {
       ...prev,
-      isComputerUse: prev.isComputerUse || messageHasComputerUseLogs({ blocks, reasoning: reasoningSegments }),
       blocks,
       reasoning: reasoningSegments,
       tools: parsed
@@ -812,16 +784,19 @@ function applyReasoningContentFallback(
   const rc = (reasoningContent || '').trim()
   if (!rc) return
 
-  const segments = splitComputerUseReasoningSegments(rc)
+  const segments = rc.split('\n').filter((line) => line.trim())
   if (segments.length === 0) return
 
-  const blocks: MessageBlock[] = buildWorkBlocksFromReasoning(rc)
+  const blocks: MessageBlock[] = segments.map((text) => ({
+    type: 'text',
+    text,
+    phase: 'work',
+  }))
 
   console.log(`[snapshot] 消息 ${messageId} 使用 reasoning_content 回退，${segments.length} 段`)
 
   messages.value[msgIndex] = {
     ...prev,
-    isComputerUse: prev.isComputerUse || messageHasComputerUseLogs({ blocks, reasoning: segments }),
     blocks,
     reasoning: segments,
     content: prev.content,
@@ -829,9 +804,8 @@ function applyReasoningContentFallback(
 }
 
 function onGlobalKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && isComputerUseActive.value) {
-    e.preventDefault()
-    stopDesktopTask()
+  if (e.key === 'Escape' && workDirMenuOpen.value) {
+    workDirMenuOpen.value = false
   }
 }
 
@@ -842,6 +816,8 @@ onMounted(() => {
   document.addEventListener('mousedown', closeWorkDirMenu)
   document.addEventListener('keydown', onGlobalKeydown)
   loadWorkDir()
+  // 确保模型列表已加载（避免 MainLayout 加载未完成导致下拉框为空）
+  void modelStore.loadModels()
   if (props.sessionIdToLoad) {
     void loadSessionById(props.sessionIdToLoad)
   }
@@ -853,6 +829,10 @@ watch(() => props.sessionIdToLoad, (id) => {
 
 onUnmounted(() => {
   clearConfirmCountdownTimer()
+  if (scrollIdleTimer) {
+    clearTimeout(scrollIdleTimer)
+    scrollIdleTimer = null
+  }
   window.removeEventListener('mimo:new-chat', onNewChat)
   window.removeEventListener('mimo:load-session', onLoadSession)
   window.removeEventListener('mimo:workdir-changed', onWorkDirChanged)
@@ -878,60 +858,73 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
     }
     assistantMsg.blocks = blocks
   } else if (evt.type === 'reasoning') {
-    const isLogLine = isComputerUseLogLine(evt.data)
-    if (isLogLine) {
-      assistantMsg.isComputerUse = true
-    }
-
     if (!assistantMsg.reasoning) assistantMsg.reasoning = []
     const blocks = (assistantMsg.blocks || []).slice()
 
-    if (isLogLine) {
-      // 桌面操控：每条 JSONL/SSE 日志独立一段
+    if (assistantMsg.reasoning.length === 0) {
       assistantMsg.reasoning.push(evt.data)
-      blocks.push({ type: 'text', text: evt.data, phase: 'work' })
     } else {
-      if (assistantMsg.reasoning.length === 0) {
-        assistantMsg.reasoning.push(evt.data)
-      } else {
-        assistantMsg.reasoning[assistantMsg.reasoning.length - 1] += evt.data
-      }
-      const lastBlock = blocks[blocks.length - 1]
-      if (lastBlock && lastBlock.type === 'text' && lastBlock.phase === 'work') {
-        lastBlock.text = (lastBlock.text || '') + evt.data
-      } else {
-        blocks.push({ type: 'text', text: evt.data, phase: 'work' })
-      }
+      assistantMsg.reasoning[assistantMsg.reasoning.length - 1] += evt.data
+    }
+    const lastBlock = blocks[blocks.length - 1]
+    if (lastBlock && lastBlock.type === 'text' && lastBlock.phase === 'work') {
+      lastBlock.text = (lastBlock.text || '') + evt.data
+    } else {
+      blocks.push({ type: 'text', text: evt.data, phase: 'work' })
     }
     assistantMsg.blocks = blocks
   } else if (evt.type === 'tool_call') {
     if (evt.data.tool_name === 'cli_executor') {
       workspaceStore.focusConsole()
-      // 延迟发送 focus 事件，等 Vue 完成 DOM 更新（ConsolePanel 挂载并注册监听器）后再切换 Tab
       nextTick(() => {
         window.dispatchEvent(new CustomEvent('mimo:focus-console'))
       })
     }
     if (!assistantMsg.tools) assistantMsg.tools = []
-    const toolBlock: MessageBlock = {
-      type: 'tool',
-      tool_name: evt.data.tool_name,
-      tool_call_id: evt.data.tool_call_id,
-      status: 'running',
-      args: evt.data.args,
-      result: '',
-      error: '',
-      started_at: '',
-      ended_at: ''
-    }
-    assistantMsg.tools.push({
-      name: evt.data.tool_name,
-      status: 'running',
-      args: evt.data.args,
-      output: ''
-    })
     if (!assistantMsg.blocks) assistantMsg.blocks = []
-    assistantMsg.blocks = [...assistantMsg.blocks, toolBlock]
+    const toolCallId = String(evt.data.tool_call_id || '').trim()
+    // 查找已有的同 tool_call_id 的 tool block（避免危险命令确认重发时重复创建）
+    let existingBlockIdx = -1
+    if (toolCallId) {
+      existingBlockIdx = assistantMsg.blocks.findIndex(
+        (b) => b.type === 'tool' && b.tool_call_id === toolCallId
+      )
+    }
+    if (existingBlockIdx >= 0) {
+      // 更新已有 block 状态为 running
+      const blocks = assistantMsg.blocks.slice()
+      blocks[existingBlockIdx] = {
+        ...blocks[existingBlockIdx],
+        status: 'running',
+        args: evt.data.args || blocks[existingBlockIdx].args,
+        pending_confirmation: false,
+      }
+      assistantMsg.blocks = blocks
+      // 同步更新 tools
+      const lastTool = assistantMsg.tools[assistantMsg.tools.length - 1]
+      if (lastTool && lastTool.name === evt.data.tool_name) {
+        lastTool.status = 'running'
+      }
+    } else {
+      const toolBlock: MessageBlock = {
+        type: 'tool',
+        tool_name: evt.data.tool_name,
+        tool_call_id: evt.data.tool_call_id,
+        status: 'running',
+        args: evt.data.args,
+        result: '',
+        error: '',
+        started_at: '',
+        ended_at: ''
+      }
+      assistantMsg.tools.push({
+        name: evt.data.tool_name,
+        status: 'running',
+        args: evt.data.args,
+        output: ''
+      })
+      assistantMsg.blocks = [...assistantMsg.blocks, toolBlock]
+    }
   } else if (evt.type === 'tool_result') {
     if (!assistantMsg.tools) assistantMsg.tools = []
     const lastTool = assistantMsg.tools[assistantMsg.tools.length - 1]
@@ -1129,14 +1122,6 @@ watch(pendingToolConfirmation, (pending) => {
   }, 1000)
 })
 
-async function stopDesktopTask() {
-  try {
-    await stopComputerUse()
-  } catch (e) {
-    console.error('停止 desktop 操控失败', e)
-  }
-}
-
 async function stopGeneration() {
   if (pendingToolConfirmation.value) {
     dismissPendingConfirmations('已停止')
@@ -1145,12 +1130,8 @@ async function stopGeneration() {
   if (sessionId) {
     stopChat(sessionId).catch(() => {})
   }
-  if (isComputerUseActive.value) {
-    stopDesktopTask().catch(() => {})
-  }
   streamAbortController?.abort()
   isSending.value = false
-  isComputerUseActive.value = false
   const lastAssistant = [...messages.value].reverse().find((m) => m.role === 'assistant')
   if (lastAssistant) {
     lastAssistant.isLoading = false
@@ -1158,7 +1139,7 @@ async function stopGeneration() {
       for (const block of lastAssistant.blocks) {
         if (block.type === 'tool' && block.status === 'running') {
           block.status = 'error'
-          block.output = block.output || '已停止'
+          block.result = block.result || '已停止'
         }
       }
     }
@@ -1174,16 +1155,15 @@ async function stopGeneration() {
 }
 
 async function runAssistantStream(
-  stream: AsyncGenerator<ComputerUseStreamEvent | StreamEvent>,
+  stream: AsyncGenerator<StreamEvent>,
   assistantMsg: ChatMessage,
   assistantIdx: number,
   onMeta?: (sessionId: string) => void
 ) {
   try {
     for await (const event of stream) {
-      const meta = 'meta' in event ? event.meta : undefined
-      if (meta?.session_id) {
-        onMeta?.(meta.session_id)
+      if (event.meta?.session_id) {
+        onMeta?.(event.meta.session_id)
       }
       if (event.type === 'reasoning' && !event.data) continue
       if (event.type === 'content' && !event.data) continue
@@ -1212,7 +1192,7 @@ async function runAssistantStream(
       }
       messages.value[assistantIdx] = { ...assistantMsg }
       await nextTick()
-      scrollToBottom()
+      scheduleScrollToBottom()
     }
   } catch (e: any) {
     if (e?.name === 'AbortError') {
@@ -1225,106 +1205,12 @@ async function runAssistantStream(
   }
 }
 
-async function sendComputerUseMessage(objective: string) {
-  const userDisplay = buildComputerUseUserDisplay(objective)
-  messages.value.push({
-    role: 'user',
-    content: userDisplay,
-    slashCommand: '/computer-use',
-    slashBody: objective,
-  })
-  inputMessage.value = ''
-  clearAttachedImages()
-  clearComposerCommand()
-  hasActiveChat.value = true
-  isSending.value = true
-  isComputerUseActive.value = true
-
-  let assistantMsg: ChatMessage = {
-    role: 'assistant',
-    content: '',
-    isComputerUse: true,
-    reasoning: [],
-    tools: [],
-    blocks: [],
-    isLoading: true
-  }
-  messages.value.push(assistantMsg)
-  const assistantIdx = messages.value.length - 1
-
-  const isNewSession = !currentSessionId.value
-  const sessionIdAtSend = currentSessionId.value || crypto.randomUUID().replace(/-/g, '')
-  if (isNewSession) {
-    currentSessionId.value = sessionIdAtSend
-  }
-  const workDirAtSend = pendingWorkDir.value || workDir.value
-  if (workDirAtSend && isNewSession) {
-    pendingWorkDir.value = ''
-  }
-
-  await nextTick()
-  scrollToBottom()
-  if (isNewSession) {
-    await ensureSessionTitle(sessionIdAtSend, userDisplay, workDirAtSend)
-  } else {
-    window.dispatchEvent(new CustomEvent('mimo:refresh-sessions'))
-  }
-
-  streamAbortController = new AbortController()
-
-  try {
-    await runAssistantStream(
-      streamComputerUse(objective, sessionIdAtSend, workDirAtSend, userDisplay),
-      assistantMsg,
-      assistantIdx,
-      (sid) => { currentSessionId.value = sid }
-    )
-  } catch (e: any) {
-    if (e?.name !== 'AbortError') {
-      assistantMsg.content = `错误: ${e.message}`
-      messages.value[assistantIdx] = { ...assistantMsg }
-    }
-  } finally {
-    streamAbortController = null
-    assistantMsg.isLoading = false
-    messages.value[assistantIdx] = { ...assistantMsg }
-    isSending.value = false
-    isComputerUseActive.value = false
-    await nextTick()
-    scrollToBottom()
-    if (currentSessionId.value) {
-      await refreshAssistantSnapshot(currentSessionId.value, assistantIdx)
-    }
-    window.dispatchEvent(new CustomEvent('mimo:refresh-sessions'))
-  }
-}
-
 async function sendMessage() {
   if (isSending.value || !canSend.value) return
 
-  if (activeSlashCommand.value?.id === 'computer-use') {
-    const objective = commandObjective.value.trim()
-    if (!objective) {
-      alert('请描述要完成的桌面任务')
-      return
-    }
-    await sendComputerUseMessage(objective)
-    return
-  }
-
   const message = inputMessage.value.trim()
-  const imagesToSend = attachedImages.value.map((img) => img.dataUrl)
+  const imagesToSend = attachedImages.value.map((img) => img.data)
   if (!message && imagesToSend.length === 0) return
-
-  const computerObjective = parseComputerUseCommand(message)
-  if (computerObjective !== null) {
-    if (!computerObjective) {
-      alert('请在 /computer-use 后输入任务描述，例如：/computer-use 打开抖音')
-      return
-    }
-    await sendComputerUseMessage(computerObjective)
-    return
-  }
 
   const userDisplayContent = message || (imagesToSend.length > 1 ? `[${imagesToSend.length} 张图片]` : '[图片]')
 
@@ -1361,7 +1247,7 @@ async function sendMessage() {
   }
 
   await nextTick()
-  scrollToBottom()
+  scheduleScrollToBottom(true)
   if (isNewSession) {
     await ensureSessionTitle(
       sessionIdAtSend,
@@ -1373,19 +1259,15 @@ async function sendMessage() {
   }
 
   streamAbortController = new AbortController()
-  const signal = streamAbortController.signal
 
   try {
+    const chatMessages = messages.value
+      .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
+      .map((m) => ({ role: m.role, content: m.content }))
+
     const stream = imagesToSend.length > 0
-      ? streamVision(message, imagesToSend, sessionIdAtSend, workDirAtSend, signal)
-      : streamChat(
-          messages.value
-            .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
-            .map(m => ({ role: m.role, content: m.content })),
-          sessionIdAtSend,
-          workDirAtSend,
-          signal
-        )
+      ? streamVision(chatMessages, imagesToSend, sessionIdAtSend, workDirAtSend)
+      : streamChat(chatMessages, sessionIdAtSend, workDirAtSend)
 
     await runAssistantStream(stream, assistantMsg, assistantIdx, (sid) => {
       currentSessionId.value = sid
@@ -1405,7 +1287,7 @@ async function sendMessage() {
     messages.value[assistantIdx] = { ...assistantMsg }
     isSending.value = false
     await nextTick()
-    scrollToBottom()
+    scheduleScrollToBottom()
     if (currentSessionId.value) {
       await refreshAssistantSnapshot(currentSessionId.value, assistantIdx)
     }
@@ -1413,10 +1295,57 @@ async function sendMessage() {
   }
 }
 
-function scrollToBottom() {
+function markPointerActivity() {
+  lastPointerActivityAt = Date.now()
+  if (scrollIdleTimer) {
+    clearTimeout(scrollIdleTimer)
+    scrollIdleTimer = null
+  }
+}
+
+function onMessagesScroll() {
+  const el = messagesContainer.value
+  if (!el) return
+  const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  if (distanceFromBottom > 64) {
+    markPointerActivity()
+  }
+}
+
+function scrollToBottomImmediate() {
   if (messagesContainer.value) {
     messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
   }
+}
+
+function scheduleScrollToBottom(force = false) {
+  if (force) {
+    if (scrollIdleTimer) {
+      clearTimeout(scrollIdleTimer)
+      scrollIdleTimer = null
+    }
+    scrollToBottomImmediate()
+    return
+  }
+
+  const idleLongEnough = () => Date.now() - lastPointerActivityAt >= SCROLL_IDLE_MS
+
+  if (idleLongEnough()) {
+    scrollToBottomImmediate()
+    return
+  }
+
+  if (scrollIdleTimer) return
+
+  const wait = () => {
+    scrollIdleTimer = null
+    if (idleLongEnough()) {
+      scrollToBottomImmediate()
+    } else {
+      scrollIdleTimer = setTimeout(wait, SCROLL_IDLE_MS - (Date.now() - lastPointerActivityAt))
+    }
+  }
+  scrollIdleTimer = setTimeout(wait, SCROLL_IDLE_MS - (Date.now() - lastPointerActivityAt))
 }
 </script>
 

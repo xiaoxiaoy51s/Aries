@@ -107,9 +107,19 @@ class CLIExecutor:
             return target
         if target == self._allowed_dir or str(target).startswith(str(self._allowed_dir) + os.sep):
             return target
-        raise ValueError(
-            f"工作目录不在允许范围内。允许目录: {self._allowed_dir} 或 {self._user_home_dir}"
-        )
+        # 越界：返回 allowed_dir 作为默认，由 execute 方法判断危险
+        return self._allowed_dir
+
+    def _is_working_dir_outside_allowed(self, working_dir: str | None) -> bool:
+        """判断指定的工作目录是否超出允许范围。"""
+        if not working_dir or not working_dir.strip():
+            return False
+        target = Path(working_dir).resolve()
+        if target == self._user_home_dir or str(target).startswith(str(self._user_home_dir) + os.sep):
+            return False
+        if target == self._allowed_dir or str(target).startswith(str(self._allowed_dir) + os.sep):
+            return False
+        return True
 
     def _is_allowed_command(self, command: str) -> tuple[bool, str]:
         for pattern in self.ALLOWED_PATTERNS:
@@ -955,10 +965,7 @@ class CLIExecutor:
             if "--permission-mode" not in normalized_command and "-p" in normalized_command:
                 normalized_command = normalized_command.replace("-p", "-p --permission-mode bypassPermissions", 1)
         timeout = max(1, min(timeout, self.MAX_TIMEOUT_SECONDS))
-        try:
-            target_dir = self._resolve_target_dir(working_dir)
-        except ValueError:
-            target_dir = self._allowed_dir
+        target_dir = self._resolve_target_dir(working_dir)
         is_blocked, block_msg = self._is_blocked_command(normalized_command)
         if is_blocked:
             return {
@@ -970,6 +977,18 @@ class CLIExecutor:
                 "requires_confirmation": False,
             }
         danger_check = self._check_dangerous_command(normalized_command)
+        # 越界检查：工作目录超出允许范围也判定为危险
+        is_oob = self._is_working_dir_outside_allowed(working_dir)
+        if is_oob:
+            oob_info = "工作目录超出允许范围"
+            if danger_check:
+                danger_check["danger_types"].append(oob_info)
+                danger_check["danger_info"] = "、".join(danger_check["danger_types"])
+            else:
+                danger_check = {
+                    "danger_types": [oob_info],
+                    "danger_info": oob_info,
+                }
         if danger_check and not skip_confirmation:
             return {
                 "success": False,

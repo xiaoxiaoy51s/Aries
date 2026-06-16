@@ -18,10 +18,20 @@
 </template>
 
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import { RouterView } from 'vue-router'
 import { useSidebar } from '@/composables/useSidebar'
+import { useModelStore } from '@/stores/model'
 
 const { sidebarOpen, toggleSidebar } = useSidebar()
+
+const modelStore = useModelStore()
+const BACKEND_PORT = 30000
+modelStore.setBackendPort(BACKEND_PORT)
+
+onMounted(() => {
+  modelStore.loadModels().catch(() => {})
+})
 </script>
 
 <style>

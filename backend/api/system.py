@@ -1,10 +1,12 @@
-"""系统级操作：调出原生文件夹选择对话框。"""
+"""系统级操作：调出原生文件夹选择对话框、打开路径。"""
 import os
+import subprocess
 import sys
 import threading
+from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -14,6 +16,46 @@ class SelectDirectoryResponse(BaseModel):
     path: Optional[str] = None
     cancelled: bool = True
     error: Optional[str] = None
+
+
+class OpenPathRequest(BaseModel):
+    path: str
+
+
+class OpenPathResponse(BaseModel):
+    ok: bool
+    path: str
+    error: Optional[str] = None
+
+
+def _open_path_in_explorer(target: Path) -> None:
+    resolved = target.expanduser().resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"路径不存在: {resolved}")
+
+    open_target = resolved if resolved.is_dir() else resolved.parent
+    if sys.platform == "win32":
+        os.startfile(str(open_target))  # noqa: S606
+        return
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(open_target)])  # noqa: S603
+        return
+    subprocess.Popen(["xdg-open", str(open_target)])  # noqa: S603
+
+
+@router.post("/open-path", response_model=OpenPathResponse)
+def open_path(body: OpenPathRequest) -> OpenPathResponse:
+    """在系统文件管理器中打开文件或目录所在位置。"""
+    raw = (body.path or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="路径不能为空")
+    try:
+        _open_path_in_explorer(Path(raw))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        return OpenPathResponse(ok=False, path=raw, error=str(exc))
+    return OpenPathResponse(ok=True, path=raw)
 
 
 @router.post("/select-directory", response_model=SelectDirectoryResponse)

@@ -106,6 +106,21 @@ class UserFileManager:
 
         return target
 
+    def is_outside_work_dir(self, path: Path) -> bool:
+        """判断路径是否在当前工作目录之外。"""
+        try:
+            resolved = path.resolve()
+        except (OSError, RuntimeError, ValueError):
+            return True
+        allowed = self.user_dir.resolve()
+        if resolved == allowed or str(resolved).startswith(str(allowed) + os.sep):
+            return False
+        # 也允许默认工作目录下的路径（当使用自定义工作目录时）
+        default_wd = self.default_work_dir.resolve()
+        if resolved == default_wd or str(resolved).startswith(str(default_wd) + os.sep):
+            return False
+        return True
+
     def _is_allowed_path(self, path: Path) -> bool:
         try:
             path.resolve()

@@ -29,16 +29,6 @@
               </svg>
               账号绑定
             </li>
-            <li
-              :class="{ active: activeTab === 'privacy' }"
-              @click="activeTab = 'privacy'"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-              </svg>
-              隐私安全
-            </li>
           </ul>
         </nav>
 
@@ -210,7 +200,7 @@
             </div>
 
             <!-- 隐私安全 -->
-            <div v-if="activeTab === 'privacy'" class="settings-section">
+            <!-- <div v-if="activeTab === 'privacy'" class="settings-section">
               <p class="section-desc">控制 AI 执行危险操作时的确认策略，关闭后该类型操作将自动放行</p>
               <div class="privacy-options">
                 <div v-for="item in privacyStore.settings" :key="item.dangerType" class="privacy-item">
@@ -228,7 +218,7 @@
                   </label>
                 </div>
               </div>
-            </div>
+            </div> -->
           </div>
         </div>
 
@@ -265,7 +255,6 @@ defineEmits<{ close: [] }>()
 
 const modelStore = useModelStore()
 const accountStore = useAccountStore()
-const privacyStore = usePrivacyStore()
 
 // 弹窗打开时加载数据
 watch(() => props.visible, (val) => {
@@ -937,71 +926,8 @@ async function handleDelete(id: string) {
   color: var(--text-secondary);
 }
 
-/* 隐私安全 */
-.privacy-options {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.privacy-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-
-.privacy-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.privacy-title {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text);
-}
-
-.privacy-desc {
-  font-size: 12px;
+.qrcode-tip {
+  font-size: 13px;
   color: var(--text-secondary);
 }
-
-/* Switch */
-.switch {
-  position: relative;
-  display: inline-block;
-  width: 44px;
-  height: 24px;
-}
-
-.switch input { opacity: 0; width: 0; height: 0; }
-
-.slider {
-  position: absolute;
-  cursor: pointer;
-  inset: 0;
-  background-color: var(--border-strong);
-  transition: 0.3s;
-  border-radius: 24px;
-}
-
-.slider:before {
-  position: absolute;
-  content: "";
-  height: 18px;
-  width: 18px;
-  left: 3px;
-  bottom: 3px;
-  background-color: white;
-  transition: 0.3s;
-  border-radius: 50%;
-}
-
-.switch input:checked + .slider { background-color: #2d7a4f; }
-.switch input:checked + .slider:before { transform: translateX(20px); }
 </style>

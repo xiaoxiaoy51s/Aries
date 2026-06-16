@@ -161,7 +161,7 @@ import SkillsPage from './SkillsPage.vue'
 import AutomationPage from './AutomationPage.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import SearchDialog from '@/components/SearchDialog.vue'
-import { listProjects, updateSessionMeta } from '@/api/sessions'
+import { listProjects } from '@/api/sessions'
 import { useModelStore } from '@/stores/model'
 import { useSidebar } from '@/composables/useSidebar'
 
@@ -268,22 +268,20 @@ function createNewChatInProject(project: Project) {
 }
 
 async function openProjectDir(project: Project) {
+  if (!project.work_dir) return
   try {
     const baseUrl = modelStore.getBaseUrl()
-    const res = await fetch(`${baseUrl}/system/select-directory`, { method: 'POST' })
+    const res = await fetch(`${baseUrl}/system/open-path`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: project.work_dir }),
+    })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
-    if (data.cancelled || !data.path) return
     if (data.error) throw new Error(data.error)
-    // 更新该项目的 work_dir（把原项目下的 session 迁移到新目录）
-    for (const s of project.sessions) {
-      await updateSessionMeta(s.session_id, { work_dir: data.path })
-    }
-    await loadProjects()
-    window.dispatchEvent(new CustomEvent('mimo:workdir-changed', { detail: data.path }))
   } catch (e) {
-    console.error('选择目录失败', e)
-    alert('无法打开文件夹选择器：' + (e as Error).message)
+    console.error('打开文件夹失败', e)
+    alert('无法打开文件夹：' + (e as Error).message)
   }
 }
 

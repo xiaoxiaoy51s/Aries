@@ -3,6 +3,7 @@ import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
 
 export default defineConfig({
+  base: './',
   plugins: [vue()],
   resolve: {
     alias: {
@@ -17,6 +18,10 @@ export default defineConfig({
         changeOrigin: true,
       },
       '/chat': {
+        target: 'http://127.0.0.1:30000',
+        changeOrigin: true,
+      },
+      '/system': {
         target: 'http://127.0.0.1:30000',
         changeOrigin: true,
       },

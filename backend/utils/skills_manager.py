@@ -44,6 +44,7 @@ class SkillEntry:
             "path": str(self.skill_path),
             "skill_md_path": str(self.skill_md_path),
             "enabled": self.enabled,
+            "group": "personal",
         }
 
 
@@ -307,6 +308,13 @@ def discover_skills() -> list[SkillEntry]:
     return entries
 
 
+def get_skill_by_folder_name(folder_name: str) -> SkillEntry | None:
+    for entry in discover_skills():
+        if entry.folder_name == folder_name:
+            return entry
+    return None
+
+
 def get_skill_by_name(name: str, *, enabled_only: bool = True) -> SkillEntry | None:
     for entry in discover_skills():
         if enabled_only and not entry.enabled:
@@ -420,6 +428,15 @@ def get_all_tool_definitions() -> list[dict]:
         except Exception as e:
             print(f"Failed to load tool definition for {entry.name}: {e}")
 
+    # 3. 加载用户配置的 MCP 插件工具（仅 enabled 的服务）
+    try:
+        from utils.mcp_runtime import get_mcp_tool_definitions
+        mcp_tools = get_mcp_tool_definitions()
+        if mcp_tools:
+            tools.extend(mcp_tools)
+    except Exception as e:
+        print(f"Failed to load MCP tool definitions: {e}")
+
     return tools
 
 
@@ -432,6 +449,19 @@ def execute_tool(
 ) -> dict[str, Any]:
     if arguments is None:
         arguments = {}
+
+    # 0. MCP 插件工具（来自 ~/.MIMOClaw/mcp.json 中已启用的服务）
+    try:
+        from utils.mcp_runtime import execute_mcp_tool
+        mcp_result = execute_mcp_tool(tool_name, arguments)
+        if mcp_result is not None:
+            return mcp_result
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "output": f"执行 MCP 工具 {tool_name} 失败: {str(e)}",
+        }
 
     # 1. 先检查是否是 agent_tools 中的核心基础工具
     if tool_name in CORE_TOOL_NAMES:

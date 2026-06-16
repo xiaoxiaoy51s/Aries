@@ -10,6 +10,8 @@ venv/
 
 # Build
 frontend/dist/
+frontend/release/
+backend/dist/
 *.log
 
 # Environment & local data
@@ -23,3 +25,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Large binary files
+*.exe

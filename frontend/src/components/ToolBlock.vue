@@ -123,8 +123,7 @@ const isCliExecutor = computed(() => {
 
 function openTerminal() {
   const workspace = useWorkspaceStore()
-  workspace.openPanel('console')
-  window.dispatchEvent(new CustomEvent('mimo:focus-console'))
+  workspace.focusConsole()
 }
 </script>
 

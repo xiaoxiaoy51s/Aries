@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from utils.skills_manager import discover_skills, set_skill_enabled
+from utils.skills_manager import discover_skills, get_skill_by_folder_name, set_skill_enabled
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
@@ -15,6 +15,23 @@ async def list_skills():
     """返回所有技能列表（含启用状态）。"""
     entries = discover_skills()
     return {"skills": [e.to_api_dict() for e in entries]}
+
+
+@router.get("/{folder_name}")
+async def get_skill_detail(folder_name: str):
+    """返回技能详情（含 SKILL.md 全文）。"""
+    entry = get_skill_by_folder_name(folder_name)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"技能 {folder_name} 不存在")
+    return {
+        "folder_name": entry.folder_name,
+        "name": entry.name,
+        "description": entry.description,
+        "enabled": entry.enabled,
+        "skill_path": str(entry.skill_path),
+        "skill_md_path": str(entry.skill_md_path),
+        "content": entry.content,
+    }
 
 
 @router.put("/{folder_name}/status")

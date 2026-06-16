@@ -318,6 +318,7 @@ class FileManagerTool:
         end_line: int | None = None,
         fuzzy_search: bool = True,
         use_today: bool = True,
+        skip_confirmation: bool = False,
     ) -> dict[str, Any]:
         """Read file content with optional line range."""
         normalized_path = str(file_path or "").strip()
@@ -327,6 +328,9 @@ class FileManagerTool:
             target = self.manager.resolve_file_path(normalized_path, use_today=use_today)
         except ValueError as exc:
             return self._error_response(str(exc), normalized_path)
+        oob = self._check_out_of_bounds(target, skip_confirmation)
+        if oob:
+            return oob
         if not target.exists():
             if fuzzy_search:
                 similar = self._find_similar_files(normalized_path)
@@ -391,6 +395,7 @@ class FileManagerTool:
         create_dirs: bool = True,
         encoding: str = "utf-8",
         use_today: bool = True,
+        skip_confirmation: bool = False,
     ) -> dict[str, Any]:
         """Write content to file."""
         normalized_path = str(file_path or "").strip()
@@ -401,6 +406,9 @@ class FileManagerTool:
             target = self.manager.resolve_file_path(normalized_path, use_today=use_today)
         except ValueError as exc:
             return self._error_response(str(exc), normalized_path)
+        oob = self._check_out_of_bounds(target, skip_confirmation)
+        if oob:
+            return oob
         parent = target.parent
         if not parent.exists():
             if not create_dirs:
@@ -434,6 +442,7 @@ class FileManagerTool:
         occurrence: int = -1,
         encoding: str = "utf-8",
         use_today: bool = True,
+        skip_confirmation: bool = False,
     ) -> dict[str, Any]:
         """Edit specific parts of a file."""
         normalized_path = str(file_path or "").strip()
@@ -443,6 +452,9 @@ class FileManagerTool:
             target = self.manager.resolve_file_path(normalized_path, use_today=use_today)
         except ValueError as exc:
             return self._error_response(str(exc), normalized_path)
+        oob = self._check_out_of_bounds(target, skip_confirmation)
+        if oob:
+            return oob
         if not target.exists():
             return self._error_response("文件不存在", normalized_path)
         try:
@@ -520,9 +532,15 @@ class FileManagerTool:
         *,
         subdir: str = "",
         pattern: str = "*",
+        skip_confirmation: bool = False,
         **extra: Any,
     ) -> dict[str, Any]:
         """List files in directory."""
+        # 检查列出的目录是否超出工作目录
+        target_dir = self.manager.resolve_list_dir(subdir if subdir else None)
+        oob = self._check_out_of_bounds(target_dir, skip_confirmation)
+        if oob:
+            return oob
         if "pattenrn" in extra and pattern == "*":
             pattern = str(extra.pop("pattenrn") or "*")
         if "patern" in extra and pattern == "*":
@@ -590,6 +608,7 @@ class FileManagerTool:
         use_regex: bool = False,
         case_sensitive: bool = False,
         exclude_dirs: list[str] | None = None,
+        skip_confirmation: bool = False,
     ) -> dict[str, Any]:
         """Search for content across files."""
         if not keyword:
@@ -616,6 +635,9 @@ class FileManagerTool:
                 "total_matches": 0,
                 "files_matched": 0,
             }
+        oob = self._check_out_of_bounds(search_path, skip_confirmation)
+        if oob:
+            return oob
         if not search_path.exists():
             return {
                 "success": False,
@@ -723,6 +745,26 @@ class FileManagerTool:
             "matches": matches,
             "total_matches": total_matches,
             "files_matched": files_matched,
+        }
+
+    def _check_out_of_bounds(self, target_path: Path, skip_confirmation: bool = False) -> dict[str, Any] | None:
+        """检查路径是否超出工作目录；超出时返回危险确认响应，未超出返回 None。"""
+        if skip_confirmation or not self.manager.is_outside_work_dir(target_path):
+            return None
+        return {
+            "success": False,
+            "error": "Confirmation required",
+            "output": (
+                f"文件操作超出工作目录范围，需要确认\n"
+                f"目标路径: {target_path}\n"
+                f"工作目录: {self.base_dir}\n"
+                f"原因: 文件操作超出当前工作目录\n请由用户手动确认后再继续执行。"
+            ),
+            "file_path": str(target_path),
+            "working_dir": str(self.base_dir),
+            "requires_confirmation": True,
+            "danger_types": ["文件操作超出工作目录"],
+            "danger_info": "文件操作超出工作目录",
         }
 
     def _error_response(self, error: str, file_path: str) -> dict[str, Any]:

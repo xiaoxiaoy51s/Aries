@@ -13,24 +13,33 @@ export interface ChatMessage {
 export interface StreamEvent {
   type: 'content' | 'reasoning' | 'tool_call' | 'tool_result' | 'confirmation_required'
   data: any
+  meta?: { session_id?: string }
 }
 
-export async function* streamChat(
-  messages: ChatMessage[],
-  sessionId?: string,
-  workDir?: string
-): AsyncGenerator<StreamEvent> {
-  const res = await fetch(`${getBaseUrl()}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      messages,
-      session_id: sessionId,
-      work_dir: workDir || undefined,
-      stream: true,
-    }),
-  })
+function jsonToStreamEvent(json: Record<string, unknown>): StreamEvent | null {
+  if (json.tool_call) {
+    return { type: 'tool_call', data: json.tool_call }
+  }
+  if (json.tool_result) {
+    return { type: 'tool_result', data: json.tool_result }
+  }
+  if (json.confirmation_required) {
+    return { type: 'confirmation_required', data: json.confirmation_required }
+  }
 
+  const delta = (json.choices as Array<{ delta?: Record<string, unknown> }> | undefined)?.[0]?.delta
+  if (!delta) return null
+
+  if (delta.reasoning_content) {
+    return { type: 'reasoning', data: delta.reasoning_content }
+  }
+  if (delta.content) {
+    return { type: 'content', data: delta.content }
+  }
+  return null
+}
+
+async function* parseSseResponse(res: Response): AsyncGenerator<StreamEvent> {
   if (!res.ok) {
     const err = await res.text()
     throw new Error(err || '请求失败')
@@ -49,46 +58,37 @@ export async function* streamChat(
     const lines = buffer.split('\n')
     buffer = lines.pop() || ''
     for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        const data = line.slice(6)
-        if (data === '[DONE]') return
-        try {
-          const json = JSON.parse(data)
-          
-          // 检查是否是工具调用事件
-          if (json.tool_call) {
-            yield { type: 'tool_call', data: json.tool_call }
-            continue
-          }
-          
-          // 检查是否是工具结果事件
-          if (json.tool_result) {
-            yield { type: 'tool_result', data: json.tool_result }
-            continue
-          }
-          
-          // 检查是否是确认事件
-          if (json.confirmation_required) {
-            yield { type: 'confirmation_required', data: json.confirmation_required }
-            continue
-          }
-          
-          // 检查是否是推理内容
-          const delta = json.choices?.[0]?.delta
-          if (delta) {
-            if (delta.reasoning_content) {
-              yield { type: 'reasoning', data: delta.reasoning_content }
-            }
-            if (delta.content) {
-              yield { type: 'content', data: delta.content }
-            }
-          }
-        } catch {
-          // ignore invalid json
-        }
+      if (!line.startsWith('data: ')) continue
+      const data = line.slice(6)
+      if (data === '[DONE]') return
+      try {
+        const json = JSON.parse(data) as Record<string, unknown>
+        const event = jsonToStreamEvent(json)
+        if (event) yield event
+      } catch {
+        // ignore invalid json
       }
     }
   }
+}
+
+export async function* streamChat(
+  messages: ChatMessage[],
+  sessionId?: string,
+  workDir?: string
+): AsyncGenerator<StreamEvent> {
+  const res = await fetch(`${getBaseUrl()}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages,
+      session_id: sessionId,
+      work_dir: workDir || undefined,
+      stream: true,
+    }),
+  })
+
+  yield* parseSseResponse(res)
 }
 
 export async function* streamVision(
@@ -97,8 +97,22 @@ export async function* streamVision(
   sessionId?: string,
   workDir?: string
 ): AsyncGenerator<StreamEvent> {
-  // stub: fallback to streamChat
-  yield* streamChat(messages, sessionId, workDir)
+  const lastUser = [...messages].reverse().find((m) => m.role === 'user')
+  const text = lastUser?.content?.trim() || '请描述这张图片的内容'
+
+  const res = await fetch(`${getBaseUrl()}/chat/vision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text,
+      images,
+      session_id: sessionId,
+      work_dir: workDir || undefined,
+      stream: true,
+    }),
+  })
+
+  yield* parseSseResponse(res)
 }
 
 export async function stopChat(sessionId: string): Promise<void> {
