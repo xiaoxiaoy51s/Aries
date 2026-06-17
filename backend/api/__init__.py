@@ -9,3 +9,4 @@ from api.skills import router as skills_router
 from api.plugins import router as plugins_router
 from api.upload import router as upload_router
 from api.debug import router as debug_router
+from api.path_permissions import router as path_permissions_router

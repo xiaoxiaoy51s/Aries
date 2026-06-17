@@ -2,7 +2,6 @@
 import os
 import subprocess
 import sys
-import threading
 from pathlib import Path
 from typing import Optional
 
@@ -60,44 +59,88 @@ def open_path(body: OpenPathRequest) -> OpenPathResponse:
 
 @router.post("/select-directory", response_model=SelectDirectoryResponse)
 def select_directory() -> SelectDirectoryResponse:
-    """弹出系统原生文件夹选择对话框（Windows / macOS / Linux）。
-
-    使用 tkinter 在子线程中调用，避免阻塞 FastAPI 事件循环。
-    tkinter 是 Python 标准库，无需额外安装。
-    """
+    """弹出系统原生文件夹选择对话框（Windows / macOS / Linux）。"""
+    import platform
     result = {"path": None, "cancelled": True, "error": None}
 
-    def _ask():
+    # Windows 使用 PowerShell 弹出文件夹选择对话框
+    if platform.system() == "Windows":
         try:
-            import tkinter as tk
-            from tkinter import filedialog
-
-            # 隐藏主窗口
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes("-topmost", True)
-            try:
-                # Windows 上让对话框置顶
-                root.wm_attributes("-topmost", 1)
-            except Exception:
-                pass
-
-            path = filedialog.askdirectory(
-                title="选择工作目录",
-                mustexist=True,
+            # 使用 PowerShell 的 System.Windows.Forms 来选择文件夹，并置顶显示
+            # RootFolder 设置为 "我的电脑"，可以看到所有磁盘
+            ps_script = '''
+Add-Type -AssemblyName System.Windows.Forms
+$form = New-Object System.Windows.Forms.Form
+$form.TopMost = $true
+$form.WindowState = "Minimized"
+$form.Show()
+$form.Hide()
+$folder = New-Object System.Windows.Forms.FolderBrowserDialog
+$folder.Description = "选择文件夹"
+$folder.ShowNewFolderButton = $true
+$folder.RootFolder = "MyComputer"
+$result = $folder.ShowDialog($form)
+$form.Close()
+if ($result -eq "OK") {
+    Write-Output $folder.SelectedPath
+}
+'''
+            proc = subprocess.run(
+                ["powershell", "-Command", ps_script],
+                capture_output=True,
+                text=True,
+                timeout=120,
             )
-            if path:
-                result["path"] = os.path.abspath(path)
+            output = proc.stdout.strip()
+            if output:
+                result["path"] = os.path.abspath(output)
                 result["cancelled"] = False
-
-            root.destroy()
+            if proc.stderr:
+                result["error"] = proc.stderr.strip()
+        except subprocess.TimeoutExpired:
+            result["error"] = "选择超时"
         except Exception as e:
             result["error"] = str(e)
-            print(f"[system] select_directory failed: {e}", file=sys.stderr)
+        return SelectDirectoryResponse(**result)
 
-    # 必须在子线程跑 tkinter，避免阻塞
-    t = threading.Thread(target=_ask, daemon=True)
-    t.start()
-    t.join(timeout=600)  # 10 分钟超时
+    # macOS / Linux 使用 zenity 或 tkinter
+    try:
+        if platform.system() == "Linux":
+            # Linux 尝试使用 zenity
+            proc = subprocess.run(
+                ["zenity", "--file-selection", "--directory", "--title=选择文件夹"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                result["path"] = os.path.abspath(proc.stdout.strip())
+                result["cancelled"] = False
+            return SelectDirectoryResponse(**result)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        result["error"] = str(e)
+
+    # 最后尝试 tkinter（macOS 或 Linux 没有 zenity）
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+
+        path = filedialog.askdirectory(
+            title="选择文件夹",
+            mustexist=True,
+        )
+        if path:
+            result["path"] = os.path.abspath(path)
+            result["cancelled"] = False
+
+        root.destroy()
+    except Exception as e:
+        result["error"] = str(e)
 
     return SelectDirectoryResponse(**result)

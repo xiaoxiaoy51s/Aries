@@ -149,6 +149,22 @@ class SessionLogger:
     def finalize(self) -> None:
         self.flush_reasoning_segment()
 
+    def write_error_event(
+        self,
+        error_type: str,
+        error_msg: str,
+        details: str = "",
+    ) -> None:
+        """记录错误事件（如 API 错误、超时等）。"""
+        self.flush_reasoning_segment()
+        _append_event(self.path, {
+            "type": "error_event",
+            "error_type": error_type,
+            "error_msg": error_msg,
+            "details": details,
+            "timestamp": _utc_now(),
+        })
+
     def _tool_summary(self) -> str:
         if not self._tool_log:
             return ""

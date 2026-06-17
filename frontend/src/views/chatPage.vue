@@ -680,11 +680,22 @@ async function loadMessageSnapshot(
             blocks.push({ type: 'text', text: event.content, phase: 'answer' })
           }
           break
+
+        case 'error':
+          // 错误事件：显示错误信息
+          blocks.push({
+            type: 'text',
+            text: event.content,
+            phase: 'answer',
+            error: event.content,
+          })
+          break
       }
     }
 
     const reasoningSegments = parsed.filter(e => e.type === 'reasoning').map(e => e.content)
     const answerText = parsed.filter(e => e.type === 'assistant_text').map(e => e.content).join('')
+    const errorText = parsed.find(e => e.type === 'error')?.content || ''
 
     console.log(`[snapshot] 消息 ${messageId} 构建了 ${blocks.length} 个 blocks（${reasoningSegments.length} 段思考）`)
 
@@ -711,7 +722,7 @@ async function loadMessageSnapshot(
           }
           return acc
         }, []),
-      content: answerText || prev.content,
+      content: answerText || errorText || prev.content,
       hasSnapshot: true,
     }
   } catch (err) {
@@ -993,6 +1004,19 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
       }
       assistantMsg.blocks = blocks
     }
+  } else if (evt.type === 'error') {
+    // 处理错误事件（如 API 错误、黑名单拦截等）
+    assistantMsg.isLoading = false
+    const errorMsg = typeof evt.data === 'string' ? evt.data : JSON.stringify(evt.data)
+    assistantMsg.content = errorMsg
+    if (!assistantMsg.blocks) assistantMsg.blocks = []
+    // 添加错误块，用 error 属性标记
+    assistantMsg.blocks.push({
+      type: 'text',
+      text: errorMsg,
+      phase: 'answer',
+      error: errorMsg,
+    })
   }
 }
 

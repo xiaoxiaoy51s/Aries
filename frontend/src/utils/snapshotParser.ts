@@ -3,13 +3,14 @@
  */
 
 export interface SnapshotEvent {
-  type: 'reasoning' | 'tool_call' | 'tool_result' | 'assistant_text'
+  type: 'reasoning' | 'tool_call' | 'tool_result' | 'assistant_text' | 'error'
   content: string
   toolName?: string
   toolCallId?: string
   args?: Record<string, any>
   status?: string
   timestamp?: string
+  errorType?: string
 }
 
 /**
@@ -91,6 +92,14 @@ function convertEvent(json: any): SnapshotEvent | null {
         timestamp: json.timestamp
       }
 
+    case 'error_event':
+      return {
+        type: 'error',
+        content: json.error_msg || json.error || '',
+        errorType: json.error_type,
+        timestamp: json.timestamp
+      }
+
     default:
       return null
   }
@@ -104,10 +113,12 @@ export function eventsToRenderableContent(events: SnapshotEvent[]): {
   reasoning: string[]
   tools: Array<{ name: string; status: string; args?: any; output: string }>
   assistantText: string
+  errorText: string
 } {
   const reasoning: string[] = []
   const tools: Array<{ name: string; status: string; args?: any; output: string }> = []
   let assistantText = ''
+  let errorText = ''
 
   let currentTool: typeof tools[0] | null = null
 
@@ -145,13 +156,18 @@ export function eventsToRenderableContent(events: SnapshotEvent[]): {
       case 'assistant_text':
         assistantText += event.content
         break
+
+      case 'error':
+        errorText = event.content
+        break
     }
   }
 
   return {
     reasoning,
     tools,
-    assistantText
+    assistantText,
+    errorText
   }
 }
 

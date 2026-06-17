@@ -88,6 +88,18 @@
               @click="selectSession(session.session_id)"
             >
               <span class="session-title">{{ session.title || '空对话' }}</span>
+              <span class="session-actions">
+                <span class="session-btn" title="重命名" @click.stop="renameSession(session)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+                  </svg>
+                </span>
+                <span class="session-btn session-btn-danger" title="删除" @click.stop="deleteSessionItem(session)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                  </svg>
+                </span>
+              </span>
             </li>
           </ul>
         </div>
@@ -151,6 +163,42 @@
 
     <!-- 搜索弹窗 -->
     <SearchDialog :visible="showSearch" @close="showSearch = false" @select="onSearchSelect" />
+
+    <!-- 重命名弹窗 -->
+    <div v-if="showRenameModal" class="modal-overlay" @click="cancelRename">
+      <div class="modal-dialog" @click.stop>
+        <div class="modal-header">重命名会话</div>
+        <div class="modal-body">
+          <input
+            v-model="renameInput"
+            type="text"
+            class="modal-input"
+            placeholder="请输入新标题"
+            @keydown.enter="confirmRename"
+            @keydown.esc="cancelRename"
+            ref="renameInputRef"
+          />
+        </div>
+        <div class="modal-footer">
+          <button class="modal-btn modal-btn-cancel" @click="cancelRename">取消</button>
+          <button class="modal-btn modal-btn-confirm" @click="confirmRename">确定</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 删除确认弹窗 -->
+    <div v-if="showDeleteModal" class="modal-overlay" @click="cancelDelete">
+      <div class="modal-dialog" @click.stop>
+        <div class="modal-header">确认删除</div>
+        <div class="modal-body">
+          <p>确定删除对话「{{ sessionToDelete?.title || '空对话' }}」?</p>
+        </div>
+        <div class="modal-footer">
+          <button class="modal-btn modal-btn-cancel" @click="cancelDelete">取消</button>
+          <button class="modal-btn modal-btn-danger" @click="confirmDelete">删除</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -161,7 +209,7 @@ import SkillsPage from './SkillsPage.vue'
 import AutomationPage from './AutomationPage.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import SearchDialog from '@/components/SearchDialog.vue'
-import { listProjects } from '@/api/sessions'
+import { listProjects, updateSessionMeta, deleteSession } from '@/api/sessions'
 import { useModelStore } from '@/stores/model'
 import { useSidebar } from '@/composables/useSidebar'
 
@@ -189,6 +237,16 @@ const sessionIdToLoad = ref<string | null>(null)
 const projects = ref<Project[]>([])
 const currentProject = ref<Project | null>(null)
 const expandedProjects = ref<Set<string>>(new Set())
+
+// 重命名弹窗状态
+const showRenameModal = ref(false)
+const renameInput = ref('')
+const sessionToRename = ref<ProjectSession | null>(null)
+const renameInputRef = ref<HTMLInputElement | null>(null)
+
+// 删除弹窗状态
+const showDeleteModal = ref(false)
+const sessionToDelete = ref<ProjectSession | null>(null)
 
 // 三个平台固定的固定 session id（与后端 platform_chat.session_id_for 对应）
 const platformSessions = [
@@ -306,6 +364,66 @@ function onOpenSession(e: Event) {
 
 function onSearchSelect(sessionId: string) {
   selectSession(sessionId)
+}
+
+function renameSession(session: ProjectSession) {
+  sessionToRename.value = session
+  renameInput.value = session.title || ''
+  showRenameModal.value = true
+  nextTick(() => {
+    renameInputRef.value?.focus()
+    renameInputRef.value?.select()
+  })
+}
+
+async function confirmRename() {
+  if (!sessionToRename.value) return
+  const trimmed = renameInput.value.trim()
+  if (!trimmed || trimmed === sessionToRename.value.title) {
+    cancelRename()
+    return
+  }
+  try {
+    await updateSessionMeta(sessionToRename.value.session_id, { title: trimmed })
+    sessionToRename.value.title = trimmed
+    showRenameModal.value = false
+    sessionToRename.value = null
+  } catch (e) {
+    console.error('重命名失败', e)
+    alert('重命名失败：' + (e as Error).message)
+  }
+}
+
+function cancelRename() {
+  showRenameModal.value = false
+  sessionToRename.value = null
+}
+
+function deleteSessionItem(session: ProjectSession) {
+  sessionToDelete.value = session
+  showDeleteModal.value = true
+}
+
+async function confirmDelete() {
+  if (!sessionToDelete.value) return
+  try {
+    await deleteSession(sessionToDelete.value.session_id)
+    // 如果删除的是当前会话，清空选中状态
+    if (currentSessionId.value === sessionToDelete.value.session_id) {
+      currentSessionId.value = null
+    }
+    showDeleteModal.value = false
+    sessionToDelete.value = null
+    await loadProjects()
+  } catch (e) {
+    console.error('删除失败', e)
+    alert('删除失败：' + (e as Error).message)
+  }
+}
+
+function cancelDelete() {
+  showDeleteModal.value = false
+  sessionToDelete.value = null
 }
 </script>
 
@@ -533,6 +651,38 @@ function onSearchSelect(sessionId: string) {
   text-overflow: ellipsis;
 }
 
+.session-actions {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.session-sub:hover .session-actions {
+  display: inline-flex;
+}
+
+.session-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.session-btn:hover {
+  background: var(--bg-panel);
+  color: var(--text);
+}
+
+.session-btn-danger:hover {
+  color: #e5484d;
+}
+
 .session-list {
   list-style: none;
   margin: 4px 0 0;
@@ -635,5 +785,97 @@ function onSearchSelect(sessionId: string) {
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
+}
+
+/* —— 模态框 —— */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-dialog {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 320px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.modal-header {
+  padding: 16px 20px;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-body {
+  padding: 20px;
+  color: var(--text);
+}
+
+.modal-body p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.modal-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 14px;
+  background: var(--bg-sidebar);
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.modal-input:focus {
+  border-color: var(--accent);
+}
+
+.modal-footer {
+  padding: 12px 20px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.modal-btn {
+  padding: 6px 16px;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  border: none;
+  transition: opacity 0.2s;
+}
+
+.modal-btn:hover {
+  opacity: 0.85;
+}
+
+.modal-btn-cancel {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.modal-btn-confirm {
+  background: #1f2937;
+  color: #ffffff;
+}
+
+.modal-btn-danger {
+  background: #1f2937;
+  color: #ffffff;
 }
 </style>

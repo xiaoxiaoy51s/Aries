@@ -27,7 +27,7 @@ export async function listSkills(): Promise<SkillItem[]> {
 }
 
 export async function updateSkillStatus(folder_name: string, enabled: boolean): Promise<void> {
-  const res = await fetch(`/api/skills/${encodeURIComponent(folder_name)}/status`, {
+  const res = await fetch(`${getBaseUrl()}/api/skills/${encodeURIComponent(folder_name)}/status`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled }),
@@ -49,7 +49,7 @@ export interface SkillDetail {
 }
 
 export async function getSkillDetail(folder_name: string): Promise<SkillDetail> {
-  const res = await fetch(`/api/skills/${encodeURIComponent(folder_name)}`)
+  const res = await fetch(`${getBaseUrl()}/api/skills/${encodeURIComponent(folder_name)}`)
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
     throw new Error(data.detail || '加载技能详情失败')

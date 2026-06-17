@@ -751,6 +751,32 @@ class FileManagerTool:
         """检查路径是否超出工作目录；超出时返回危险确认响应，未超出返回 None。"""
         if skip_confirmation or not self.manager.is_outside_work_dir(target_path):
             return None
+
+        # 检查黑白名单权限
+        from db.path_permissions import check_path_permission
+        perm_result = check_path_permission(str(target_path))
+        if perm_result:
+            if perm_result.get("allowed"):
+                # 白名单命中，直接放行
+                return None
+            else:
+                # 黑名单命中，直接拒绝
+                return {
+                    "success": False,
+                    "error": "Path blocked",
+                    "output": (
+                        f"路径已被禁止访问\n"
+                        f"目标路径: {target_path}\n"
+                        f"原因: {perm_result.get('reason', '黑名单限制')}\n"
+                        f"用户已将该路径加入黑名单，禁止 AI 访问。"
+                    ),
+                    "file_path": str(target_path),
+                    "working_dir": str(self.base_dir),
+                    "requires_confirmation": False,
+                    "danger_types": ["路径在黑名单中"],
+                    "danger_info": perm_result.get("reason", "黑名单限制"),
+                }
+
         return {
             "success": False,
             "error": "Confirmation required",

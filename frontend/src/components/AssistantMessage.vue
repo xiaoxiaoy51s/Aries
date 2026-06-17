@@ -18,10 +18,11 @@
         <div
           v-else-if="block.type === 'text' || block.type === 'summary'"
           class="text-block"
+          :class="{ 'error-block': block.error }"
         >
           <MarkdownRenderer 
             :content="block.text || ''" 
-            :text-color="block.phase === 'work' ? '#64748b' : textColor" 
+            :text-color="block.error ? '#ef4444' : (block.phase === 'work' ? '#64748b' : textColor)" 
             :font-size="block.phase === 'work' ? Math.max(12, fontSize - 2) : fontSize" 
             :show-actions="block.phase !== 'work' && blockIndex === lastTextBlockIndex" 
             :is-streaming="isLoading"
@@ -326,6 +327,14 @@ const lastTextBlockIndex = computed(() => {
 /* 文本块样式（blocks 方式） */
 .text-block {
   width: 100%;
+}
+
+.error-block {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 8px 0;
 }
 
 /* 加载动画 */

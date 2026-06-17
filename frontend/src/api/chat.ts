@@ -11,12 +11,16 @@ export interface ChatMessage {
 }
 
 export interface StreamEvent {
-  type: 'content' | 'reasoning' | 'tool_call' | 'tool_result' | 'confirmation_required'
+  type: 'content' | 'reasoning' | 'tool_call' | 'tool_result' | 'confirmation_required' | 'error'
   data: any
   meta?: { session_id?: string }
 }
 
 function jsonToStreamEvent(json: Record<string, unknown>): StreamEvent | null {
+  // 处理错误事件
+  if (json.error) {
+    return { type: 'error', data: json.error }
+  }
   if (json.tool_call) {
     return { type: 'tool_call', data: json.tool_call }
   }

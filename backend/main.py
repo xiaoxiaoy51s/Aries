@@ -12,7 +12,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-from api import config_router, chat_router, upload_router, skills_router, plugins_router, sessions_router, debug_router, scheduled_tasks_router, platforms_router, system_router
+from api import config_router, chat_router, upload_router, skills_router, plugins_router, sessions_router, debug_router, scheduled_tasks_router, platforms_router, system_router, path_permissions_router
 from db.database import init_database
 from utils.scheduler import run_scheduler
 
@@ -89,6 +89,7 @@ app.include_router(debug_router)
 app.include_router(scheduled_tasks_router)
 app.include_router(platforms_router)
 app.include_router(system_router)
+app.include_router(path_permissions_router)
 
 
 @app.get("/")

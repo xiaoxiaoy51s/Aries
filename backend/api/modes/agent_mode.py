@@ -313,7 +313,11 @@ async def stream_agent_mode(
                     ) as response:
                         if response.status_code != 200:
                             error_text = await response.aread()
-                            yield f"data: {json.dumps({'error': error_text.decode()})}\n\n"
+                            error_msg = error_text.decode()
+                            # 记录 API 错误到数据库
+                            if logger:
+                                logger.write_error_event("api_error", error_msg)
+                            yield f"data: {json.dumps({'error': error_msg})}\n\n"
                             return
 
                         async for line in response.aiter_lines():
@@ -392,10 +396,14 @@ async def stream_agent_mode(
                         f"模型 API 读取超时（{int(LLM_READ_TIMEOUT_SECONDS)} 秒内无新数据）。"
                         "常见于 Playwright 等多轮工具任务后模型响应较慢，请稍后重试或拆分任务。"
                     )
+                    if logger:
+                        logger.write_error_event("timeout", error_msg)
                     yield f"data: {json.dumps({'error': error_msg}, ensure_ascii=False)}\n\n"
                     break
                 except httpx.HTTPError as exc:
                     error_msg = f"模型 API 请求失败：{exc}"
+                    if logger:
+                        logger.write_error_event("http_error", error_msg)
                     yield f"data: {json.dumps({'error': error_msg}, ensure_ascii=False)}\n\n"
                     break
 

@@ -19,3 +19,19 @@ export async function openPath(path: string): Promise<void> {
     throw new Error(data.error || '打开路径失败')
   }
 }
+
+export interface SelectDirectoryResult {
+  path: string | null
+  cancelled: boolean
+  error: string | null
+}
+
+export async function selectDirectory(): Promise<SelectDirectoryResult> {
+  const res = await fetch(`${getBaseUrl()}/system/select-directory`, {
+    method: 'POST',
+  })
+  if (!res.ok) {
+    throw new Error('选择目录失败')
+  }
+  return res.json()
+}

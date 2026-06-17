@@ -107,8 +107,21 @@ def init_database():
         CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS path_permissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL UNIQUE,
+            type TEXT NOT NULL CHECK(type IN ('whitelist', 'blacklist')),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
 
 
 init_database()
+
+# 初始化默认白名单（在 init_database 之后调用，避免循环导入）
+from db.path_permissions import init_default_whitelist
+init_default_whitelist()

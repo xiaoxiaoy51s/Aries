@@ -979,6 +979,34 @@ class CLIExecutor:
         danger_check = self._check_dangerous_command(normalized_command)
         # 越界检查：工作目录超出允许范围也判定为危险
         is_oob = self._is_working_dir_outside_allowed(working_dir)
+
+        # 黑白名单权限检查（优先于危险检查）
+        from db.path_permissions import check_path_permission
+        perm_result = check_path_permission(str(target_dir))
+        if perm_result:
+            if perm_result.get("allowed"):
+                # 白名单命中，跳过所有危险检查直接放行
+                danger_check = None
+                is_oob = False
+            else:
+                # 黑名单命中，直接拒绝
+                return {
+                    "success": False,
+                    "error": "Path blocked",
+                    "output": (
+                        f"命令执行被拒绝\n命令: {normalized_command}\n"
+                        f"执行目录: {target_dir}\n"
+                        f"原因: {perm_result.get('reason', '黑名单限制')}\n"
+                        f"用户已将该路径加入黑名单，禁止 AI 在此执行命令。"
+                    ),
+                    "command": normalized_command,
+                    "working_dir": str(target_dir),
+                    "requires_confirmation": False,
+                    "danger_types": ["路径在黑名单中"],
+                    "danger_info": perm_result.get("reason", "黑名单限制"),
+                }
+
+        # 未命中黑白名单，继续原有的危险/越界检查流程
         if is_oob:
             oob_info = "工作目录超出允许范围"
             if danger_check:
@@ -989,6 +1017,7 @@ class CLIExecutor:
                     "danger_types": [oob_info],
                     "danger_info": oob_info,
                 }
+
         if danger_check and not skip_confirmation:
             return {
                 "success": False,

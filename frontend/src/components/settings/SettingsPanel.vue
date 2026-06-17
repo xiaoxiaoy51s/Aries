@@ -29,6 +29,15 @@
               </svg>
               账号绑定
             </li>
+            <li
+              :class="{ active: activeTab === 'paths' }"
+              @click="activeTab = 'paths'; loadPathPermissions()"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              </svg>
+              路径权限
+            </li>
           </ul>
         </nav>
 
@@ -199,26 +208,58 @@
               </div>
             </div>
 
-            <!-- 隐私安全 -->
-            <!-- <div v-if="activeTab === 'privacy'" class="settings-section">
-              <p class="section-desc">控制 AI 执行危险操作时的确认策略，关闭后该类型操作将自动放行</p>
-              <div class="privacy-options">
-                <div v-for="item in privacyStore.settings" :key="item.dangerType" class="privacy-item">
-                  <div class="privacy-info">
-                    <span class="privacy-title">{{ item.label }}</span>
-                    <span class="privacy-desc">{{ item.desc }}</span>
+            <!-- 路径权限 -->
+            <div v-if="activeTab === 'paths'" class="settings-section">
+              <p class="section-desc">管理 AI 可访问的路径。白名单路径 AI 可自由操作，黑名单路径 AI 无法访问（直接拒绝并告知用户限制）。</p>
+
+              <!-- 白名单 -->
+              <div class="path-section">
+                <div class="path-section-header">
+                  <h4>白名单（可访问路径）</h4>
+                  <button type="button" class="add-path-btn" @click="handleAddPath('whitelist')">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 5v14M5 12h14"/>
+                    </svg>
+                    添加
+                  </button>
+                </div>
+                <div class="path-list">
+                  <div v-for="p in whitelistPaths" :key="p.id" class="path-item">
+                    <span class="path-value">{{ p.path }}</span>
+                    <button type="button" class="remove-path-btn" title="移除" @click="handleRemovePath(p.path)">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                      </svg>
+                    </button>
                   </div>
-                  <label class="switch">
-                    <input
-                      type="checkbox"
-                      :checked="item.confirm"
-                      @change="privacyStore.toggleConfirm(item.dangerType)"
-                    >
-                    <span class="slider"></span>
-                  </label>
+                  <div v-if="whitelistPaths.length === 0" class="path-empty">暂无白名单路径</div>
                 </div>
               </div>
-            </div> -->
+
+              <!-- 黑名单 -->
+              <div class="path-section">
+                <div class="path-section-header">
+                  <h4>黑名单（禁止访问路径）</h4>
+                  <button type="button" class="add-path-btn danger" @click="handleAddPath('blacklist')">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 5v14M5 12h14"/>
+                    </svg>
+                    添加
+                  </button>
+                </div>
+                <div class="path-list">
+                  <div v-for="p in blacklistPaths" :key="p.id" class="path-item danger">
+                    <span class="path-value">{{ p.path }}</span>
+                    <button type="button" class="remove-path-btn" title="移除" @click="handleRemovePath(p.path)">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                      </svg>
+                    </button>
+                  </div>
+                  <div v-if="blacklistPaths.length === 0" class="path-empty">暂无黑名单路径</div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -230,6 +271,34 @@
           @close="closeModal"
           @save="handleSave"
         />
+
+        <!-- 删除确认弹窗 -->
+        <div v-if="showDeleteModal" class="modal-overlay" @click="cancelDelete">
+          <div class="modal-dialog" @click.stop>
+            <div class="modal-header">确认删除</div>
+            <div class="modal-body">
+              <p>确定要删除这个模型吗？</p>
+            </div>
+            <div class="modal-footer">
+              <button class="modal-btn modal-btn-cancel" @click="cancelDelete">取消</button>
+              <button class="modal-btn modal-btn-danger" @click="confirmDelete">删除</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 解绑确认弹窗 -->
+        <div v-if="showUnbindModal" class="modal-overlay" @click="cancelUnbind">
+          <div class="modal-dialog" @click.stop>
+            <div class="modal-header">确认解绑</div>
+            <div class="modal-body">
+              <p>确定要解绑{{ unbindPlatform === 'qq' ? 'QQ' : unbindPlatform === 'wechat' ? '微信' : unbindPlatform === 'feishu' ? '飞书' : unbindPlatform }}吗？此操作会清除该平台的所有配置。</p>
+            </div>
+            <div class="modal-footer">
+              <button class="modal-btn modal-btn-cancel" @click="cancelUnbind">取消</button>
+              <button class="modal-btn modal-btn-danger" @click="confirmUnbind">解绑</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </Teleport>
@@ -239,7 +308,6 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { useModelStore, type ModelItem } from '@/stores/model'
 import { useAccountStore } from '@/stores/account'
-import { usePrivacyStore } from '@/stores/privacy'
 import {
   saveQQConfig,
   wechatQRCode,
@@ -248,6 +316,13 @@ import {
   feishuQRCodePoll,
   cancelFeishuRegistration,
 } from '@/api/platform'
+import {
+  listPathPermissions,
+  addPathPermission as apiAddPathPermission,
+  removePathPermission as apiRemovePathPermission,
+  type PathPermission,
+} from '@/api/pathPermissions'
+import { selectDirectory } from '@/api/system'
 import ModelEditModal from './ModelEditModal.vue'
 
 const props = defineProps<{ visible: boolean }>()
@@ -270,10 +345,21 @@ function handleBind(platform: string) {
 }
 
 function handleUnbind(platform: string) {
-  const names: Record<string, string> = { qq: 'QQ', wechat: '微信', feishu: '飞书' }
-  if (confirm(`确定要解绑${names[platform] || platform}吗？此操作会清除该平台的所有配置。`)) {
-    accountStore.unbind(platform)
+  unbindPlatform.value = platform
+  showUnbindModal.value = true
+}
+
+async function confirmUnbind() {
+  if (unbindPlatform.value) {
+    await accountStore.unbind(unbindPlatform.value)
+    showUnbindModal.value = false
+    unbindPlatform.value = null
   }
+}
+
+function cancelUnbind() {
+  showUnbindModal.value = false
+  unbindPlatform.value = null
 }
 
 // ---------- 配置面板 ----------
@@ -435,10 +521,10 @@ onUnmounted(() => {
   stopFeishuPoll()
 })
 
-const activeTab = ref<'models' | 'accounts' | 'privacy'>('models')
+const activeTab = ref<'models' | 'accounts' | 'paths'>('models')
 
 const tabTitle = computed(() => {
-  const map = { models: '模型管理', accounts: '账号绑定', privacy: '隐私安全' } as const
+  const map = { models: '模型管理', accounts: '账号绑定', paths: '路径权限' } as const
   return map[activeTab.value]
 })
 
@@ -477,9 +563,75 @@ async function handleSetActive(id: string) {
   await modelStore.setActiveModel(id)
 }
 
-async function handleDelete(id: string) {
-  if (confirm('确定要删除这个模型吗？')) {
-    await modelStore.deleteModel(id)
+// 删除确认弹窗
+const showDeleteModal = ref(false)
+const modelToDelete = ref<string | null>(null)
+
+// 解绑确认弹窗
+const showUnbindModal = ref(false)
+const unbindPlatform = ref<string | null>(null)
+
+function handleDelete(id: string) {
+  modelToDelete.value = id
+  showDeleteModal.value = true
+}
+
+async function confirmDelete() {
+  if (modelToDelete.value) {
+    await modelStore.deleteModel(modelToDelete.value)
+    showDeleteModal.value = false
+    modelToDelete.value = null
+  }
+}
+
+function cancelDelete() {
+  showDeleteModal.value = false
+  modelToDelete.value = null
+}
+
+// ---------- 路径权限 ----------
+const pathPermissions = ref<PathPermission[]>([])
+const whitelistPaths = computed(() => pathPermissions.value.filter(p => p.type === 'whitelist'))
+const blacklistPaths = computed(() => pathPermissions.value.filter(p => p.type === 'blacklist'))
+
+async function loadPathPermissions() {
+  try {
+    const res = await listPathPermissions()
+    pathPermissions.value = res.permissions || []
+  } catch (e) {
+    console.error('加载路径权限失败', e)
+    pathPermissions.value = []
+  }
+}
+
+async function handleRemovePath(path: string) {
+  try {
+    await apiRemovePathPermission(path)
+    pathPermissions.value = pathPermissions.value.filter(p => p.path !== path)
+  } catch (e: any) {
+    alert(e.message || '删除失败')
+  }
+}
+
+// 添加路径（使用文件夹选择对话框）
+async function handleAddPath(type: 'whitelist' | 'blacklist') {
+  try {
+    const result = await selectDirectory()
+    if (result.cancelled || !result.path) {
+      return
+    }
+    if (result.error) {
+      alert(result.error)
+      return
+    }
+    const res = await apiAddPathPermission(result.path, type)
+    if (res.success) {
+      await loadPathPermissions()
+    } else {
+      alert(res.error || '添加失败')
+    }
+  } catch (e: any) {
+    alert(e.message || '添加失败')
   }
 }
 </script>
@@ -929,5 +1081,173 @@ async function handleDelete(id: string) {
 .qrcode-tip {
   font-size: 13px;
   color: var(--text-secondary);
+}
+
+/* 删除确认弹窗 */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.modal-dialog {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 320px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.modal-header {
+  padding: 16px 20px;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-body {
+  padding: 20px;
+  color: var(--text);
+}
+
+.modal-body p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.modal-footer {
+  padding: 12px 20px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.modal-btn {
+  padding: 6px 16px;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  border: none;
+  transition: opacity 0.2s;
+}
+
+.modal-btn:hover {
+  opacity: 0.85;
+}
+
+.modal-btn-cancel {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.modal-btn-danger {
+  background: #1f2937;
+  color: #ffffff;
+}
+
+/* 路径权限 */
+.path-section {
+  margin-bottom: 16px;
+}
+
+.path-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.path-section-header h4 {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.add-path-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.add-path-btn:hover {
+  background: var(--accent-hover);
+}
+
+.add-path-btn.danger {
+  border-color: #ef4444;
+  color: #ef4444;
+}
+
+.add-path-btn.danger:hover {
+  background: #fef2f2;
+}
+
+.path-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.path-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.path-item.danger {
+  border-color: #fca5a5;
+  background: #fef2f2;
+}
+
+.path-value {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.remove-path-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.remove-path-btn:hover {
+  background: var(--accent-hover);
+  color: #ef4444;
+}
+
+.path-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 8px 12px;
 }
 </style>
