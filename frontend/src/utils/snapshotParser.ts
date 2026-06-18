@@ -7,6 +7,7 @@ export interface SnapshotEvent {
   content: string
   toolName?: string
   toolCallId?: string
+  sessionId?: string
   args?: Record<string, any>
   status?: string
   timestamp?: string
@@ -81,6 +82,7 @@ function convertEvent(json: any): SnapshotEvent | null {
         content: resultContent,
         toolName: json.tool_name,
         toolCallId: json.tool_call_id,
+        sessionId: json.session_id || '',
         status: json.status,
         timestamp: json.ended_at
       }

@@ -7,13 +7,21 @@
         <span class="tool-args-preview">{{ argsPreview }}</span>
       </div>
       <span v-if="pendingConfirmation" class="confirm-badge">待确认</span>
-      <button
-        v-if="isCliExecutor && status === 'running'"
-        type="button"
-        class="view-terminal-btn"
-        title="在控制台查看命令执行过程"
-        @click.stop="openTerminal"
-      >查看终端</button>
+      <div v-if="hasTerminalSession" class="tool-actions">
+        <button
+          type="button"
+          class="view-terminal-btn"
+          title="在控制台查看命令执行过程"
+          @click.stop="openTerminal"
+        >查看终端</button>
+        <button
+          v-if="showBackgroundBtn"
+          type="button"
+          class="background-btn"
+          :title="autoDetached ? '停止后台服务' : '转入后台运行'"
+          @click.stop="autoDetached ? stopService() : doBackground()"
+        >{{ autoDetached ? '停止服务' : '后台运行' }}</button>
+      </div>
     </div>
     
     <!-- 展开状态：显示完整内容 -->
@@ -24,13 +32,21 @@
           <span class="tool-name">{{ toolName }}</span>
           <span class="tool-args-preview">{{ argsPreview }}</span>
         </div>
-        <button
-          v-if="isCliExecutor && status === 'running'"
-          type="button"
-          class="view-terminal-btn"
-          title="在控制台查看命令执行过程"
-          @click.stop="openTerminal"
-        >查看终端</button>
+        <div v-if="hasTerminalSession" class="tool-actions">
+          <button
+            type="button"
+            class="view-terminal-btn"
+            title="在控制台查看命令执行过程"
+            @click.stop="openTerminal"
+          >查看终端</button>
+          <button
+            v-if="showBackgroundBtn"
+            type="button"
+            class="background-btn"
+            :title="autoDetached ? '停止后台服务' : '转入后台运行'"
+            @click.stop="autoDetached ? stopService() : doBackground()"
+          >{{ autoDetached ? '停止服务' : '后台运行' }}</button>
+        </div>
       </div>
 
       <!-- 参数详情 -->
@@ -53,7 +69,7 @@
       <div v-else-if="status === 'running' && !pendingConfirmation" class="tool-section">
         <span class="section-label">状态</span>
         <div class="section-content">
-          <span class="running-text">运行中...</span>
+          <span class="running-text">{{ isBackgrounded ? '已转入后台运行' : '运行中...' }}</span>
         </div>
       </div>
     </div>
@@ -62,7 +78,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { useWorkspaceStore } from '@/stores/workspace'
+import { backgroundTerminalCommand, getTerminalSessionId, stopTerminalCommand } from '@/api/terminal'
 
 const props = defineProps<{
   toolName: string
@@ -76,9 +92,21 @@ const props = defineProps<{
   compact?: boolean
   pendingConfirmation?: boolean
   dangerInfo?: string
+  autoDetached?: boolean
+  sessionId?: string
+  toolCallId?: string
 }>()
 
 const isExpanded = ref(false)
+const isBackgrounded = ref(false)
+const isStopped = ref(false)
+const isOpeningTerminal = ref(false)
+
+const autoDetached = computed(() => props.autoDetached || isBackgrounded.value)
+
+const showBackgroundBtn = computed(() => {
+  return isCliExecutor.value && !isStopped.value && (props.status === 'running' || autoDetached.value)
+})
 
 const argsPreview = computed(() => {
   if (props.preview) return props.preview
@@ -121,9 +149,53 @@ const isCliExecutor = computed(() => {
   return props.toolName === 'cli_executor'
 })
 
-function openTerminal() {
-  const workspace = useWorkspaceStore()
-  workspace.focusConsole()
+const hasTerminalSession = computed(() => {
+  return isCliExecutor.value && (!!props.sessionId || !!props.toolCallId)
+})
+
+async function openTerminal() {
+  if (isOpeningTerminal.value) return
+  isOpeningTerminal.value = true
+  try {
+    let sessionId = props.sessionId || ''
+    if (!sessionId && props.toolCallId) {
+      sessionId = await getTerminalSessionId(props.toolCallId) || ''
+    }
+    if (!sessionId) {
+      window.dispatchEvent(new CustomEvent('mimo:toast', {
+        detail: { message: '终端不存在或已关闭', type: 'warning' }
+      }))
+      return
+    }
+    window.dispatchEvent(new CustomEvent('mimo:focus-console'))
+    window.dispatchEvent(new CustomEvent('mimo:open-terminal', {
+      detail: { sessionId, command: argsPreview.value }
+    }))
+  } finally {
+    setTimeout(() => {
+      isOpeningTerminal.value = false
+    }, 500)
+  }
+}
+
+async function doBackground() {
+  if (!props.toolCallId) return
+  try {
+    await backgroundTerminalCommand(props.toolCallId)
+    isBackgrounded.value = true
+  } catch (e) {
+    console.error('Background failed', e)
+  }
+}
+
+async function stopService() {
+  if (!props.toolCallId) return
+  try {
+    await stopTerminalCommand(props.toolCallId)
+    isStopped.value = true
+  } catch (e) {
+    console.error('Stop service failed', e)
+  }
 }
 </script>
 
@@ -170,20 +242,46 @@ function openTerminal() {
   border-radius: 999px;
 }
 
-.view-terminal-btn {
-  font-size: 10px;
-  color: #3b82f6;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  padding: 1px 8px;
-  border-radius: 999px;
-  cursor: pointer;
-  margin-left: 6px;
+.tool-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
 }
 
+.view-terminal-btn {
+  font-size: 10px;
+  color: #000000;
+  background: transparent;
+  border: none;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-left: 6px;
+  flex-shrink: 0;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  transition: background 0.15s;
+}
+
 .view-terminal-btn:hover {
-  background: #dbeafe;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.background-btn {
+  font-size: 10px;
+  color: #6b7280;
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.background-btn:hover {
+  background: #e5e7eb;
 }
 
 .tool-title {

@@ -98,6 +98,7 @@ class SessionLogger:
         result: str = "",
         error: str = "",
         ended_at: str | None = None,
+        session_id: str = "",
     ) -> None:
         ts = ended_at or _utc_now()
         for entry in self._tool_log:
@@ -105,7 +106,7 @@ class SessionLogger:
                 entry["status"] = status
                 entry["ended_at"] = ts
                 break
-        _append_event(self.path, {
+        event: dict[str, Any] = {
             "type": "tool_result",
             "tool_call_id": tool_call_id,
             "tool_name": tool_name,
@@ -113,7 +114,10 @@ class SessionLogger:
             "result": result,
             "error": error,
             "ended_at": ts,
-        })
+        }
+        if session_id:
+            event["session_id"] = session_id
+        _append_event(self.path, event)
 
     def record_assistant_content(self, text: str) -> None:
         if text:

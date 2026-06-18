@@ -785,6 +785,7 @@ function cancelDelete() {
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
+  min-width: 0;
 }
 
 /* —— 模态框 —— */

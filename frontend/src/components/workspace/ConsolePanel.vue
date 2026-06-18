@@ -18,13 +18,11 @@
             @click.stop="closeTab(tab.id)"
           >×</span>
         </button>
-        <button type="button" class="tab-add" title="新建终端" @click="() => addTerminal()">+</button>
+        <button type="button" class="tab-add" title="新建终端" @click="addTerminal()">+</button>
       </div>
       <div class="console-actions">
-        <button type="button" class="action-btn" title="停止 AI 命令" @click="stopAgentCommand">⏹ 停止AI</button>
-        <button type="button" class="action-btn" title="清屏" @click="clearActiveScreen">清屏</button>
-        <button type="button" class="action-btn" title="重置为 PowerShell" @click="resetActiveShell">重置</button>
-        <span v-if="activeTab?.shellKind" class="shell-badge">{{ activeTab.shellKind }}</span>
+        <button type="button" class="action-btn" title="清屏" @click="clearScreen">清屏</button>
+        <button type="button" class="action-btn" title="重置终端" @click="resetShell">重置</button>
         <span
           class="conn-dot"
           :class="{ online: activeTab?.connected }"
@@ -43,16 +41,29 @@
       ></div>
     </div>
 
+    <!-- 无终端时的空状态 -->
+    <div v-if="tabs.length === 0" class="console-empty-state">
+      <div class="empty-icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <polyline points="4 17 10 11 4 5"></polyline>
+          <line x1="12" y1="19" x2="20" y2="19"></line>
+        </svg>
+      </div>
+      <p class="empty-title">AI 命令终端</p>
+      <p class="empty-desc">AI 执行 CLI 命令时，点击消息中的<strong>「查看终端」</strong>按钮即可在此实时查看命令输出</p>
+      <button type="button" class="empty-connect-btn" @click="addTerminal()">手动连接终端</button>
+    </div>
+
     <div v-if="!workDir" class="console-empty">请先选择工作目录</div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
-import { Terminal } from '@xterm/xterm'
+import { Terminal, type ILink } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { getTerminalWsUrl } from '@/api/terminal'
+import { closeTerminalSession, getTerminalWsUrl } from '@/api/terminal'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { storeToRefs } from 'pinia'
 
@@ -69,137 +80,25 @@ interface TerminalTab {
   title: string
   connected: boolean
   attached: boolean
-  attaching: boolean
-  attachSent: boolean
-  connecting: boolean
-  inputUnlocked: boolean
-  initialized: boolean
-  ptyRows: number
-  ptyCols: number
   term: Terminal | null
   fitAddon: FitAddon | null
   ws: WebSocket | null
   wsGen: number
-  reconnectTimer: ReturnType<typeof setTimeout> | null
-  inputUnlockTimer: ReturnType<typeof setTimeout> | null
-  shellKind: string
+  initialized: boolean
 }
 
 const tabs = ref<TerminalTab[]>([])
 const activeTabId = ref('')
 const hostRefs = new Map<string, HTMLElement>()
-const lastInputSent = new WeakMap<TerminalTab, { data: string; at: number }>()
 let tabCounter = 0
 let resizeObserver: ResizeObserver | null = null
-let resizeDebounce: ReturnType<typeof setTimeout> | null = null
+let resizeTimer: ReturnType<typeof setTimeout> | null = null
+const URL_RE = /https?:\/\/[^\s\]\)>'\"]+/g
 
 const activeTab = computed(() => tabs.value.find(t => t.id === activeTabId.value) || null)
 
-const TERMINAL_THEME = {
-  background: '#ffffff',
-  foreground: '#0c0c0c',
-  cursor: '#0c0c0c',
-  cursorAccent: '#ffffff',
-  selectionBackground: '#cce5ff',
-  black: '#0c0c0c',
-  red: '#c50f1f',
-  green: '#107c10',
-  yellow: '#c19c00',
-  blue: '#0037da',
-  magenta: '#881798',
-  cyan: '#008080',
-  white: '#cccccc',
-  brightBlack: '#767676',
-  brightRed: '#e74856',
-  brightGreen: '#16c60c',
-  brightYellow: '#f9f1a5',
-  brightBlue: '#3b78ff',
-  brightMagenta: '#b4009e',
-  brightCyan: '#00b7c3',
-  brightWhite: '#f2f2f2',
-}
-
-function agentSessionId(_workDir: string): string {
-  // 前端无需关心后端路径规范化细节，发送 `__agent__` 占位符，
-  // 后端 WebSocket 处理器会解析为该 work_dir 对应的 agent session id。
-  return '__agent__'
-}
-
 function newTabId() {
   return crypto.randomUUID()
-}
-
-/** Drop xterm→shell handshake queries that make cmd.exe print ^[[?1;2c garbage. */
-function shouldForwardInput(data: string): boolean {
-  if (!data.includes('\u001b')) return true
-  if (/^\u001b\[>[0-9;]*c/.test(data)) return false
-  if (/^\u001b\[\?[0-9;]*c/.test(data)) return false
-  if (/^\u001b\]/.test(data)) return false
-  return true
-}
-
-/** Strip device-attribute responses before writing to xterm. */
-function sanitizeTerminalOutput(data: string): string {
-  return data
-    .replace(/\u001b\[\?1;2c/g, '')
-    .replace(/\u001b\[>0;[0-9;]*c/g, '')
-    .replace(/\u001b\[\?62;[0-9;]*c/g, '')
-    .replace(/\u001b\[c/g, '')
-}
-
-function writeTerminalOutput(tab: TerminalTab, data: string) {
-  const cleaned = sanitizeTerminalOutput(data)
-  if (cleaned) tab.term?.write(cleaned)
-}
-
-function forwardInput(tab: TerminalTab, data: string) {
-  if (!data || !tab.attached || !tab.inputUnlocked || tab.ws?.readyState !== WebSocket.OPEN) return
-  if (!shouldForwardInput(data)) return
-  const now = Date.now()
-  const prev = lastInputSent.get(tab)
-  if (prev && prev.data === data && now - prev.at < 120) return
-  lastInputSent.set(tab, { data, at: now })
-  tab.ws.send(JSON.stringify({ type: 'input', data }))
-}
-
-function normalizePasteInput(raw: string): string {
-  const normalized = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-  const hadTrailingNewline = /\n$/.test(normalized)
-  const trimmed = normalized.replace(/\n+$/, '')
-  if (normalized.includes('\n')) {
-    const payload = trimmed.replace(/\n/g, '\r\n')
-    // 多行脚本：剪贴板末尾有换行时整体提交执行
-    return hadTrailingNewline ? `${payload}\r\n` : payload
-  }
-  const autoRun = hadTrailingNewline
-    || /^\s*cd\s+/i.test(trimmed)
-    || /^\s*\$/.test(trimmed)
-    || /^\s*Get-/i.test(trimmed)
-    || /^\s*foreach\b/i.test(trimmed)
-  return autoRun ? `${trimmed}\r` : trimmed
-}
-
-function bindSinglePasteHandler(tab: TerminalTab, host: HTMLElement) {
-  const textarea = host.querySelector('textarea')
-  if (!textarea || (textarea as HTMLElement & { __mimoPasteBound?: boolean }).__mimoPasteBound) return
-  ;(textarea as HTMLElement & { __mimoPasteBound?: boolean }).__mimoPasteBound = true
-  textarea.addEventListener('paste', (ev: Event) => {
-    const e = ev as ClipboardEvent
-    e.preventDefault()
-    e.stopImmediatePropagation()
-    const raw = e.clipboardData?.getData('text/plain') ?? ''
-    if (!raw) return
-    forwardInput(tab, normalizePasteInput(raw))
-  }, true)
-}
-
-function unlockTabInput(tab: TerminalTab, delayMs = 250) {
-  if (tab.inputUnlockTimer) clearTimeout(tab.inputUnlockTimer)
-  tab.inputUnlocked = false
-  tab.inputUnlockTimer = setTimeout(() => {
-    tab.inputUnlocked = true
-    tab.inputUnlockTimer = null
-  }, delayMs)
 }
 
 function setHostRef(id: string, el: HTMLElement | null) {
@@ -207,96 +106,26 @@ function setHostRef(id: string, el: HTMLElement | null) {
   else hostRefs.delete(id)
 }
 
-function getTab(id: string) {
-  return tabs.value.find(t => t.id === id)
+function openTerminalUrl(url: string) {
+  window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 function fitTab(tab: TerminalTab) {
   if (!tab.term || !tab.fitAddon) return false
   const host = hostRefs.get(tab.id)
   if (!host || host.clientWidth < 20 || host.clientHeight < 20) return false
-  tab.fitAddon.fit()
-  return true
-}
-
-async function waitForHostReady(tab: TerminalTab, maxFrames = 30): Promise<boolean> {
-  for (let i = 0; i < maxFrames; i += 1) {
-    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
-    if (fitTab(tab)) return true
+  try {
+    tab.fitAddon.fit()
+    return true
+  } catch {
+    return false
   }
-  return fitTab(tab)
 }
 
-function isWsBusy(tab: TerminalTab): boolean {
-  if (tab.connecting || tab.attaching) return true
-  const state = tab.ws?.readyState
-  return (
-    state === WebSocket.CONNECTING ||
-    state === WebSocket.OPEN ||
-    state === WebSocket.CLOSING
-  )
-}
-
-function detachWebSocketHandlers(ws: WebSocket | null) {
-  if (!ws) return
-  ws.onmessage = null
-  ws.onopen = null
-  ws.onclose = null
-  ws.onerror = null
-}
-
-function sendAttach(tab: TerminalTab, reset: boolean, replay = false) {
-  if (!tab.term || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return
-  if (tab.attaching || tab.attachSent) return
-  if (!fitTab(tab)) return
-  tab.attaching = true
-  tab.attachSent = true
-  tab.attached = false
-  tab.inputUnlocked = false
-  tab.ptyRows = tab.term.rows
-  tab.ptyCols = tab.term.cols
-  tab.ws.send(JSON.stringify({
-    type: 'attach',
-    rows: tab.term.rows,
-    cols: tab.term.cols,
-    reset,
-    replay,
-  }))
-}
-
-function scheduleAttach(tab: TerminalTab, reset: boolean, replay = false, attempt = 0) {
-  if (!tab.term || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return
-  if (tab.attachSent) return
-  if (!fitTab(tab)) {
-    if (attempt < 30) {
-      setTimeout(() => scheduleAttach(tab, reset, replay, attempt + 1), 100)
-    }
-    return
-  }
-  sendAttach(tab, reset, replay)
-}
-
-function sendResizeOnly(tab: TerminalTab) {
-  if (!tab.attached || !tab.term || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return
-  if (!fitTab(tab)) return
-  if (tab.term.rows === tab.ptyRows && tab.term.cols === tab.ptyCols) return
-  tab.ptyRows = tab.term.rows
-  tab.ptyCols = tab.term.cols
-  tab.ws.send(JSON.stringify({ type: 'resize', rows: tab.term.rows, cols: tab.term.cols }))
-}
-
-function scheduleResize() {
-  if (resizeDebounce) clearTimeout(resizeDebounce)
-  resizeDebounce = setTimeout(() => {
-    const tab = activeTab.value
-    if (tab?.attached) sendResizeOnly(tab)
-  }, 120)
-}
-
-function initTabTerminal(tab: TerminalTab) {
+function createTerminal(tab: TerminalTab) {
   if (tab.initialized) return
   const host = hostRefs.get(tab.id)
-  if (!host || !workDir.value) return
+  if (!host) return
 
   tab.term = new Terminal({
     cursorBlink: true,
@@ -304,375 +133,329 @@ function initTabTerminal(tab: TerminalTab) {
     lineHeight: 1.15,
     fontFamily: "'Cascadia Mono', 'Consolas', 'Courier New', monospace",
     scrollback: 5000,
-    theme: TERMINAL_THEME,
-    convertEol: false,
-    windowsMode: true,
-    windowsPty: { backend: 'winpty' },
+    theme: {
+      background: '#ffffff',
+      foreground: '#000000',
+      cursor: '#000000',
+      cursorAccent: '#ffffff',
+      selectionBackground: '#cce5ff',
+      black: '#000000',
+      red: '#c50f1f',
+      green: '#0a5c0a',
+      yellow: '#7a5f00',
+      blue: '#0037da',
+      magenta: '#6c1a6c',
+      cyan: '#005f5f',
+      white: '#666666',
+      brightBlack: '#333333',
+      brightRed: '#a80c1a',
+      brightGreen: '#0d7a0d',
+      brightYellow: '#8a6e00',
+      brightBlue: '#0028a8',
+      brightMagenta: '#7a1a7a',
+      brightCyan: '#006666',
+      brightWhite: '#999999',
+    },
   })
   tab.fitAddon = new FitAddon()
   tab.term.loadAddon(tab.fitAddon)
   tab.term.open(host)
-  bindSinglePasteHandler(tab, host)
+  tab.term.registerLinkProvider({
+    provideLinks: (lineNumber, callback) => {
+      const line = tab.term?.buffer.active.getLine(lineNumber - 1)
+      const text = line?.translateToString(true) || ''
+      const links: ILink[] = []
+      for (const match of text.matchAll(URL_RE)) {
+        const url = match[0]
+        const start = (match.index || 0) + 1
+        const end = start + url.length
+        links.push({
+          text: url,
+          range: {
+            start: { x: start, y: lineNumber },
+            end: { x: end, y: lineNumber },
+          },
+          decorations: { pointerCursor: true, underline: true },
+          activate: () => openTerminalUrl(url),
+        })
+      }
+      callback(links.length ? links : undefined)
+    },
+  })
 
-  tab.term.attachCustomKeyEventHandler((ev) => {
-    if (ev.type !== 'keydown') return true
-    const mod = ev.ctrlKey || ev.metaKey
-    if (!mod) return true
-    const key = ev.key.toLowerCase()
-    if (key === 'c' && tab.term?.hasSelection()) {
-      copyFromTab(tab)
-      return false
+  tab.term.attachCustomKeyEventHandler((event) => {
+    if (event.type === 'keydown' && event.ctrlKey && event.key.toLowerCase() === 'c') {
+      const selection = tab.term?.getSelection()
+      if (selection) {
+        void navigator.clipboard?.writeText(selection).catch(() => {})
+        tab.term?.clearSelection()
+        return false
+      }
     }
-    // 拦截 xterm 内置粘贴，改由 textarea paste 事件统一转发（只发一次）
-    if (key === 'v') return false
     return true
   })
 
-  tab.term.onData((data) => forwardInput(tab, data))
+  tab.term.onData((data) => {
+    if (tab.ws?.readyState === WebSocket.OPEN && tab.attached) {
+      tab.ws.send(JSON.stringify({ type: 'input', data }))
+    }
+  })
 
   tab.initialized = true
 }
 
-function openWebSocket(tab: TerminalTab) {
-  if (!workDir.value || isWsBusy(tab)) return
+function connectTab(tab: TerminalTab, reset = true) {
+  if (!workDir.value) return
+  createTerminal(tab)
 
-  if (tab.reconnectTimer) {
-    clearTimeout(tab.reconnectTimer)
-    tab.reconnectTimer = null
+  // 关闭旧连接
+  if (tab.ws) {
+    tab.ws.onmessage = null
+    tab.ws.onopen = null
+    tab.ws.onclose = null
+    tab.ws.onerror = null
+    tab.ws.close()
+    tab.ws = null
   }
 
-  tab.wsGen = (tab.wsGen || 0) + 1
-  const wsGen = tab.wsGen
-  tab.connecting = true
-  tab.attached = false
-  tab.attaching = false
-  tab.attachSent = false
-  detachWebSocketHandlers(tab.ws)
-  tab.ws?.close()
-  tab.ws = null
+  tab.wsGen++
+  const gen = tab.wsGen
   tab.connected = false
+  tab.attached = false
 
   const ws = new WebSocket(getTerminalWsUrl(workDir.value, tab.sessionId))
   tab.ws = ws
+
+  ws.onopen = () => {
+    if (gen !== tab.wsGen) return
+    // 等待 xterm 渲染完成后再 attach
+    nextTick().then(() => {
+      fitTab(tab)
+      ws.send(JSON.stringify({
+        type: 'attach',
+        rows: tab.term?.rows || 24,
+        cols: tab.term?.cols || 80,
+        reset,
+        replay: !reset,
+      }))
+    })
+  }
+
   ws.onmessage = (ev) => {
-    if (wsGen !== tab.wsGen) return
+    if (gen !== tab.wsGen) return
     try {
       const msg = JSON.parse(ev.data)
       if (msg.type === 'ready') {
-        tab.attaching = false
         tab.attached = true
-        tab.connecting = false
-        tab.shellKind = String(msg.shell || '')
-        if (tab.shellKind === 'cmd') {
-          writeTerminalOutput(
-            tab,
-            '\r\n\x1b[33m[警告] 当前为 CMD，PowerShell 命令无法运行。请点击「重置」或新建终端。\x1b[0m\r\n',
-          )
-        }
-        unlockTabInput(tab)
-        if (tab.id === activeTabId.value) tab.term?.focus()
+        tab.connected = true
+        tab.term?.focus()
         return
       }
       if (msg.type === 'output' && msg.data) {
-        writeTerminalOutput(tab, msg.data)
+        tab.term?.write(msg.data)
+        return
       }
     } catch {
-      writeTerminalOutput(tab, ev.data)
+      // plain text
+      tab.term?.write(ev.data)
     }
   }
-  ws.onopen = () => {
-    if (wsGen !== tab.wsGen) return
-    tab.connected = true
-    tab.connecting = false
-    tab.attaching = false
-    tab.attached = false
-    tab.attachSent = false
-    tab.term?.reset()
-    tab.term?.clear()
-    void (async () => {
-      await nextTick()
-      await waitForHostReady(tab)
-      // 每次 WebSocket 连接都重建 shell，避免沿用旧的 cmd 会话
-      scheduleAttach(tab, true, false)
-    })()
-  }
+
   ws.onclose = () => {
-    if (wsGen !== tab.wsGen) return
+    if (gen !== tab.wsGen) return
+    const wasAttached = tab.attached
     tab.connected = false
     tab.attached = false
-    tab.connecting = false
-    tab.attachSent = false
-    if (tab.reconnectTimer) clearTimeout(tab.reconnectTimer)
-    tab.reconnectTimer = setTimeout(() => {
-      if (workDir.value && props.visible !== false && tabs.value.some(t => t.id === tab.id)) {
-        openWebSocket(tab)
+    // 如果从未成功 attach，说明终端 session 不存在
+    if (!wasAttached) {
+      tab.term?.write('\r\n\x1b[31m终端已关闭或不存在\x1b[0m\r\n')
+      return
+    }
+    // 自动重连
+    setTimeout(() => {
+      if (workDir.value && tabs.value.some(t => t.id === tab.id)) {
+        connectTab(tab, false)
       }
     }, 3000)
   }
+
   ws.onerror = () => {
-    if (wsGen !== tab.wsGen) return
+    if (gen !== tab.wsGen) return
     tab.connected = false
     tab.attached = false
-    tab.connecting = false
   }
 }
 
-function connectTab(tab: TerminalTab, resetShell: boolean, replay = false) {
-  if (!workDir.value || isWsBusy(tab)) return
-  initTabTerminal(tab)
-  if (!tab.ws || tab.ws.readyState === WebSocket.CLOSED) {
-    openWebSocket(tab)
-  }
-}
-
-function addTerminal(resetShell = true) {
+function addTerminal(reset = true) {
   if (!workDir.value) return
-  // 只有当还没有 AI 终端时，新建才落到 agent session；用户额外开的 tab 保持独立
-  const hasAgentTab = tabs.value.some(t => t.sessionId === agentSessionId(workDir.value))
-  const useAgentSession = !hasAgentTab
-  tabCounter += 1
+  tabCounter++
   const tab: TerminalTab = {
     id: newTabId(),
-    sessionId: useAgentSession ? agentSessionId(workDir.value) : crypto.randomUUID(),
-    title: useAgentSession ? 'AI 终端' : `终端 ${tabCounter}`,
+    sessionId: crypto.randomUUID(),
+    title: `终端 ${tabCounter}`,
     connected: false,
     attached: false,
-    attaching: false,
-    attachSent: false,
-    connecting: false,
-    inputUnlocked: false,
-    initialized: false,
-    ptyRows: 0,
-    ptyCols: 0,
     term: null,
     fitAddon: null,
     ws: null,
     wsGen: 0,
-    reconnectTimer: null,
-    inputUnlockTimer: null,
-    shellKind: '',
+    initialized: false,
   }
   tabs.value.push(tab)
   activeTabId.value = tab.id
-  void (async () => {
-    await nextTick()
-    initTabTerminal(tab)
-    await waitForHostReady(tab)
-    openWebSocket(tab)
-  })()
+  nextTick(() => {
+    connectTab(tab, reset)
+  })
 }
 
 function switchTab(id: string) {
   activeTabId.value = id
-  const tab = getTab(id)
+  const tab = tabs.value.find(t => t.id === id)
   if (!tab) return
-  void (async () => {
-    await nextTick()
-    initTabTerminal(tab)
-    await waitForHostReady(tab)
-    if (!tab.ws || tab.ws.readyState === WebSocket.CLOSED) {
-      connectTab(tab, false, true)
-      return
+  nextTick(() => {
+    fitTab(tab)
+    if (tab.ws?.readyState !== WebSocket.OPEN || !tab.attached) {
+      connectTab(tab, false)
     }
-    if (tab.attached) {
-      sendResizeOnly(tab)
-      tab.term?.focus()
-    } else {
-      tab.term?.focus()
-    }
-  })()
-}
-
-function disposeTab(tab: TerminalTab) {
-  if (tab.reconnectTimer) {
-    clearTimeout(tab.reconnectTimer)
-    tab.reconnectTimer = null
-  }
-  if (tab.inputUnlockTimer) {
-    clearTimeout(tab.inputUnlockTimer)
-    tab.inputUnlockTimer = null
-  }
-  tab.ws?.close()
-  tab.ws = null
-  tab.term?.dispose()
-  tab.term = null
-  tab.fitAddon = null
-  tab.connected = false
-  tab.attached = false
-  tab.attaching = false
-  tab.attachSent = false
-  tab.connecting = false
-  tab.inputUnlocked = false
-  tab.initialized = false
-  tab.ptyRows = 0
-  tab.ptyCols = 0
-  hostRefs.delete(tab.id)
+    tab.term?.focus()
+  })
 }
 
 function closeTab(id: string) {
   const idx = tabs.value.findIndex(t => t.id === id)
   if (idx < 0) return
   const tab = tabs.value[idx]
-  disposeTab(tab)
+  tab.ws?.close()
+  void closeTerminalSession(tab.sessionId).catch((error) => {
+    console.error('Close terminal session failed', error)
+  })
+  tab.term?.dispose()
+  hostRefs.delete(tab.id)
   tabs.value.splice(idx, 1)
   if (activeTabId.value === id) {
     const next = tabs.value[idx] || tabs.value[idx - 1]
     if (next) switchTab(next.id)
-    else addTerminal(true)
+    else activeTabId.value = ''
   }
 }
 
-function copyFromTab(tab: TerminalTab) {
-  const text = tab.term?.getSelection()
-  if (!text) return
-  navigator.clipboard.writeText(text).catch(() => {
-    try {
-      const ta = document.createElement('textarea')
-      ta.value = text
-      ta.style.position = 'fixed'
-      ta.style.opacity = '0'
-      document.body.appendChild(ta)
-      ta.select()
-      document.execCommand('copy')
-      document.body.removeChild(ta)
-    } catch {
-      // ignore
-    }
-  })
-}
-
-function resetActiveShell() {
-  const tab = activeTab.value
-  if (!tab?.term || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return
-  tab.attachSent = false
-  tab.attaching = false
-  tab.attached = false
-  tab.inputUnlocked = false
-  tab.term.reset()
-  tab.term.clear()
-  scheduleAttach(tab, true, false)
-}
-
-function clearActiveScreen() {
+function clearScreen() {
   const tab = activeTab.value
   if (!tab) return
+  tab.term?.clear()
   if (tab.attached && tab.ws?.readyState === WebSocket.OPEN) {
     tab.ws.send(JSON.stringify({ type: 'input', data: 'cls\r\n' }))
   }
-  tab.term?.clear()
 }
 
-function stopAgentCommand() {
+function resetShell() {
   const tab = activeTab.value
-  if (!tab?.attached || tab.ws?.readyState !== WebSocket.OPEN) return
-  // 向 PTY 发送 Ctrl+C (0x03)，中断正在运行的命令
-  tab.ws.send(JSON.stringify({ type: 'input', data: '\x03' }))
+  if (!tab) return
+  connectTab(tab, true)
 }
 
 function disposeAllTabs() {
-  for (const tab of tabs.value) disposeTab(tab)
+  for (const tab of tabs.value) {
+    tab.ws?.close()
+    tab.term?.dispose()
+  }
   tabs.value = []
   activeTabId.value = ''
+  hostRefs.clear()
   tabCounter = 0
 }
 
-function ensureDefaultTab() {
+function onFocusConsoleFromTool() {
   if (!workDir.value) return
-  if (!tabs.value.length) addTerminal(true)
-  else if (!activeTabId.value) activeTabId.value = tabs.value[0].id
+  const tab = activeTab.value
+  if (tab && tab.ws?.readyState !== WebSocket.OPEN) {
+    connectTab(tab, false)
+  }
 }
 
-function isAgentTab(tab: TerminalTab | null | undefined): boolean {
-  if (!tab) return false
-  return tab.sessionId === agentSessionId(workDir.value)
-}
+function onOpenTerminal(e: Event) {
+  const detail = (e as CustomEvent).detail as { sessionId: string; command?: string } | undefined
+  if (!detail?.sessionId || !workDir.value) return
 
-function ensureAgentTabActive() {
-  if (!workDir.value) return
-  // 已有 tab 且第一个 tab 是 agent tab，复用即可
-  if (tabs.value.length && isAgentTab(tabs.value[0])) {
-    activeTabId.value = tabs.value[0].id
+  // 检查是否已存在同 session 的 tab
+  const existing = tabs.value.find(t => t.sessionId === detail.sessionId)
+  if (existing) {
+    switchTab(existing.id)
     return
   }
-  // 旧 tab（sessionId 为随机 UUID）已不匹配，丢弃重建，让 AI 命令真正可见
-  disposeAllTabs()
-  tabCounter = 0
-  addTerminal(true)
-}
 
-function onFocusConsole() {
-  ensureAgentTabActive()
-  const tab = activeTab.value
-  if (!tab) return
-  void (async () => {
-    await nextTick()
-    initTabTerminal(tab)
-    await waitForHostReady(tab)
-    if (tab.attached) {
-      sendResizeOnly(tab)
-      tab.term?.focus()
-    } else if (!tab.ws || tab.ws?.readyState === WebSocket.CLOSED) {
-      connectTab(tab, false, true)
-    } else {
-      tab.term?.focus()
-    }
-  })()
-}
-
-function onPanelVisible() {
-  if (props.visible === false || !workDir.value) return
-  if (!tabs.value.length) {
-    ensureAgentTabActive()
-    return
+  // 创建新 tab 并连接到指定 session
+  tabCounter++
+  const tab: TerminalTab = {
+    id: newTabId(),
+    sessionId: detail.sessionId,
+    title: detail.command ? `AI: ${detail.command.slice(0, 15)}` : `终端 ${tabCounter}`,
+    connected: false,
+    attached: false,
+    term: null,
+    fitAddon: null,
+    ws: null,
+    wsGen: 0,
+    initialized: false,
   }
-  const tab = activeTab.value
-  if (!tab) return
-  void (async () => {
-    await nextTick()
-    initTabTerminal(tab)
-    await waitForHostReady(tab)
-    if (tab.attached) {
-      sendResizeOnly(tab)
-      tab.term?.focus()
-    } else if (!tab.ws || tab.ws.readyState === WebSocket.CLOSED) {
-      connectTab(tab, false, true)
-    } else {
-      tab.term?.focus()
-    }
-  })()
-}
-
-onMounted(() => {
-  if (props.visible !== false) ensureDefaultTab()
-  resizeObserver = new ResizeObserver(() => {
-    if (props.visible !== false) scheduleResize()
+  tabs.value.push(tab)
+  activeTabId.value = tab.id
+  nextTick(() => {
+    connectTab(tab, false)
   })
-  hostRefs.forEach(el => resizeObserver?.observe(el))
-  window.addEventListener('mimo:focus-console', onFocusConsole)
+}
+
+// 只在用户点击「查看终端」或手动连接时才建立终端
+watch(() => props.visible, (visible) => {
+  if (visible && workDir.value && tabs.value.length > 0) {
+    const tab = activeTab.value
+    if (tab) {
+      nextTick(() => fitTab(tab))
+      if (tab.ws?.readyState !== WebSocket.OPEN) {
+        connectTab(tab, false)
+      }
+    }
+  }
 })
 
-watch(activeTabId, () => {
-  nextTick(() => {
-    hostRefs.forEach(el => resizeObserver?.observe(el))
-    const tab = activeTab.value
-    if (tab?.attached) sendResizeOnly(tab)
+// 监听工作目录变化：不自动创建终端，只清理旧连接
+watch(workDir, () => {
+  disposeAllTabs()
+})
+
+onMounted(() => {
+  // 不再自动创建终端
+  // 监听「查看终端」事件，按需创建终端
+  window.addEventListener('mimo:focus-console', onFocusConsoleFromTool)
+  window.addEventListener('mimo:open-terminal', onOpenTerminal)
+
+  resizeObserver = new ResizeObserver(() => {
+    if (resizeTimer) clearTimeout(resizeTimer)
+    resizeTimer = setTimeout(() => {
+      const tab = activeTab.value
+      if (tab && tab.attached) {
+        fitTab(tab)
+        if (tab.ws?.readyState === WebSocket.OPEN) {
+          tab.ws.send(JSON.stringify({
+            type: 'resize',
+            rows: tab.term?.rows || 24,
+            cols: tab.term?.cols || 80,
+          }))
+        }
+      }
+    }, 150)
   })
+
+  // 观察所有 host 元素
+  hostRefs.forEach((el) => resizeObserver?.observe(el))
 })
 
 onUnmounted(() => {
-  window.removeEventListener('mimo:focus-console', onFocusConsole)
+  window.removeEventListener('mimo:focus-console', onFocusConsoleFromTool)
+  window.removeEventListener('mimo:open-terminal', onOpenTerminal)
   resizeObserver?.disconnect()
-  if (resizeDebounce) clearTimeout(resizeDebounce)
+  if (resizeTimer) clearTimeout(resizeTimer)
   disposeAllTabs()
-})
-
-watch(workDir, () => {
-  disposeAllTabs()
-  if (props.visible !== false) nextTick(() => ensureDefaultTab())
-})
-
-watch(() => props.visible, (visible) => {
-  if (visible) onPanelVisible()
 })
 </script>
 
@@ -707,6 +490,10 @@ watch(() => props.visible, (visible) => {
   overflow-x: auto;
 }
 
+.tab-bar::-webkit-scrollbar {
+  height: 0;
+}
+
 .tab-btn {
   display: inline-flex;
   align-items: center;
@@ -723,9 +510,14 @@ watch(() => props.visible, (visible) => {
 }
 
 .tab-btn.active {
-  background: #fff;
+  background: #ffffff;
   border-color: var(--border);
   color: var(--text-primary);
+}
+
+.tab-btn:hover {
+  background: var(--accent-hover);
+  color: var(--text);
 }
 
 .tab-close {
@@ -742,100 +534,137 @@ watch(() => props.visible, (visible) => {
 
 .tab-close:hover {
   opacity: 1;
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--accent-hover);
 }
 
 .tab-add {
-  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 22px;
   height: 22px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: #fff;
+  border: none;
+  background: transparent;
   color: var(--text-secondary);
-  font-size: 14px;
-  line-height: 1;
+  font-size: 16px;
   cursor: pointer;
+  border-radius: 4px;
+  flex-shrink: 0;
 }
 
 .tab-add:hover {
   background: var(--accent-hover);
+  color: var(--text);
 }
 
 .console-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
 }
 
 .action-btn {
+  padding: 3px 8px;
   border: 1px solid var(--border);
-  background: #fff;
+  border-radius: 4px;
+  background: transparent;
   color: var(--text-secondary);
   font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 4px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .action-btn:hover {
   background: var(--accent-hover);
+  color: var(--text);
 }
 
 .conn-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #c4c4c0;
+  background: #e74c3c;
+  flex-shrink: 0;
 }
 
 .conn-dot.online {
-  background: #22c55e;
-}
-
-.shell-badge {
-  font-size: 10px;
-  color: var(--text-muted);
-  padding: 1px 6px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: #fff;
-  text-transform: lowercase;
+  background: #2ecc71;
 }
 
 .terminal-body {
   flex: 1;
   min-height: 0;
   position: relative;
+  overflow: hidden;
 }
 
 .terminal-host {
   position: absolute;
-  inset: 0;
-  padding: 6px 8px;
-  overflow: hidden;
-  background: #ffffff;
-}
-
-.terminal-host :deep(.xterm) {
+  top: 0;
+  left: 0;
+  width: 100%;
   height: 100%;
-}
-
-.terminal-host :deep(.xterm-viewport) {
-  background-color: #ffffff !important;
+  padding: 4px;
 }
 
 .console-empty {
   position: absolute;
   inset: 0;
-  top: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
   font-size: 13px;
-  pointer-events: none;
-  background: rgba(255, 255, 255, 0.92);
+}
+
+.console-empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  gap: 12px;
+  text-align: center;
+}
+
+.empty-icon {
+  color: var(--text-muted);
+  opacity: 0.5;
+  margin-bottom: 4px;
+}
+
+.empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.empty-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0;
+  max-width: 280px;
+  line-height: 1.5;
+}
+
+.empty-connect-btn {
+  margin-top: 8px;
+  padding: 6px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #1a1a1a;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.empty-connect-btn:hover {
+  background: #333333;
 }
 </style>

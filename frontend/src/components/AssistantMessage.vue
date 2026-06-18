@@ -14,6 +14,10 @@
           :started-at="block.started_at || ''"
           :ended-at="block.ended_at || ''"
           :compact="false"
+          :pending-confirmation="block.pending_confirmation || false"
+          :danger-info="block.danger_info || ''"
+          :session-id="block.session_id || ''"
+          :tool-call-id="block.tool_call_id || ''"
         />
         <div
           v-else-if="block.type === 'text' || block.type === 'summary'"
@@ -119,6 +123,12 @@ interface MessageBlock {
   error?: string
   started_at?: string
   ended_at?: string
+  tool_call_id?: string
+  session_id?: string
+  auto_detached?: boolean
+  pending_confirmation?: boolean
+  danger_info?: string
+  danger_types?: string[]
 }
 
 const props = withDefaults(defineProps<{

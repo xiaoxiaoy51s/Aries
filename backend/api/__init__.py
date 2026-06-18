@@ -10,3 +10,5 @@ from api.plugins import router as plugins_router
 from api.upload import router as upload_router
 from api.debug import router as debug_router
 from api.path_permissions import router as path_permissions_router
+from api.git_api import router as git_router
+from api.files_api import router as files_router

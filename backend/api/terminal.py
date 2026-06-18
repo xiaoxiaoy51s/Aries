@@ -128,3 +128,45 @@ async def run_command(req: RunCommandRequest) -> dict[str, Any]:
         ),
     )
     return result
+
+
+@router.get("/terminal/session/{invocation_id}")
+async def get_terminal_session(invocation_id: str) -> dict[str, Any]:
+    """通过 invocation_id 查找对应的终端 session_id。"""
+    session_id = TerminalManager.lookup_session_for_invocation(invocation_id)
+    if session_id:
+        return {"session_id": session_id}
+    return {"session_id": None, "error": "未找到对应终端"}
+
+
+@router.post("/terminal/session/{session_id}/close")
+async def close_terminal_session(session_id: str) -> dict[str, Any]:
+    """关闭指定终端会话，并终止该终端里的后台进程。"""
+    closed = TerminalManager.close_session_if_exists(session_id)
+    return {"status": "ok", "closed": closed}
+
+
+@router.post("/terminal/{invocation_id}/background")
+async def background_command(invocation_id: str) -> dict[str, Any]:
+    """将 AI 命令转入后台运行，不再等待结果。"""
+    resolved_id = TerminalManager.resolve_invocation_id(invocation_id)
+    TerminalManager.set_interrupt_action(resolved_id, "background")
+    return {"status": "ok", "message": "命令已转入后台"}
+
+
+@router.post("/terminal/{invocation_id}/stop")
+async def stop_command(invocation_id: str) -> dict[str, Any]:
+    """终止 AI 命令并关闭对应终端。"""
+    resolved_id = TerminalManager.resolve_invocation_id(invocation_id)
+    TerminalManager.set_interrupt_action(resolved_id, "terminate")
+    try:
+        from utils.cli_executor import CLIExecutor
+        CLIExecutor.set_interrupt_action(resolved_id, "terminate")
+        if resolved_id != invocation_id:
+            CLIExecutor.set_interrupt_action(invocation_id, "terminate")
+    except Exception:
+        pass
+    session_id = TerminalManager.lookup_session_for_invocation(resolved_id)
+    if session_id:
+        TerminalManager.close_session_if_exists(session_id)
+    return {"status": "ok", "message": "命令已终止"}

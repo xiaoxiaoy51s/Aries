@@ -441,6 +441,7 @@ async def chat_completions(request: ChatRequest, http_request: Request):
                     tool_status,
                     result=tool_result.get("output", "") or "",
                     error=tool_result.get("error", "") or "",
+                    session_id=tool_result.get("session_id", "") or "",
                 )
 
                 tool_results.append({

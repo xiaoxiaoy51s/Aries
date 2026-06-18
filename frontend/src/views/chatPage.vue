@@ -1,5 +1,21 @@
 <template>
   <section id="chatPage" class="page">
+    <!-- 右侧面板开关按钮 -->
+    <button
+      type="button"
+      class="right-panel-toggle"
+      :title="rightPanelVisible ? '收起面板' : '展开面板'"
+      :aria-label="rightPanelVisible ? '收起面板' : '展开面板'"
+      @click="rightPanelVisible = !rightPanelVisible"
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="3" width="18" height="18" rx="2"/>
+        <path v-if="rightPanelVisible" d="M15 3v18"/>
+        <path v-else d="M15 3v18M15 9h6"/>
+      </svg>
+    </button>
+
+    <div class="chat-content">
     <!-- 空状态 -->
     <div v-if="!hasActiveChat" class="chat-empty">
       <h1 class="welcome-title">我们要在 MIMOClaw 里构建什么？</h1>
@@ -229,6 +245,17 @@
         </div>
       </div>
     </div>
+    </div>
+
+    <!-- 右侧面板：控制台/浏览器/Git/Diff -->
+    <RightPanel :visible="rightPanelVisible" @close="rightPanelVisible = false" />
+
+    <!-- 顶部 Toast 通知 -->
+    <Transition name="toast">
+      <div v-if="toastVisible" class="page-toast" :class="'toast-' + toastType">
+        <span>{{ toastMessage }}</span>
+      </div>
+    </Transition>
   </section>
 </template>
 
@@ -244,6 +271,7 @@ import AssistantMessage from '@/components/AssistantMessage.vue'
 import DangerCommandConfirm from '@/components/DangerCommandConfirm.vue'
 import SlashComposerInput, { type ComposerImage } from '@/components/SlashComposerInput.vue'
 import UserMessageContent from '@/components/UserMessageContent.vue'
+import RightPanel from '@/components/workspace/RightPanel.vue'
 import { parseSnapshotEventObjects } from '@/utils/snapshotParser'
 
 interface SlashCommandDef {
@@ -271,6 +299,21 @@ const commandObjective = ref('')
 const selectedModel = ref('')
 const hasActiveChat = ref(false)
 const isSending = ref(false)
+const rightPanelVisible = ref(false)
+const toastVisible = ref(false)
+const toastMessage = ref('')
+const toastType = ref<'info' | 'warning' | 'error'>('info')
+let toastTimer: ReturnType<typeof setTimeout> | null = null
+
+function showToast(message: string, type: 'info' | 'warning' | 'error' = 'info', duration = 3000) {
+  if (toastTimer) clearTimeout(toastTimer)
+  toastMessage.value = message
+  toastType.value = type
+  toastVisible.value = true
+  toastTimer = setTimeout(() => {
+    toastVisible.value = false
+  }, duration)
+}
 const messagesContainer = ref<HTMLElement>()
 const SCROLL_IDLE_MS = 5000
 let lastPointerActivityAt = 0
@@ -330,6 +373,8 @@ interface MessageBlock {
   started_at?: string
   ended_at?: string
   tool_call_id?: string
+  session_id?: string
+  auto_detached?: boolean
   pending_confirmation?: boolean
   danger_info?: string
   danger_types?: string[]
@@ -652,6 +697,7 @@ async function loadMessageSnapshot(
           blocks.push({
             type: 'tool',
             tool_name: event.toolName || 'unknown',
+            tool_call_id: event.toolCallId || '',
             status: event.status || 'running',
             args: event.args,
             result: '',
@@ -668,6 +714,9 @@ async function loadMessageSnapshot(
               b.status = event.status || 'completed'
               b.result = event.content
               b.ended_at = event.timestamp || ''
+              if (event.sessionId) {
+                b.session_id = event.sessionId
+              }
               break
             }
           }
@@ -820,10 +869,29 @@ function onGlobalKeydown(e: KeyboardEvent) {
   }
 }
 
+function onFocusConsole() {
+  rightPanelVisible.value = true
+}
+
+function onToast(e: Event) {
+  const detail = (e as CustomEvent).detail as { message?: string; type?: 'info' | 'warning' | 'error' }
+  if (detail?.message) showToast(detail.message, detail.type || 'info')
+}
+
+function onAddToChat(e: Event) {
+  const detail = (e as CustomEvent).detail as string
+  if (detail) {
+    inputMessage.value += inputMessage.value ? ` ${detail}` : detail
+  }
+}
+
 onMounted(() => {
   window.addEventListener('mimo:new-chat', onNewChat)
   window.addEventListener('mimo:load-session', onLoadSession)
   window.addEventListener('mimo:workdir-changed', onWorkDirChanged)
+  window.addEventListener('mimo:focus-console', onFocusConsole)
+  window.addEventListener('mimo:toast', onToast)
+  window.addEventListener('mimo:add-to-chat', onAddToChat)
   document.addEventListener('mousedown', closeWorkDirMenu)
   document.addEventListener('keydown', onGlobalKeydown)
   loadWorkDir()
@@ -847,6 +915,9 @@ onUnmounted(() => {
   window.removeEventListener('mimo:new-chat', onNewChat)
   window.removeEventListener('mimo:load-session', onLoadSession)
   window.removeEventListener('mimo:workdir-changed', onWorkDirChanged)
+  window.removeEventListener('mimo:focus-console', onFocusConsole)
+  window.removeEventListener('mimo:toast', onToast)
+  window.removeEventListener('mimo:add-to-chat', onAddToChat)
   document.removeEventListener('mousedown', closeWorkDirMenu)
   document.removeEventListener('keydown', onGlobalKeydown)
 })
@@ -885,12 +956,6 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
     }
     assistantMsg.blocks = blocks
   } else if (evt.type === 'tool_call') {
-    if (evt.data.tool_name === 'cli_executor') {
-      workspaceStore.focusConsole()
-      nextTick(() => {
-        window.dispatchEvent(new CustomEvent('mimo:focus-console'))
-      })
-    }
     if (!assistantMsg.tools) assistantMsg.tools = []
     if (!assistantMsg.blocks) assistantMsg.blocks = []
     const toolCallId = String(evt.data.tool_call_id || '').trim()
@@ -921,6 +986,7 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
         type: 'tool',
         tool_name: evt.data.tool_name,
         tool_call_id: evt.data.tool_call_id,
+        session_id: evt.data.session_id || '',
         status: 'running',
         args: evt.data.args,
         result: '',
@@ -974,6 +1040,8 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
             result: evt.data.output || '',
             ended_at: '',
             pending_confirmation: isAutoConfirmed ? false : (isPendingConfirm ? block.pending_confirmation : false),
+            session_id: evt.data.session_id || (block as MessageBlock).session_id || '',
+            auto_detached: Boolean(evt.data.auto_detached || (block as MessageBlock).auto_detached),
           }
         }
       }
@@ -1257,6 +1325,7 @@ async function sendMessage() {
     blocks: [],
     isLoading: true
   }
+
   messages.value.push(assistantMsg)
   const assistantIdx = messages.value.length - 1
 
@@ -1377,11 +1446,45 @@ function scheduleScrollToBottom(force = false) {
 .page {
   display: flex;
   flex: 1;
-  flex-direction: column;
+  flex-direction: row;
   overflow: hidden;
   min-height: 0;
   width: 100%;
   align-items: stretch;
+  position: relative;
+}
+
+.right-panel-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  cursor: pointer;
+  box-shadow: var(--shadow-panel);
+  transition: background 0.15s, color 0.15s;
+}
+
+.right-panel-toggle:hover {
+  background: var(--accent-hover);
+  color: var(--text);
+}
+
+.chat-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* —— 对话：空状态 —— */
@@ -1745,5 +1848,57 @@ function scheduleScrollToBottom(force = false) {
 .composer-bottom textarea {
   padding: 12px 16px 6px;
   font-size: 14px;
+}
+
+/* 顶部 Toast 通知 */
+.page-toast {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  padding: 10px 24px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.page-toast.toast-warning {
+  background: #fff3cd;
+  color: #856404;
+  border: 1px solid #ffc107;
+}
+
+.page-toast.toast-info {
+  background: #d1ecf1;
+  color: #0c5460;
+  border: 1px solid #17a2b8;
+}
+
+.page-toast.toast-error {
+  background: #f8d7da;
+  color: #721c24;
+  border: 1px solid #dc3545;
+}
+
+.toast-enter-active {
+  transition: all 0.25s ease-out;
+}
+
+.toast-leave-active {
+  transition: all 0.2s ease-in;
+}
+
+.toast-enter-from {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-12px);
+}
+
+.toast-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-12px);
 }
 </style>

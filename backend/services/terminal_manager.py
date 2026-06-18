@@ -21,14 +21,29 @@ OutputCallback = Callable[[str], None]
 logger = logging.getLogger(__name__)
 
 AUTO_DETACH_READY_PATTERNS = (
-    r"http://localhost:\d+/?",
-    r"https://localhost:\d+/?",
+    r"https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0):\d+/?",
+    r"\bLocal:\s+http://",
+    r"\bNetwork:\s+http://",
     r"\bvite\b.*\bready\b",
     r"\bready in\b",
+    r"\bcompiled successfully\b",
+    r"\bserver (?:running|started|listening)\b",
+    r"\blistening on\b",
     r"\bpress h \+ enter to show help\b",
-    r"\blocal:\s+http://",
+)
+PERSISTENT_COMMAND_PATTERNS = (
+    r"^(?:npm|pnpm|yarn|bun)(?:\.cmd)?\s+(?:run\s+)?(?:dev|start|serve)(?:\s|$)",
+    r"^(?:npm|pnpm|yarn|bun)(?:\.cmd)?\s+start(?:\s|$)",
+    r"^(?:npx\s+)?vite(?:\s|$)",
+    r"^(?:npx\s+)?next\s+dev(?:\s|$)",
+    r"^(?:npx\s+)?nuxt\s+dev(?:\s|$)",
+    r"^(?:npx\s+)?astro\s+dev(?:\s|$)",
+    r"^(?:npx\s+)?svelte-kit\s+dev(?:\s|$)",
+    r"^(?:npx\s+)?webpack\s+serve(?:\s|$)",
+    r"^(?:npx\s+)?vue-cli-service\s+serve(?:\s|$)",
 )
 AUTO_DETACH_STABLE_SECONDS = 1.5
+PERSISTENT_COMMAND_START_TIMEOUT = 45
 INTERACTIVE_PROMPT_PATTERNS = (
     r"\(y/n\)",
     r"\[Y/n\]",
@@ -36,12 +51,23 @@ INTERACTIVE_PROMPT_PATTERNS = (
     r"continue\?",
     r"proceed\?",
 )
+# Shell prompt detection patterns for command completion
+_SHELL_PROMPT_PATTERNS = (
+    rb"PS [A-Za-z]:[^\r\n>]*>[\s]*$",
+    rb"PS /[^\r\n>]*>[\s]*$",
+    rb"[A-Za-z]:[^\r\n>]*>[\s]*$",
+    rb"[^>\s]+@[^>\s]+:[^>]*\$[\s]*$",
+    rb"[^>\s]+@[^>\s]+:[^>]*#[\s]*$",
+)
 # cmd.exe echoes these when xterm sends device-attribute queries; they break the cursor.
 _NOISE_OUTPUT_RE = re.compile(
     r"\x1b\[\?1;2c"
     r"|\x1b\[>0;[0-9;]*c"
     r"|\x1b\[\?62;[0-9;]*c"
     r"|\x1b\[c"
+    r"|\x1b\[(?:1|2)t"
+    r"|\x1b\[\?(?:1004|9001)[hl]"
+    r"|\x1b\][0-9;]*[^\x07\x1b]*(?:\x07|\x1b\\)"
 )
 _MAX_OUTPUT_BUFFER_CHARS = 256_000
 
@@ -50,6 +76,40 @@ def _sanitize_terminal_output(data: str) -> str:
     if not data:
         return data
     return _NOISE_OUTPUT_RE.sub("", data)
+
+
+def _is_persistent_command(command: str) -> bool:
+    normalized = (command or "").strip().lower()
+    return any(re.search(pattern, normalized, re.IGNORECASE) for pattern in PERSISTENT_COMMAND_PATTERNS)
+
+
+def _strip_ansi_for_detection(data: str) -> str:
+    cleaned = _sanitize_terminal_output(data or "")
+    return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", cleaned)
+
+
+def _detect_auto_detach_ready(output: str) -> bool:
+    text = _strip_ansi_for_detection(output)
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in AUTO_DETACH_READY_PATTERNS)
+
+
+def _detect_shell_prompt(buffer: str) -> bool:
+    """Detect if the last line in buffer looks like a shell prompt."""
+    if not buffer:
+        return False
+    # Take the last ~200 chars of the buffer
+    tail = buffer[-500:] if len(buffer) > 500 else buffer
+    # Split into lines and check the last meaningful line
+    lines = tail.split("\r\n")
+    if len(lines) < 2:
+        lines = tail.split("\n")
+    # Check last few lines for prompt pattern
+    for line in reversed(lines[-5:]):
+        line_bytes = line.encode("utf-8", errors="replace")
+        for pattern in _SHELL_PROMPT_PATTERNS:
+            if re.search(pattern, line_bytes):
+                return True
+    return False
 
 
 class _TerminalSession:
@@ -296,16 +356,28 @@ class _TerminalSession:
         except Exception:
             pass
 
+    def snapshot_buffer(self) -> str:
+        """Return current buffer without clearing."""
+        with self.lock:
+            return _sanitize_terminal_output(self._output_buffer)
+
+    def kill_command(self) -> None:
+        """Send Ctrl+C to the PTY to interrupt the currently running foreground command."""
+        self.write("\x03")
+
 
 class TerminalManager:
     _instance: TerminalManager | None = None
     _lock = threading.Lock()
     _interrupt_actions: dict[str, str] = {}
     _interrupt_lock = threading.Lock()
+    _invocation_session_map: dict[str, str] = {}
+    _map_lock = threading.Lock()
 
     def __init__(self) -> None:
         self._sessions: dict[str, _TerminalSession] = {}
         self._session_lock = threading.Lock()
+        self._persistent_sessions: set[str] = set()
         self._async_subscribers: dict[str, list[asyncio.Queue[str]]] = defaultdict(list)
         self._ws_callbacks: dict[str, OutputCallback] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -351,10 +423,7 @@ class TerminalManager:
 
     @staticmethod
     def _launch_detached_command(command: str, work_dir: str) -> dict[str, Any]:
-        """new 模式：独立子进程后台运行，不占用 agent 共享 PTY。"""
-        creationflags = 0
-        if os.name == "nt":
-            creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+        """独立子进程后台运行，不创建控制台窗口。"""
         proc = subprocess.Popen(
             command,
             shell=True,
@@ -362,7 +431,7 @@ class TerminalManager:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
+            creationflags=0,
         )
         return {"pid": proc.pid}
 
@@ -375,9 +444,12 @@ class TerminalManager:
         reset: bool = True,
     ) -> _TerminalSession:
         if reset:
-            from utils.cli_process_cleanup import cleanup_stale_cli_processes
+            try:
+                from utils.cli_process_cleanup import cleanup_stale_cli_processes
 
-            cleanup_stale_cli_processes()
+                cleanup_stale_cli_processes()
+            except ImportError:
+                pass
         session = self.get_session(session_id, work_dir)
         if reset:
             session.restart_shell(rows=rows, cols=cols)
@@ -516,7 +588,7 @@ class TerminalManager:
             "success": return_code == 0 and not timed_out,
             "return_code": return_code,
             "output_capture": captured,
-            "auto_detached": False,
+            "auto_detached": auto_detached,
             "timed_out": timed_out,
             "interrupted_action": None,
             "working_dir": work_dir,
@@ -542,6 +614,45 @@ class TerminalManager:
             return cls._interrupt_actions.pop(invocation_id, None)
 
     @classmethod
+    def register_invocation_session(cls, invocation_id: str, session_id: str) -> None:
+        with cls._map_lock:
+            cls._invocation_session_map[invocation_id] = session_id
+
+    @classmethod
+    def lookup_session_for_invocation(cls, invocation_id: str) -> str | None:
+        with cls._map_lock:
+            sid = cls._invocation_session_map.get(invocation_id)
+            if sid:
+                return sid
+            suffix = f":{invocation_id}"
+            for key, value in cls._invocation_session_map.items():
+                if key.endswith(suffix):
+                    return value
+            return None
+
+    @classmethod
+    def resolve_invocation_id(cls, invocation_id: str) -> str:
+        with cls._map_lock:
+            if invocation_id in cls._invocation_session_map:
+                return invocation_id
+            suffix = f":{invocation_id}"
+            for key in cls._invocation_session_map.keys():
+                if key.endswith(suffix):
+                    return key
+            return invocation_id
+
+    @classmethod
+    def close_session_if_exists(cls, session_id: str) -> bool:
+        """关闭指定 session 的终端进程。返回是否成功找到并关闭。"""
+        instance = cls.get_instance()
+        session = instance._sessions.get(session_id)
+        if session is None:
+            return False
+        session.close()
+        instance._persistent_sessions.discard(session_id)
+        return True
+
+    @classmethod
     def terminate_all_active(cls, action: str = "terminate") -> list[str]:
         """终止所有 PTY 会话中的运行中命令。
 
@@ -553,6 +664,8 @@ class TerminalManager:
             session_ids = list(instance._sessions.keys())
         for sid in session_ids:
             try:
+                if sid in instance._persistent_sessions:
+                    continue
                 session = instance._sessions.get(sid)
                 if session is None:
                     continue
@@ -569,6 +682,30 @@ class TerminalManager:
         return closed
 
     @classmethod
+    def close_all_sessions(cls) -> list[str]:
+        """关闭所有终端会话，包括 persistent（用于后端关闭）。返回被关闭的 session id 列表。"""
+        closed: list[str] = []
+        instance = cls.get_instance()
+        with instance._session_lock:
+            session_ids = list(instance._sessions.keys())
+        for sid in session_ids:
+            try:
+                session = instance._sessions.get(sid)
+                if session is None:
+                    continue
+                try:
+                    session.set_interrupt_action_for_all("terminate")
+                except Exception:
+                    pass
+                if session.is_alive():
+                    session.close()
+                    closed.append(sid)
+                instance._persistent_sessions.discard(sid)
+            except Exception:
+                pass
+        return closed
+
+    @classmethod
     def clear_runtime_dir(cls) -> int:
         """清理 ~/.MIMOClaw/temp/cli_runtime 下的 PTY/捕获残留文件。"""
         try:
@@ -576,6 +713,188 @@ class TerminalManager:
             return CLIExecutor.clear_runtime_dir()
         except Exception:
             return 0
+
+    def open_terminal_for_command(
+        self,
+        command: str,
+        work_dir: str | None = None,
+        timeout: int = 300,
+        invocation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """为 AI 命令创建一个新的专用终端会话，注入命令并等待完成。
+
+        与 _run_command_in_agent_pty 不同，此方法:
+        - 使用全新 session_id（不会与 agent session 冲突）
+        - 不检查 WebSocket 订阅者
+        - 返回 session_id 供前端连接
+
+        命令执行完毕后终端保留，用户可在 ConsolePanel 中继续使用。
+        """
+        mapped_session_id = self.lookup_session_for_invocation(invocation_id) if invocation_id else None
+        session_id = (session_id or mapped_session_id or "").strip() or f"ai-{uuid.uuid4().hex[:8]}"
+        target_dir = self._normalize_work_dir(work_dir)
+
+        if invocation_id:
+            TerminalManager.register_invocation_session(invocation_id, session_id)
+
+        session = self.get_session(session_id, target_dir)
+        session.ensure_shell_ready()
+
+        if not session.is_running():
+            return {
+                "success": False,
+                "return_code": -1,
+                "output_capture": "",
+                "error": "无法启动终端 shell",
+                "timed_out": False,
+                "interrupted_action": None,
+                "working_dir": target_dir,
+                "session_id": session_id,
+            }
+
+        # 等待 shell 初始化完成（prompt 出现）
+        time.sleep(0.3)
+
+        uid = uuid.uuid4().hex[:8]
+        temp_dir = Path(tempfile.gettempdir()) / "MIMOClaw" / "pty_jobs"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        cap_file = temp_dir / f"out_{uid}.txt"
+        done_file = temp_dir / f"done_{uid}.txt"
+        cmd_ps1 = temp_dir / f"cmd_{uid}.ps1"
+        wrapper_ps1 = temp_dir / f"wrap_{uid}.ps1"
+
+        for f in (cap_file, done_file, cmd_ps1, wrapper_ps1):
+            f.unlink(missing_ok=True)
+
+        cmd_ps1.write_text(command, encoding="utf-8")
+
+        cap_path = str(cap_file).replace("'", "''")
+        done_path = str(done_file).replace("'", "''")
+        cmd_path = str(cmd_ps1).replace("'", "''")
+        wrapper_content = (
+            f"$ErrorActionPreference = 'Continue'\r\n"
+            f"$capFile = '{cap_path}'\r\n"
+            f"$doneFile = '{done_path}'\r\n"
+            f"try {{\r\n"
+            f"    & '{cmd_path}' 2>&1 | Tee-Object -FilePath $capFile\r\n"
+            f"    $code = $LASTEXITCODE\r\n"
+            f"}} catch {{\r\n"
+            f"    $_ | Out-String | Write-Host\r\n"
+            f"    $code = 1\r\n"
+            f"}}\r\n"
+            f"$code | Out-File -FilePath $doneFile -Encoding utf8\r\n"
+        )
+        wrapper_ps1.write_text(wrapper_content, encoding="utf-8")
+
+        wrapper_path = str(wrapper_ps1).replace("'", "''")
+        session.write(f"\r\n& '{wrapper_path}'\r\n")
+
+        captured = ""
+        return_code = 0
+        timed_out = False
+        interrupted_action = None
+        is_backgrounded = False
+        auto_detached = False
+        persistent_command = _is_persistent_command(command)
+        ready_at: float | None = None
+
+        if persistent_command:
+            self._persistent_sessions.add(session_id)
+            time.sleep(0.8)
+            return {
+                "success": True,
+                "return_code": 0,
+                "output_capture": _sanitize_terminal_output(session.snapshot_buffer()) or "开发服务器已在终端中启动",
+                "auto_detached": True,
+                "timed_out": False,
+                "interrupted_action": None,
+                "working_dir": target_dir,
+                "session_id": session_id,
+            }
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if invocation_id:
+                action = TerminalManager.consume_interrupt_action(invocation_id)
+                if action:
+                    if action == "background":
+                        is_backgrounded = True
+                        break
+                    else:
+                        interrupted_action = action
+                        session.kill_command()
+                        time.sleep(0.3)
+                        break
+
+            if done_file.exists():
+                # 额外检查：等待提示符稳定后再确认完成
+                time.sleep(0.1)
+                if _detect_shell_prompt(session.snapshot_buffer()):
+                    break
+                elif done_file.stat().st_size > 0:
+                    # done_file 有内容但还没检测到提示符，再多等一会儿
+                    time.sleep(0.3)
+                    break
+
+            snapshot = session.snapshot_buffer()
+            if persistent_command and _detect_auto_detach_ready(snapshot):
+                if ready_at is None:
+                    ready_at = time.monotonic()
+                elif time.monotonic() - ready_at >= AUTO_DETACH_STABLE_SECONDS:
+                    auto_detached = True
+                    is_backgrounded = True
+                    self._persistent_sessions.add(session_id)
+                    break
+            else:
+                ready_at = None
+
+            # 备用：如果检测到提示符且 done_file 即将出现
+            if _detect_shell_prompt(snapshot):
+                time.sleep(0.1)
+                if done_file.exists():
+                    break
+
+            time.sleep(0.15)
+        else:
+            if persistent_command:
+                auto_detached = True
+                is_backgrounded = True
+                self._persistent_sessions.add(session_id)
+            else:
+                timed_out = True
+                session.kill_command()
+                time.sleep(0.3)
+
+        # 读取结果
+        if is_backgrounded:
+            return_code = 0
+            captured = _sanitize_terminal_output(session.snapshot_buffer()) or "命令已转入后台运行"
+        elif done_file.exists():
+            try:
+                return_code = int(done_file.read_text(encoding="utf-8").strip() or "0")
+            except Exception:
+                return_code = 1
+            if cap_file.exists():
+                captured = cap_file.read_text(encoding="utf-8", errors="replace")
+        else:
+            return_code = -1
+            captured = session.snapshot_buffer()
+
+        # 清理临时文件
+        for f in (cap_file, done_file, cmd_ps1, wrapper_ps1):
+            f.unlink(missing_ok=True)
+
+        return {
+            "success": return_code == 0 and not timed_out and not interrupted_action,
+            "return_code": return_code,
+            "output_capture": captured,
+            "auto_detached": auto_detached,
+            "timed_out": timed_out,
+            "interrupted_action": interrupted_action,
+            "working_dir": target_dir,
+            "session_id": session_id,
+        }
 
     @staticmethod
     def _run_command_in_agent_pty(
@@ -708,39 +1027,17 @@ class TerminalManager:
         command: str,
         work_dir: str | None = None,
         timeout: int = 300,
-        visible_terminal_mode: str = "shared",
         invocation_id: str | None = None,
     ) -> dict[str, Any]:
-        from utils.cli_process_cleanup import cleanup_stale_cli_processes
+        """通过 agent PTY 执行命令（ConsolePanel 可见），无订阅者时 fallback 到隐藏子进程。"""
+        try:
+            from utils.cli_process_cleanup import cleanup_stale_cli_processes
 
-        cleanup_stale_cli_processes()
+            cleanup_stale_cli_processes()
+        except ImportError:
+            pass
         target_dir = self._normalize_work_dir(work_dir)
-        mode = str(visible_terminal_mode or "shared").strip().lower()
 
-        if mode == "new" and os.name == "nt":
-            from utils.cli_executor import CLIExecutor
-
-            executor = CLIExecutor(work_dir=target_dir)
-            result = executor.execute(
-                command=command,
-                working_dir=target_dir,
-                timeout=timeout,
-                skip_confirmation=True,
-                invocation_id=invocation_id,
-                visible_terminal_mode="new",
-            )
-            return {
-                "success": bool(result.get("success")),
-                "return_code": int(result.get("return_code") or 0),
-                "output_capture": str(result.get("captured_output") or ""),
-                "auto_detached": bool(result.get("auto_detached")),
-                "timed_out": "timed out" in str(result.get("error") or "").lower(),
-                "interrupted_action": result.get("interrupted_action"),
-                "working_dir": target_dir,
-                "pid": result.get("pid"),
-            }
-
-        # 优先尝试 agent PTY（ConsolePanel 可见），无连接时 fallback 到隐藏子进程
         pty_result = self._run_command_in_agent_pty(
             command, target_dir, timeout, invocation_id
         )

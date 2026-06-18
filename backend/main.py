@@ -12,7 +12,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-from api import config_router, chat_router, upload_router, skills_router, plugins_router, sessions_router, debug_router, scheduled_tasks_router, platforms_router, system_router, path_permissions_router
+from api import config_router, chat_router, upload_router, skills_router, plugins_router, sessions_router, debug_router, scheduled_tasks_router, platforms_router, system_router, path_permissions_router, terminal_router, git_router, files_router
 from db.database import init_database
 from utils.scheduler import run_scheduler
 
@@ -53,6 +53,19 @@ async def lifespan(app: FastAPI):
 
     mcp_pool.shutdown()
     print("[MCP] 连接池已关闭")
+
+    try:
+        from services.terminal_manager import TerminalManager
+        from utils.cli_executor import CLIExecutor
+        closed_terms = TerminalManager.close_all_sessions()
+        closed_procs = CLIExecutor.terminate_all_active(action="terminate")
+        if closed_terms:
+            print(f"[Terminal] 关闭 {len(closed_terms)} 个终端会话")
+        if closed_procs:
+            print(f"[CLI] 终止 {len(closed_procs)} 个子进程")
+    except Exception as exc:
+        print(f"[Shutdown] 清理终端/子进程异常: {exc}")
+
     scheduler_task.cancel()
     try:
         await scheduler_task
@@ -90,6 +103,9 @@ app.include_router(scheduled_tasks_router)
 app.include_router(platforms_router)
 app.include_router(system_router)
 app.include_router(path_permissions_router)
+app.include_router(terminal_router)
+app.include_router(git_router)
+app.include_router(files_router)
 
 
 @app.get("/")

@@ -2,6 +2,7 @@ import json
 import os
 import platform
 import asyncio
+import uuid
 from datetime import datetime
 from typing import AsyncGenerator, List, Dict, Any, Optional, TYPE_CHECKING
 
@@ -451,8 +452,20 @@ async def stream_agent_mode(
                     except:
                         args = {}
 
+                    terminal_session_id = ""
+                    if tool_name == "cli_executor" and args.get("open_in_terminal"):
+                        terminal_session_id = f"ai-{uuid.uuid4().hex[:8]}"
+                        try:
+                            from services.terminal_manager import TerminalManager
+                            TerminalManager.register_invocation_session(f"{session_id}:{tool_id}", terminal_session_id)
+                        except Exception:
+                            pass
+
                     # 发送工具调用开始事件
-                    yield f"data: {json.dumps({'tool_call': {'tool_call_id': tool_id, 'tool_name': tool_name, 'status': 'running', 'args': args, 'round': round_no}}, ensure_ascii=False)}\n\n"
+                    tool_call_payload = {'tool_call_id': tool_id, 'tool_name': tool_name, 'status': 'running', 'args': args, 'round': round_no}
+                    if terminal_session_id:
+                        tool_call_payload['session_id'] = terminal_session_id
+                    yield f"data: {json.dumps({'tool_call': tool_call_payload}, ensure_ascii=False)}\n\n"
 
                     # 记录工具调用
                     reasoning_text = logger.write_tool_call(tool_id, tool_name, args)
@@ -519,11 +532,14 @@ async def stream_agent_mode(
                         else:
                             retry_args = dict(args)
                             retry_args["skip_confirmation"] = True
-                            yield f"data: {json.dumps({'tool_call': {'tool_call_id': tool_id, 'tool_name': tool_name, 'status': 'running', 'args': retry_args, 'round': round_no}}, ensure_ascii=False)}\n\n"
+                            retry_payload = {'tool_call_id': tool_id, 'tool_name': tool_name, 'status': 'running', 'args': retry_args, 'round': round_no}
+                            if terminal_session_id:
+                                retry_payload['session_id'] = terminal_session_id
+                            yield f"data: {json.dumps({'tool_call': retry_payload}, ensure_ascii=False)}\n\n"
                             result = await loop.run_in_executor(
                                 None,
-                                lambda tn=tool_name, a=retry_args, wd=work_dir, sid=session_id: execute_tool(
-                                    tn, a, work_dir=wd, session_id=sid
+                                lambda tn=tool_name, a=retry_args, wd=work_dir, sid=session_id, iid=invocation_id: execute_tool(
+                                    tn, a, work_dir=wd, session_id=sid, invocation_id=iid
                                 ),
                             )
 
@@ -540,13 +556,27 @@ async def stream_agent_mode(
                     logger.write_tool_result(
                         tool_id, tool_name, status,
                         result=json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result),
-                        error=error_msg
+                        error=error_msg,
+                        session_id=result.get("session_id", "") if isinstance(result, dict) else "",
                     )
                     if segment_sink:
                         await segment_sink.on_tool_done(tool_name, status, output)
 
                     # 发送工具结果事件
-                    yield f"data: {json.dumps({'tool_result': {'tool_name': tool_name, 'tool_call_id': tool_id, 'status': status, 'output': output, 'round': round_no}}, ensure_ascii=False)}\n\n"
+                    result_event: dict[str, Any] = {
+                        'tool_name': tool_name,
+                        'tool_call_id': tool_id,
+                        'status': status,
+                        'output': output,
+                        'round': round_no,
+                    }
+                    # 如果工具返回了 session_id（终端会话），一并传给前端
+                    result_session_id = result.get("session_id") if isinstance(result, dict) else None
+                    if result_session_id:
+                        result_event["session_id"] = result_session_id
+                    if isinstance(result, dict) and result.get("auto_detached"):
+                        result_event["auto_detached"] = True
+                    yield f"data: {json.dumps({'tool_result': result_event}, ensure_ascii=False)}\n\n"
 
                     if stream_stopped:
                         cancelled = True

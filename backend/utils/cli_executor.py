@@ -55,17 +55,12 @@ class CLIExecutor:
     )
     AUTO_DETACH_STABLE_SECONDS = 1.5
 
-    _visible_shell_lock = threading.Lock()
-    _visible_shell_command_lock = threading.Lock()
-    _visible_shell_process: subprocess.Popen[str] | None = None
-    _visible_shell_dispatch_dir: Path | None = None
     _powershell_lock = threading.Lock()
     _resolved_powershell_exe: str | None = None
     _log_lock = threading.Lock()
     _active_processes: dict[str, subprocess.Popen[str]] = {}
     _interrupt_actions: dict[str, str] = {}
-    _active_visible_polls: dict[str, dict[str, Any]] = {}
-    _cancel_all_event = threading.Event()
+    _process_lock = threading.Lock()
 
     @classmethod
     def _runtime_root(cls) -> Path:
@@ -89,7 +84,6 @@ class CLIExecutor:
         else:
             self._allowed_dir = self.manager.get_user_dir()
         self._allowed_dir.mkdir(parents=True, exist_ok=True)
-        CLIExecutor._cleanup_old_runtime_files()
 
     @property
     def allowed_dir(self) -> Path:
@@ -158,16 +152,6 @@ class CLIExecutor:
     @staticmethod
     def _escape_ps_single_quoted(value: str) -> str:
         return str(value or "").replace("'", "''")
-
-    @staticmethod
-    def _visible_shell_command_echo_literal(command: str) -> str:
-        raw = str(command or "").strip().replace("\r\n", "\n")
-        if not raw:
-            return CLIExecutor._escape_ps_single_quoted("(empty)")
-        if len(raw) > 1200:
-            raw = raw[:1200] + "..."
-        display = raw.replace("\n", " | ")
-        return CLIExecutor._escape_ps_single_quoted(display)
 
     @staticmethod
     def _is_dir_listing_command(command: str) -> bool:
@@ -275,12 +259,6 @@ class CLIExecutor:
                 return normalized
         return cls._resolve_powershell_exe()
 
-    @classmethod
-    def _reset_visible_shell(cls) -> None:
-        with cls._visible_shell_lock:
-            cls._visible_shell_process = None
-            cls._visible_shell_dispatch_dir = None
-
     @staticmethod
     def _terminate_process(process: subprocess.Popen[str], force: bool = False) -> None:
         if process.poll() is not None:
@@ -301,597 +279,6 @@ class CLIExecutor:
             except Exception:
                 pass
 
-    @classmethod
-    def _shared_shell_bootstrap_command(cls, bootstrap_dir: Path) -> str:
-        qd = cls._escape_ps_single_quoted(str(bootstrap_dir.resolve()))
-        dispatch_dir = cls._runtime_root() / "shared_dispatch"
-        qdispatch = cls._escape_ps_single_quoted(str(dispatch_dir.resolve()))
-        return (
-            f"Set-Location -LiteralPath '{qd}'; "
-            "$ErrorActionPreference = 'Continue'; "
-            "try { "
-            "$Host.UI.RawUI.WindowTitle = 'NonoClaw shared shell'; "
-            "Write-Host 'NonoClaw shared shell - 自动化下发命令（非完整交互式会话），外观与手动打开的 PowerShell 可能不同。' "
-            "} catch {}; "
-            f"$dispatchDir = '{qdispatch}'; "
-            "if (-not (Test-Path -LiteralPath $dispatchDir)) { "
-            "  New-Item -ItemType Directory -Path $dispatchDir -Force | Out-Null "
-            "}; "
-            "while ($true) { "
-            "  $jobs = @(Get-ChildItem -LiteralPath $dispatchDir -Filter 'job_*.ps1' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime, Name); "
-            "  if ($jobs.Count -eq 0) { Start-Sleep -Milliseconds 200; continue }; "
-            "  foreach ($job in $jobs) { "
-            "    try { & $job.FullName } catch { ($_ | Out-String) | Write-Host }; "
-            "    Remove-Item -LiteralPath $job.FullName -Force -ErrorAction SilentlyContinue "
-            "  } "
-            "}"
-        )
-
-    @classmethod
-    def _cleanup_old_runtime_files(cls) -> None:
-        runtime_dir = cls._runtime_root()
-        if not runtime_dir.exists():
-            return
-        try:
-            for item in runtime_dir.iterdir():
-                if item.is_dir() and item.name.startswith("dispatch_"):
-                    try:
-                        shutil.rmtree(item, ignore_errors=True)
-                    except Exception:
-                        pass
-                elif item.is_file() and item.name.startswith("done_"):
-                    try:
-                        stat = item.stat()
-                        if time.time() - stat.st_mtime > 3600:
-                            item.unlink(missing_ok=True)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-
-    @classmethod
-    def _ensure_shared_visible_shell(cls, bootstrap_dir: Path) -> subprocess.Popen[str]:
-        with cls._visible_shell_lock:
-            shell = cls._visible_shell_process
-            if shell and shell.poll() is None:
-                return shell
-            if shell is not None and shell.poll() is not None:
-                cls._cleanup_old_runtime_files()
-            powershell_exe = cls._resolve_classic_powershell_exe()
-            create_new_console = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-            bootstrap = cls._shared_shell_bootstrap_command(bootstrap_dir)
-            dispatch_dir = cls._runtime_root() / "shared_dispatch"
-            with cls._log_lock:
-                dispatch_dir.mkdir(parents=True, exist_ok=True)
-            shell = subprocess.Popen(
-                [
-                    powershell_exe,
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    bootstrap,
-                ],
-                cwd=str(bootstrap_dir.resolve()),
-                stdin=None,
-                stdout=None,
-                stderr=None,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                creationflags=create_new_console,
-            )
-            cls._visible_shell_process = shell
-            cls._visible_shell_dispatch_dir = dispatch_dir.resolve()
-            return shell
-
-    def _prepare_done_file(self, target_dir: Path) -> Path:
-        logs_dir = self._runtime_root()
-        with self._log_lock:
-            logs_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"done_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.txt"
-        done_file = logs_dir / filename
-        done_file.write_text("", encoding="utf-8")
-        return done_file
-
-    @staticmethod
-    def _read_done_code(done_file: Path) -> int:
-        try:
-            raw = (done_file.read_text(encoding="utf-8-sig", errors="replace") or "").strip()
-            return int(raw or "1")
-        except Exception:
-            return 1
-
-    _dispatch_lock = threading.Lock()
-
-    def _write_visible_dispatch_script(
-        self,
-        *,
-        command: str,
-        target_dir: Path,
-        done_file: Path,
-        capture_file: Path,
-    ) -> Path:
-        quoted_dir = self._escape_ps_single_quoted(str(target_dir))
-        quoted_done = self._escape_ps_single_quoted(str(done_file))
-        quoted_cap = self._escape_ps_single_quoted(str(capture_file.resolve()))
-        unique_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
-        dispatch_dir = self._runtime_root() / f"dispatch_{unique_id}"
-        with self._log_lock:
-            dispatch_dir.mkdir(parents=True, exist_ok=True)
-        dispatch_file = dispatch_dir / "dispatch.ps1"
-        use_script_file = len(command) > self.DIRECT_VISIBLE_COMMAND_MAX_LENGTH or "\x00" in command
-        ps_exe = self._resolve_classic_powershell_exe()
-        quoted_ps = self._escape_ps_single_quoted(ps_exe)
-        if use_script_file:
-            fragment_file = dispatch_dir / "cmd.ps1"
-            fragment_file.write_text(command, encoding="utf-8")
-        else:
-            fragment_file = dispatch_dir / "fragment.ps1"
-            expanded = self._ensure_wide_dir_output(str(command).rstrip())
-            fragment_file.write_text(expanded + "\n", encoding="utf-8-sig")
-        quoted_frag = self._escape_ps_single_quoted(str(fragment_file.resolve()))
-        quoted_cmd_echo = self._visible_shell_command_echo_literal(command)
-        ps_lines = [
-            "$ErrorActionPreference = 'Continue'",
-            f"Set-Location -LiteralPath '{quoted_dir}'",
-            f"$done = '{quoted_done}'",
-            f"$cap = '{quoted_cap}'",
-            f"$NonoClawCmdEcho = '{quoted_cmd_echo}'",
-            "if (Test-Path -LiteralPath $done) { Remove-Item -LiteralPath $done -Force -ErrorAction SilentlyContinue }",
-            "if (Test-Path -LiteralPath $cap) { Remove-Item -LiteralPath $cap -Force -ErrorAction SilentlyContinue }",
-            f"$psExe = '{quoted_ps}'",
-            f"$frag = '{quoted_frag}'",
-            "try {",
-            "  Write-Host ''",
-            "  Write-Host ('PS ' + (Get-Location).Path + '> ' + $NonoClawCmdEcho) -ForegroundColor DarkCyan",
-            "  Write-Host '(子进程输出实时显示；命令未结束前工具会一直等待)' -ForegroundColor DarkGray",
-            "  $transcriptPath = $cap + '.transcript'",
-            "  Start-Transcript -Path $transcriptPath -Append -Force | Out-Null",
-            "  & $psExe -ExecutionPolicy Bypass -File $frag 2>&1 | ForEach-Object { Write-Host $_ }",
-            "  Stop-Transcript | Out-Null",
-            "  if ($null -eq $LASTEXITCODE) { $code = 1 }",
-            "  else {",
-            "    try { $code = [int]$LASTEXITCODE } catch { $code = 1 }",
-            "  }",
-            "  if (Test-Path -LiteralPath $transcriptPath) {",
-            "    Get-Content -LiteralPath $transcriptPath -Raw -Encoding utf8 | Set-Content -LiteralPath $cap -Encoding utf8 -Force",
-            "    Remove-Item -LiteralPath $transcriptPath -Force -ErrorAction SilentlyContinue",
-            "  } else {",
-            "    Set-Content -LiteralPath $cap -Value '' -Encoding utf8; Write-Host '(no console output)' -ForegroundColor DarkGray",
-            "  }",
-            "} catch {",
-            "  Write-Host ''",
-            "  Write-Host ('PS ' + (Get-Location).Path + '> ' + $NonoClawCmdEcho) -ForegroundColor DarkCyan",
-            "  ($_ | Out-String) | Write-Host",
-            "  $code = 1",
-            "  try { Set-Content -LiteralPath $cap -Value (($_ | Out-String)) -Encoding utf8 -Force } catch {}",
-            "}",
-            "Set-Content -LiteralPath $done -Value $code -Encoding utf8",
-            f"Remove-Item -LiteralPath '{quoted_frag}' -Force -ErrorAction SilentlyContinue",
-        ]
-        dispatch_file.write_text("\n".join(ps_lines) + "\n", encoding="utf-8-sig")
-        return dispatch_file
-
-    @classmethod
-    def _done_file_key(cls, done_file: Path) -> str:
-        return str(done_file.resolve())
-
-    @classmethod
-    def _force_complete_done_file(cls, done_file: Path, return_code: int = -1) -> None:
-        try:
-            if not done_file.exists() or done_file.stat().st_size == 0:
-                done_file.write_text(str(return_code), encoding="utf-8")
-        except Exception:
-            pass
-
-    @classmethod
-    def _kill_pid_tree(cls, pid: int, *, force: bool = True) -> None:
-        if not pid or os.name != "nt":
-            return
-        try:
-            cmd = ["taskkill", "/PID", str(pid), "/T"]
-            if force:
-                cmd.append("/F")
-            subprocess.run(cmd, capture_output=True, text=True, timeout=5, check=False)
-        except Exception:
-            pass
-
-    @classmethod
-    def _register_visible_poll(
-        cls,
-        done_file: Path,
-        *,
-        capture_file: Path,
-        pids: list[int] | None = None,
-    ) -> None:
-        with cls._visible_shell_lock:
-            cls._active_visible_polls[cls._done_file_key(done_file)] = {
-                "done_file": done_file,
-                "capture_file": capture_file,
-                "pids": [int(p) for p in (pids or []) if p],
-                "interrupted_action": None,
-            }
-
-    @classmethod
-    def _unregister_visible_poll(cls, done_file: Path) -> None:
-        with cls._visible_shell_lock:
-            cls._active_visible_polls.pop(cls._done_file_key(done_file), None)
-            if not cls._active_visible_polls:
-                cls._cancel_all_event.clear()
-
-    @classmethod
-    def _update_visible_poll_pids(cls, done_file: Path, pids: list[int]) -> None:
-        with cls._visible_shell_lock:
-            poll = cls._active_visible_polls.get(cls._done_file_key(done_file))
-            if poll is not None:
-                poll["pids"] = [int(p) for p in pids if p]
-
-    @classmethod
-    def _mark_visible_poll_interrupted(cls, done_file: Path, action: str) -> None:
-        with cls._visible_shell_lock:
-            poll = cls._active_visible_polls.get(cls._done_file_key(done_file))
-            if poll is not None:
-                poll["interrupted_action"] = action
-
-    @classmethod
-    def _visible_poll_interrupted_action(cls, done_file: Path) -> str | None:
-        with cls._visible_shell_lock:
-            poll = cls._active_visible_polls.get(cls._done_file_key(done_file))
-            if poll is None:
-                return None
-            action = poll.get("interrupted_action")
-            return str(action) if action else None
-
-    @classmethod
-    def _force_unblock_visible_polls(cls, action: str = "terminate") -> None:
-        with cls._visible_shell_lock:
-            polls = list(cls._active_visible_polls.values())
-        for poll in polls:
-            done_file = poll["done_file"]
-            cls._mark_visible_poll_interrupted(done_file, action)
-            cls._force_complete_done_file(done_file)
-            for pid in poll.get("pids") or []:
-                cls._kill_pid_tree(int(pid))
-
-    @classmethod
-    def _abort_visible_poll(
-        cls,
-        done_file: Path,
-        *,
-        action: str,
-        pids: list[int] | None = None,
-    ) -> None:
-        cls._mark_visible_poll_interrupted(done_file, action)
-        cls._force_complete_done_file(done_file)
-        kill_pids = list(pids or [])
-        with cls._visible_shell_lock:
-            poll = cls._active_visible_polls.get(cls._done_file_key(done_file))
-            if poll is not None:
-                kill_pids.extend(int(p) for p in poll.get("pids") or [])
-        for pid in dict.fromkeys(kill_pids):
-            cls._kill_pid_tree(pid)
-
-    def _poll_visible_command_result(
-        self,
-        *,
-        done_file: Path,
-        capture_file: Path,
-        timeout: int,
-        invocation_id: str | None = None,
-        extra_pids: list[int] | None = None,
-    ) -> dict[str, Any]:
-        deadline = time.monotonic() + timeout
-        capture_snapshot = ""
-        ready_detected_since: float | None = None
-        while True:
-            if self._cancel_all_event.is_set():
-                self._abort_visible_poll(
-                    done_file,
-                    action="terminate",
-                    pids=extra_pids,
-                )
-                if capture_file.exists():
-                    capture_snapshot = capture_file.read_text(encoding="utf-8", errors="replace")
-                return {
-                    "stdout": capture_snapshot,
-                    "return_code": -1,
-                    "timed_out": False,
-                    "auto_detached": False,
-                    "interrupted_action": "terminate",
-                }
-            if invocation_id:
-                pending_action = self._consume_interrupt_action(invocation_id)
-                if pending_action:
-                    self._abort_visible_poll(
-                        done_file,
-                        action=pending_action,
-                        pids=extra_pids,
-                    )
-                    if capture_file.exists():
-                        capture_snapshot = capture_file.read_text(encoding="utf-8", errors="replace")
-                    return {
-                        "stdout": capture_snapshot,
-                        "return_code": -1,
-                        "timed_out": False,
-                        "auto_detached": pending_action == "skip",
-                        "interrupted_action": pending_action,
-                    }
-            if done_file.exists() and done_file.stat().st_size > 0:
-                return_code = self._read_done_code(done_file)
-                captured = ""
-                if capture_file.exists():
-                    captured = capture_file.read_text(encoding="utf-8", errors="replace")
-                interrupted_action = self._visible_poll_interrupted_action(done_file)
-                return {
-                    "stdout": captured,
-                    "return_code": return_code,
-                    "timed_out": False,
-                    "auto_detached": False,
-                    "interrupted_action": interrupted_action,
-                }
-            if capture_file.exists():
-                current_capture = capture_file.read_text(encoding="utf-8", errors="replace")
-                if current_capture != capture_snapshot:
-                    capture_snapshot = current_capture
-                    ready_detected_since = None
-                else:
-                    if ready_detected_since is None:
-                        ready_detected_since = time.monotonic()
-                    elif time.monotonic() - ready_detected_since >= self.AUTO_DETACH_STABLE_SECONDS:
-                        for pattern in self.AUTO_DETACH_READY_PATTERNS:
-                            if re.search(pattern, current_capture, re.IGNORECASE):
-                                return {
-                                    "stdout": current_capture,
-                                    "return_code": 0,
-                                    "timed_out": False,
-                                    "auto_detached": True,
-                                }
-            if time.monotonic() >= deadline:
-                return {
-                    "stdout": capture_snapshot,
-                    "return_code": -1,
-                    "timed_out": True,
-                    "auto_detached": False,
-                }
-            time.sleep(0.3)
-
-    def _dispatch_visible_command(
-        self,
-        shell: subprocess.Popen[str],
-        *,
-        command: str,
-        target_dir: Path,
-        done_file: Path,
-        capture_file: Path,
-    ) -> None:
-        if shell.poll() is not None:
-            raise RuntimeError("Shared PowerShell exited unexpectedly")
-        dispatch_file = self._write_visible_dispatch_script(
-            command=command,
-            target_dir=target_dir,
-            done_file=done_file,
-            capture_file=capture_file,
-        )
-        quoted_dispatch = self._escape_ps_single_quoted(str(dispatch_file.resolve()))
-        unique_id = dispatch_file.parent.name.replace("dispatch_", "", 1)
-        with self._dispatch_lock:
-            job_dispatch_dir = CLIExecutor._visible_shell_dispatch_dir
-            if job_dispatch_dir is None:
-                raise RuntimeError("Shared PowerShell dispatch directory is not initialized")
-            job_file = job_dispatch_dir / f"job_{unique_id}.ps1"
-            temp_job = job_file.with_suffix(".tmp")
-            temp_job.write_text(f"& '{quoted_dispatch}'\n", encoding="utf-8-sig")
-            temp_job.replace(job_file)
-
-    def _launch_visible_dispatch_window(
-        self,
-        *,
-        dispatch_file: Path,
-        target_dir: Path,
-    ) -> int:
-        powershell_exe = self._resolve_classic_powershell_exe()
-        quoted_powershell = self._escape_ps_single_quoted(powershell_exe)
-        quoted_dir = self._escape_ps_single_quoted(str(target_dir))
-        quoted_dispatch = self._escape_ps_single_quoted(str(dispatch_file.resolve()))
-        start_process_command = (
-            f"$ps='{quoted_powershell}'; "
-            "if (Test-Path $ps) { "
-            "Start-Process "
-            "-FilePath $ps "
-            f"-WorkingDirectory '{quoted_dir}' "
-            "-ArgumentList @("
-            "'-NoProfile','-ExecutionPolicy','Bypass','-File',"
-            f"'{quoted_dispatch}'"
-            ") "
-            "-PassThru | Select-Object -ExpandProperty Id "
-            "} else { throw 'PowerShell executable not found' }"
-        )
-        fallback = subprocess.run(
-            [
-                powershell_exe,
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                start_process_command,
-            ],
-            cwd=str(target_dir),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=15,
-            check=False,
-        )
-        pid_text = (fallback.stdout or "").strip().splitlines()
-        if fallback.returncode == 0 and pid_text:
-            return int(pid_text[-1].strip())
-        raise RuntimeError(
-            f"Unable to launch visible PowerShell window: "
-            f"code={fallback.returncode}, stderr={(fallback.stderr or '').strip()}"
-        )
-
-    def _execute_in_new_visible_powershell(
-        self,
-        *,
-        command: str,
-        target_dir: Path,
-        timeout: int,
-        invocation_id: str | None = None,
-    ) -> dict[str, Any]:
-        done_file = self._prepare_done_file(target_dir)
-        capture_file = done_file.with_name(f"{done_file.stem}.capture.log")
-        dispatch_file = self._write_visible_dispatch_script(
-            command=command,
-            target_dir=target_dir,
-            done_file=done_file,
-            capture_file=capture_file,
-        )
-        console_pid = self._launch_visible_dispatch_window(
-            dispatch_file=dispatch_file,
-            target_dir=target_dir,
-        )
-        self._register_visible_poll(
-            done_file,
-            capture_file=capture_file,
-            pids=[console_pid],
-        )
-        try:
-            poll_result = self._poll_visible_command_result(
-                done_file=done_file,
-                capture_file=capture_file,
-                timeout=timeout,
-                invocation_id=invocation_id,
-                extra_pids=[console_pid],
-            )
-            return {
-                "pid": console_pid,
-                "process": None,
-                **poll_result,
-            }
-        finally:
-            self._unregister_visible_poll(done_file)
-
-    def _launch_dedicated_visible_console(
-        self,
-        *,
-        command: str,
-        target_dir: Path,
-    ) -> dict[str, Any]:
-        logs_dir = target_dir / ".NonoClaw_cli_logs"
-        with self._log_lock:
-            logs_dir.mkdir(parents=True, exist_ok=True)
-        stamp = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        command_script = logs_dir / f"interactive_{stamp}.ps1"
-        quoted_dir = self._escape_ps_single_quoted(str(target_dir))
-        powershell_exe = self._resolve_classic_powershell_exe()
-        create_new_console = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-        launch_errors: list[str] = []
-        use_script_file = len(command) > self.DIRECT_VISIBLE_COMMAND_MAX_LENGTH or "\n" in command or "\x00" in command
-        if use_script_file:
-            command_script.write_text(command, encoding="utf-8")
-            powershell_args = [
-                "-ExecutionPolicy",
-                "Bypass",
-                "-NoExit",
-                "-File",
-                str(command_script),
-            ]
-        else:
-            powershell_args = [
-                "-NoExit",
-                "-Command",
-                command,
-            ]
-        quoted_powershell = self._escape_ps_single_quoted(powershell_exe)
-        start_process_command = (
-            f"$ps='{quoted_powershell}'; "
-            "if (Test-Path $ps) { "
-            "Start-Process "
-            "-FilePath $ps "
-            f"-WorkingDirectory '{quoted_dir}' "
-            "-ArgumentList @("
-            + ",".join(f"'{self._escape_ps_single_quoted(arg)}'" for arg in powershell_args) +
-            ") "
-            "-PassThru | Select-Object -ExpandProperty Id "
-            "} else { throw 'PowerShell executable not found' }"
-        )
-        try:
-            fallback = subprocess.run(
-                [
-                    powershell_exe,
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    start_process_command,
-                ],
-                cwd=str(target_dir),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=15,
-                check=False,
-            )
-            pid_text = (fallback.stdout or "").strip().splitlines()
-            if fallback.returncode == 0 and pid_text:
-                launched_pid = int(pid_text[-1].strip())
-                return {
-                    "pid": launched_pid,
-                    "launcher_script": "",
-                    "command_script": str(command_script) if use_script_file else "",
-                    "used_windows_terminal": False,
-                }
-            launch_errors.append(
-                f"start-process fallback failed: code={fallback.returncode}, stderr={(fallback.stderr or '').strip()}"
-            )
-        except Exception as exc:
-            launch_errors.append(f"start-process fallback exception: {exc}")
-        raise RuntimeError(" ; ".join(launch_errors) or "Unable to launch visible PowerShell window")
-
-    def _execute_in_shared_visible_powershell(
-        self,
-        *,
-        command: str,
-        target_dir: Path,
-        timeout: int,
-        invocation_id: str | None = None,
-    ) -> dict[str, Any]:
-        done_file = self._prepare_done_file(target_dir)
-        capture_file = done_file.with_name(f"{done_file.stem}.capture.log")
-        self._register_visible_poll(
-            done_file,
-            capture_file=capture_file,
-            pids=[],
-        )
-        try:
-            with self._visible_shell_command_lock:
-                shell = self._ensure_shared_visible_shell(self._allowed_dir.resolve())
-                if shell.pid:
-                    self._update_visible_poll_pids(done_file, [int(shell.pid)])
-                self._dispatch_visible_command(
-                    shell,
-                    command=command,
-                    target_dir=target_dir,
-                    done_file=done_file,
-                    capture_file=capture_file,
-                )
-            poll_result = self._poll_visible_command_result(
-                done_file=done_file,
-                capture_file=capture_file,
-                timeout=timeout,
-                invocation_id=invocation_id,
-                extra_pids=[int(shell.pid)] if shell.pid else None,
-            )
-            return {
-                "process": shell,
-                **poll_result,
-            }
-        finally:
-            self._unregister_visible_poll(done_file)
-
     def get_tool_definition(self) -> dict[str, Any]:
         return {
             "type": "function",
@@ -904,6 +291,8 @@ class CLIExecutor:
                     "1. 当返回 'file is locked' 或 'Internal error' 但 exit_code=0 时，说明命令实际已成功执行，无需重试。"
                     "2. 对于 pip install 等网络操作，建议设置 timeout 为 120 秒或更长。"
                     "3. 执行 Python 脚本时，如果脚本路径包含空格，请使用引号包裹。"
+                    "4. 对于 npm run dev、pnpm dev、yarn dev、vite、next dev 等开发服务器，必须设置 open_in_terminal=true，timeout 建议 30-60 秒；服务启动成功后系统会自动转入后台，不要为了等待服务结束设置很长 timeout。"
+                    "5. 对于需要用户看实时输出的长命令（如 npm create、git clone），可将 open_in_terminal 设为 true。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -922,18 +311,16 @@ class CLIExecutor:
                         },
                         "timeout": {
                             "type": "integer",
-                            "description": "超时时间（秒）。建议按任务复杂度设置：简单命令 30s，pip install 等网络操作 120s+；默认 300。",
+                            "description": "超时时间（秒）。简单命令建议 30s；开发服务器建议 30-60s，启动后会自动后台保留；pip install 等网络操作可用 120s+；默认 300。",
                             "default": 300,
                         },
-                        "visible_terminal_mode": {
-                            "type": "string",
+                        "open_in_terminal": {
+                            "type": "boolean",
                             "description": (
-                                "可见终端模式（仅 Windows）。shared=复用同一窗口，等待结束并捕获输出；"
-                                "该窗口由脚本循环驱动并另起子进程执行每条命令，不是完整的交互式 PSReadLine 会话，因此外观可能与手动打开的 PowerShell/Windows Terminal 不同。"
-                                "new=每次新开独立窗口，等待结束并捕获输出（stdout/stderr 会写入工具返回结果）。"
+                                "是否在用户可见的终端中执行。默认 false（后台执行）。"
+                                "适用于需要用户看到实时输出或交互的命令。设为 true 时命令会在前端终端面板中显示。"
                             ),
-                            "enum": ["shared", "new"],
-                            "default": "shared",
+                            "default": False,
                         },
                     },
                     "required": ["command"],
@@ -949,7 +336,8 @@ class CLIExecutor:
         timeout: int = 300,
         skip_confirmation: bool = False,
         invocation_id: str | None = None,
-        visible_terminal_mode: str = "shared",
+        open_in_terminal: bool = False,
+        terminal_session_id: str | None = None,
     ) -> dict[str, Any]:
         normalized_command = str(command or "").strip()
         if not normalized_command:
@@ -977,19 +365,14 @@ class CLIExecutor:
                 "requires_confirmation": False,
             }
         danger_check = self._check_dangerous_command(normalized_command)
-        # 越界检查：工作目录超出允许范围也判定为危险
         is_oob = self._is_working_dir_outside_allowed(working_dir)
-
-        # 黑白名单权限检查（优先于危险检查）
         from db.path_permissions import check_path_permission
         perm_result = check_path_permission(str(target_dir))
         if perm_result:
             if perm_result.get("allowed"):
-                # 白名单命中，跳过所有危险检查直接放行
                 danger_check = None
                 is_oob = False
             else:
-                # 黑名单命中，直接拒绝
                 return {
                     "success": False,
                     "error": "Path blocked",
@@ -1005,8 +388,6 @@ class CLIExecutor:
                     "danger_types": ["路径在黑名单中"],
                     "danger_info": perm_result.get("reason", "黑名单限制"),
                 }
-
-        # 未命中黑白名单，继续原有的危险/越界检查流程
         if is_oob:
             oob_info = "工作目录超出允许范围"
             if danger_check:
@@ -1017,7 +398,6 @@ class CLIExecutor:
                     "danger_types": [oob_info],
                     "danger_info": oob_info,
                 }
-
         if danger_check and not skip_confirmation:
             return {
                 "success": False,
@@ -1033,118 +413,92 @@ class CLIExecutor:
                 "danger_info": danger_check["danger_info"],
             }
         target_dir.mkdir(parents=True, exist_ok=True)
-        use_visible_powershell = os.name == "nt"
-        mode_normalized = str(visible_terminal_mode or "shared").strip().lower()
-        if mode_normalized not in {"shared", "new"}:
-            mode_normalized = "shared"
-        if use_visible_powershell:
-            if mode_normalized == "shared":
-                try:
-                    shared_result = self._execute_in_shared_visible_powershell(
-                        command=normalized_command,
-                        target_dir=target_dir,
-                        timeout=timeout,
-                        invocation_id=invocation_id,
-                    )
-                except Exception as exc:
-                    return {
-                        "success": False,
-                        "error": str(exc),
-                        "output": (
-                            f"共享 PowerShell 执行失败\n命令: {normalized_command}\n"
-                            f"执行目录: {target_dir}\n异常: {exc}"
-                        ),
-                        "command": normalized_command,
-                        "working_dir": str(target_dir),
-                        "requires_confirmation": False,
-                    }
-                proc = shared_result.get("process")
-                shared_pid = int(proc.pid) if proc is not None else None
-                interrupted_action = shared_result.get("interrupted_action")
-                auto_detached = bool(shared_result.get("auto_detached"))
-                if auto_detached:
-                    output_lines = [
-                        "检测到命令已进入长期运行状态，已自动结束本次等待",
-                        f"命令: {normalized_command}",
-                        f"执行目录: {target_dir}",
-                        "可见终端模式: shared（共享窗口）",
-                        "状态: 已脱离等待，服务继续在该窗口运行",
-                    ]
-                    if shared_pid is not None:
-                        output_lines.append(f"Console PID: {shared_pid}")
-                    row: dict[str, Any] = {
-                        "success": True,
-                        "detached_background": True,
-                        "auto_detached": True,
-                        "output": "\n".join(output_lines),
-                        "command": normalized_command,
-                        "working_dir": str(target_dir),
-                        "requires_confirmation": False,
-                    }
-                    if shared_pid is not None:
-                        row["pid"] = shared_pid
-                    return row
+
+        # 根据 open_in_terminal 选择执行方式
+        if open_in_terminal:
+            # AI 主动在终端中执行：创建专用终端会话，前端可连接查看
+            try:
+                from services.terminal_manager import TerminalManager
+                tm = TerminalManager.get_instance()
+                pty_result = tm.open_terminal_for_command(
+                    command=normalized_command,
+                    work_dir=str(target_dir),
+                    timeout=timeout,
+                    invocation_id=invocation_id,
+                )
+            except Exception as exc:
+                pty_result = None
+
+            if pty_result is not None:
+                return_code = int(pty_result.get("return_code") or 0)
+                captured = str(pty_result.get("output_capture") or "").strip()
+                timed_out = bool(pty_result.get("timed_out"))
+                interrupted_action = pty_result.get("interrupted_action")
+                session_id = pty_result.get("session_id")
+                auto_detached = bool(pty_result.get("auto_detached"))
+
                 if interrupted_action:
-                    action_label = "跳过等待" if interrupted_action == "skip" else "结束"
-                    output_lines = [
-                        f"命令已被用户{action_label}",
-                        f"命令: {normalized_command}",
-                        f"执行目录: {target_dir}",
-                        "可见终端模式: shared（共享窗口）",
-                    ]
-                    if shared_pid is not None:
-                        output_lines.append(f"Console PID: {shared_pid}")
-                    if interrupted_action == "skip":
-                        output_lines.append(
-                            "共享窗口内的命令可能仍在运行；已丢弃共享句柄，"
-                            "下一次 shared 调用会按需新开窗口。"
-                        )
-                    row = {
+                    return {
                         "success": False,
                         "interrupted": True,
                         "interrupted_action": interrupted_action,
-                        "detached_background": interrupted_action == "skip",
-                        "error": f"Command {action_label} by user",
-                        "output": "\n".join(output_lines),
-                        "command": normalized_command,
-                        "working_dir": str(target_dir),
-                        "requires_confirmation": False,
-                    }
-                    if shared_pid is not None:
-                        row["pid"] = shared_pid
-                    return row
-                if shared_result.get("timed_out"):
-                    row = {
-                        "success": False,
-                        "error": f"Command timed out after {timeout} seconds",
+                        "error": "Command interrupted by user",
                         "output": (
-                            f"命令执行超时（共享 PowerShell）\n命令: {normalized_command}\n"
-                            f"执行目录: {target_dir}\n超时时间: {timeout} 秒"
+                            f"命令已被用户中断\n命令: {normalized_command}\n"
+                            f"执行目录: {target_dir}\n"
+                            f"中断前终端输出:\n{self._truncate_output(captured) if captured else '(无输出)'}"
                         ),
                         "command": normalized_command,
                         "working_dir": str(target_dir),
                         "requires_confirmation": False,
+                        "captured_output": captured,
+                        "session_id": session_id,
                     }
-                    if shared_pid is not None:
-                        row["pid"] = shared_pid
-                    return row
-                return_code = int(shared_result.get("return_code") or 0)
-                captured = str(shared_result.get("stdout") or "").strip()
+                if auto_detached:
+                    return {
+                        "success": True,
+                        "return_code": 0,
+                        "captured_output": captured,
+                        "output": (
+                            f"开发服务器已启动并转入后台运行\n"
+                            f"命令: {normalized_command}\n"
+                            f"执行目录: {target_dir}\n"
+                            f"可在右侧控制台查看或停止该服务。"
+                        ),
+                        "command": normalized_command,
+                        "working_dir": str(target_dir),
+                        "requires_confirmation": False,
+                        "session_id": session_id,
+                        "auto_detached": True,
+                    }
+
+                if timed_out:
+                    return {
+                        "success": False,
+                        "error": f"Command timed out after {timeout} seconds",
+                        "output": (
+                            f"命令执行超时\n命令: {normalized_command}\n"
+                            f"执行目录: {target_dir}\n超时时间: {timeout} 秒\n"
+                            f"终端输出:\n{self._truncate_output(captured) if captured else '(无输出)'}"
+                        ),
+                        "command": normalized_command,
+                        "working_dir": str(target_dir),
+                        "requires_confirmation": False,
+                        "captured_output": captured,
+                        "session_id": session_id,
+                    }
+
                 output_lines = [
-                    "CLI command executed in the shared visible PowerShell window.",
                     f"Command: {normalized_command}",
                     f"Working directory: {target_dir}",
-                    "Visible terminal mode: shared",
                     f"Return code: {return_code}",
                 ]
-                if shared_pid is not None:
-                    output_lines.append(f"Shared console PID: {shared_pid}")
-                output_lines.append("Captured stdout/stderr (mirrored to the same window):")
                 if captured:
                     output_lines.append(self._truncate_output(captured))
                 else:
-                    output_lines.append("(empty)")
-                out: dict[str, Any] = {
+                    output_lines.append("(empty output)")
+
+                return {
                     "success": return_code == 0,
                     "return_code": return_code,
                     "captured_output": captured,
@@ -1152,121 +506,14 @@ class CLIExecutor:
                     "command": normalized_command,
                     "working_dir": str(target_dir),
                     "requires_confirmation": False,
+                    "session_id": session_id,
+                    "auto_detached": auto_detached,
                 }
-                if shared_pid is not None:
-                    out["pid"] = shared_pid
-                return out
-            try:
-                new_result = self._execute_in_new_visible_powershell(
-                    command=normalized_command,
-                    target_dir=target_dir,
-                    timeout=timeout,
-                    invocation_id=invocation_id,
-                )
-            except Exception as exc:
-                return {
-                    "success": False,
-                    "error": str(exc),
-                    "output": (
-                        f"独立 PowerShell 窗口执行失败\n命令: {normalized_command}\n"
-                        f"执行目录: {target_dir}\n异常: {exc}"
-                    ),
-                    "command": normalized_command,
-                    "working_dir": str(target_dir),
-                    "requires_confirmation": False,
-                }
-            console_pid = new_result.get("pid")
-            interrupted_action = new_result.get("interrupted_action")
-            auto_detached = bool(new_result.get("auto_detached"))
-            if interrupted_action:
-                action_label = "跳过等待" if interrupted_action == "skip" else "结束"
-                output_lines = [
-                    f"命令已被用户{action_label}",
-                    f"命令: {normalized_command}",
-                    f"执行目录: {target_dir}",
-                    "可见终端模式: new（独立窗口）",
-                ]
-                if console_pid is not None:
-                    output_lines.append(f"Console PID: {console_pid}")
-                row = {
-                    "success": False,
-                    "interrupted": True,
-                    "interrupted_action": interrupted_action,
-                    "detached_background": interrupted_action == "skip",
-                    "error": f"Command {action_label} by user",
-                    "output": "\n".join(output_lines),
-                    "command": normalized_command,
-                    "working_dir": str(target_dir),
-                    "requires_confirmation": False,
-                }
-                if console_pid is not None:
-                    row["pid"] = int(console_pid)
-                return row
-            if auto_detached:
-                output_lines = [
-                    "检测到命令已进入长期运行状态，已自动结束本次等待",
-                    f"命令: {normalized_command}",
-                    f"执行目录: {target_dir}",
-                    "可见终端模式: new（独立窗口）",
-                    "状态: 已脱离等待，服务继续在该窗口运行",
-                ]
-                if console_pid is not None:
-                    output_lines.append(f"Console PID: {console_pid}")
-                row = {
-                    "success": True,
-                    "detached_background": True,
-                    "auto_detached": True,
-                    "output": "\n".join(output_lines),
-                    "command": normalized_command,
-                    "working_dir": str(target_dir),
-                    "requires_confirmation": False,
-                }
-                if console_pid is not None:
-                    row["pid"] = int(console_pid)
-                return row
-            if new_result.get("timed_out"):
-                row = {
-                    "success": False,
-                    "error": f"Command timed out after {timeout} seconds",
-                    "output": (
-                        f"命令执行超时（独立 PowerShell 窗口）\n命令: {normalized_command}\n"
-                        f"执行目录: {target_dir}\n超时时间: {timeout} 秒"
-                    ),
-                    "command": normalized_command,
-                    "working_dir": str(target_dir),
-                    "requires_confirmation": False,
-                }
-                if console_pid is not None:
-                    row["pid"] = int(console_pid)
-                return row
-            return_code = int(new_result.get("return_code") or 0)
-            captured = str(new_result.get("stdout") or "").strip()
-            output_lines = [
-                "CLI command executed in a new visible PowerShell window.",
-                f"Command: {normalized_command}",
-                f"Working directory: {target_dir}",
-                "Visible terminal mode: new",
-                f"Return code: {return_code}",
-            ]
-            if console_pid is not None:
-                output_lines.append(f"Console PID: {console_pid}")
-            output_lines.append("Captured stdout/stderr (mirrored to the same window):")
-            if captured:
-                output_lines.append(self._truncate_output(captured))
-            else:
-                output_lines.append("(empty)")
-            out = {
-                "success": return_code == 0,
-                "return_code": return_code,
-                "captured_output": captured,
-                "output": "\n".join(output_lines),
-                "command": normalized_command,
-                "working_dir": str(target_dir),
-                "requires_confirmation": False,
-            }
-            if console_pid is not None:
-                out["pid"] = int(console_pid)
-            return out
+
+            # PTY 不可用时 fallback 到隐藏子进程
+            pty_result = None
+
+        # 后台静默执行（open_in_terminal=false 或 PTY fallback）
         try:
             process = subprocess.Popen(
                 normalized_command,
@@ -1308,7 +555,11 @@ class CLIExecutor:
                     pending_action = self._consume_interrupt_action(invocation_id)
                     if pending_action:
                         interrupted_action = pending_action
-                        self._terminate_process(process, force=pending_action == "terminate")
+                        if pending_action == "background":
+                            stdout = "命令已转入后台运行"
+                            stderr = ""
+                            break
+                        self._terminate_process(process, force=True)
                         try:
                             stdout, stderr = process.communicate(timeout=5)
                         except subprocess.TimeoutExpired:
@@ -1328,22 +579,29 @@ class CLIExecutor:
             if invocation_id:
                 self._unregister_process(invocation_id)
         command_return_code = int(process.returncode or 0)
+        if interrupted_action == "background":
+            return {
+                "success": True,
+                "interrupted_action": interrupted_action,
+                "output": (
+                    f"命令已转入后台运行\n命令: {normalized_command}\n"
+                    f"执行目录: {target_dir}"
+                ),
+                "command": normalized_command,
+                "working_dir": str(target_dir),
+                "requires_confirmation": False,
+                "auto_detached": True,
+            }
         if interrupted_action:
-            action_label = "跳过等待" if interrupted_action == "skip" else "结束"
-            output_lines = [
-                f"命令已被用户{action_label}",
-                f"命令: {normalized_command}",
-                f"执行目录: {target_dir}",
-            ]
-            if interrupted_action == "skip":
-                output_lines.append("后台 PowerShell 会继续执行该命令；当前前台等待已脱离。")
             return {
                 "success": False,
                 "interrupted": True,
                 "interrupted_action": interrupted_action,
-                "detached_background": interrupted_action == "skip",
-                "error": f"Command {action_label} by user",
-                "output": "\n".join(output_lines),
+                "error": f"Command interrupted by user",
+                "output": (
+                    f"命令已被用户中断\n命令: {normalized_command}\n"
+                    f"执行目录: {target_dir}"
+                ),
                 "command": normalized_command,
                 "working_dir": str(target_dir),
                 "requires_confirmation": False,
@@ -1386,60 +644,44 @@ class CLIExecutor:
 
     @classmethod
     def _register_process(cls, invocation_id: str, process: subprocess.Popen[str]) -> None:
-        with cls._visible_shell_lock:
+        with cls._process_lock:
             cls._active_processes[invocation_id] = process
             cls._interrupt_actions.pop(invocation_id, None)
 
     @classmethod
     def _unregister_process(cls, invocation_id: str) -> None:
-        with cls._visible_shell_lock:
+        with cls._process_lock:
             cls._active_processes.pop(invocation_id, None)
             cls._interrupt_actions.pop(invocation_id, None)
 
     @classmethod
     def _consume_interrupt_action(cls, invocation_id: str) -> str | None:
-        with cls._visible_shell_lock:
+        with cls._process_lock:
             return cls._interrupt_actions.pop(invocation_id, None)
 
     @classmethod
     def set_interrupt_action(cls, invocation_id: str, action: str) -> None:
-        """公开 API：外部（agent_mode 收到 cancel_event）设置某个 invocation 的中断动作。
-
-        action 取值：
-        - "terminate": 立即强制结束进程（taskkill /T /F）
-        - "skip": 跳过等待（共享 PowerShell 模式下让命令在后台继续）
-        """
         if not invocation_id or not action:
             return
-        with cls._visible_shell_lock:
-            cls._interrupt_actions[invocation_id] = action
+        with cls._process_lock:
+            target_id = invocation_id
+            if target_id not in cls._active_processes:
+                suffix = f":{invocation_id}"
+                for key in cls._active_processes.keys():
+                    if key.endswith(suffix):
+                        target_id = key
+                        break
+            cls._interrupt_actions[target_id] = action
 
     @classmethod
     def terminate_all_active(cls, action: str = "terminate") -> list[int]:
-        """终止所有正在运行的子进程（外部取消/退出时调用）。
-
-        返回被终止的 pid 列表。
-        """
         terminated: list[int] = []
-        cls._cancel_all_event.set()
-        cls._force_unblock_visible_polls(action)
-        with cls._visible_shell_lock:
-            shell = cls._visible_shell_process
-            if shell is not None and shell.poll() is None:
-                try:
-                    pid = int(shell.pid)
-                    cls._terminate_process(shell, force=(action == "terminate"))
-                    terminated.append(pid)
-                except Exception:
-                    pass
-            cls._visible_shell_process = None
-            cls._visible_shell_dispatch_dir = None
+        targets: list[tuple[str, subprocess.Popen[str]]] = []
+        with cls._process_lock:
             for inv_id in list(cls._active_processes.keys()):
                 cls._interrupt_actions[inv_id] = action
             targets = list(cls._active_processes.items())
         for inv_id, process in targets:
-            with cls._visible_shell_lock:
-                cls._interrupt_actions[inv_id] = action
             try:
                 if process.poll() is None:
                     pid = int(process.pid)
@@ -1451,8 +693,7 @@ class CLIExecutor:
 
     @classmethod
     def get_active_invocations(cls) -> list[str]:
-        """返回当前所有活动 invocation_id，用于外部清理时引用。"""
-        with cls._visible_shell_lock:
+        with cls._process_lock:
             return list(cls._active_processes.keys())
 
     @classmethod
