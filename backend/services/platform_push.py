@@ -15,7 +15,7 @@ MAX_SEGMENT_LEN = 2000
 def _load_bot_config() -> dict:
     import json
     from pathlib import Path
-    config_path = Path.home() / ".MIMOClaw" / "bot_config.json"
+    config_path = Path.home() / ".Aries" / "bot_config.json"
     if not config_path.exists():
         return {}
     try:

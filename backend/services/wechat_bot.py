@@ -31,7 +31,7 @@ def _random_uin() -> str:
 def _load_wechat_config() -> dict:
     import json
     from pathlib import Path
-    config_path = Path.home() / ".MIMOClaw" / "bot_config.json"
+    config_path = Path.home() / ".Aries" / "bot_config.json"
     if not config_path.exists():
         return {}
     try:
@@ -241,41 +241,114 @@ class WeChatRunner:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            self.client._running = True
+            loop.run_until_complete(self._async_run_loop())
+        finally:
+            loop.close()
+            self._running = False
+
+    async def _async_run_loop(self):
+        """异步主循环：轮询消息 + 后台任务处理，支持流式推送和取消。"""
+        client = self.client
+        assert client is not None
+        client._running = True
+
+        # 启动时清理积压消息
+        try:
+            stale = client.get_updates()
+            if stale:
+                _log.info("[微信] 启动时跳过 %d 条积压消息", len(stale))
+        except Exception as e:
+            _log.warning("[微信] 清理积压失败: %s", e)
+
+        # 当前正在处理的消息任务（单条串行，保证取消逻辑生效）
+        _current_msg_task: Optional[asyncio.Task] = None
+
+        async def _send_segment(seg: str):
+            """流式推送回调：把分段内容实时发到微信。"""
+            if not client:
+                return
             try:
-                stale = self.client.get_updates()
-                if stale:
-                    _log.info("[微信] 启动时跳过 %d 条积压消息", len(stale))
+                client.send_message(
+                    seg,
+                    to_user_id=client._recipient_user_id(),
+                    context_token=client.context_token,
+                )
             except Exception as e:
-                _log.warning("[微信] 清理积压失败: %s", e)
+                _log.warning("[微信] 流式推送失败: %s", e)
 
-            def handle(text: str) -> tuple[str, list[str]]:
-                client = self.client
-                try:
-                    async def _send_segment(seg: str):
-                        if not client:
-                            return
-                        client.send_message(
-                            seg,
-                            to_user_id=client._recipient_user_id(),
-                            context_token=client.context_token,
-                        )
+        while client._running and self._running:
+            try:
+                # 轮询新消息（非阻塞，短间隔）
+                msgs = await asyncio.get_event_loop().run_in_executor(
+                    None, client.get_updates
+                )
+                for msg in msgs:
+                    if not client._running or not self._running:
+                        break
+                    ct = msg.get("context_token", "") or client.context_token
+                    from_user = (
+                        msg.get("from_user_id", "").strip()
+                        or client._recipient_user_id()
+                    )
+                    text = ""
+                    for item in msg.get("item_list", []):
+                        if item.get("type") == 1:
+                            text = item.get("text_item", {}).get("text", "")
+                    if not text:
+                        continue
+                    _log.info("[微信] 来自 %s: %s", from_user, text[:80])
 
-                    return loop.run_until_complete(
+                    # 串行处理：process_inbound_message_async 内部会自动取消上一轮
+                    # 用 create_task 让轮询不被阻塞，下一轮 get_updates 能继续取新消息触发取消
+                    if _current_msg_task and not _current_msg_task.done():
+                        _current_msg_task.cancel()
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(_current_msg_task), timeout=3.0
+                            )
+                        except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                            pass
+
+                    _current_msg_task = asyncio.create_task(
                         process_inbound_message_async(
                             "wechat", text, send_segment=_send_segment
                         )
                     )
-                except RuntimeError as e:
-                    if "shutdown" in str(e).lower():
-                        _log.warning("[微信] 进程关闭中，跳过消息处理")
-                        return "", []
-                    raise
 
-            self.client.start_listening(handle)
-        finally:
-            loop.close()
-            self._running = False
+                # 短暂等待，避免 CPU 空转
+                await asyncio.sleep(0.5)
+
+            except httpx.HTTPError as e:
+                if not client._running or not self._running:
+                    break
+                err = str(e).lower()
+                if "closed" in err:
+                    _log.info("[微信] 连接已关闭，退出监听")
+                    break
+                _log.warning("[微信] 网络异常: %s", e)
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                _log.info("[微信] 主循环被取消")
+                break
+            except Exception as e:
+                if not client._running or not self._running:
+                    break
+                err = str(e).lower()
+                if "closed" in err:
+                    _log.info("[微信] 客户端已关闭，退出监听")
+                    break
+                _log.error("[微信] listen error: %s", e)
+                await asyncio.sleep(5)
+
+        # 等待最后一个消息处理任务完成
+        if _current_msg_task and not _current_msg_task.done():
+            _current_msg_task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(_current_msg_task), timeout=3.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                pass
+
+        client._close_client()
 
 
 def start_wechat_bot() -> bool:

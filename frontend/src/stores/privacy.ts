@@ -17,7 +17,7 @@ export interface DangerConfirmItem {
   confirm: boolean
 }
 
-const STORAGE_KEY = 'mimo:privacy_danger_confirms'
+const STORAGE_KEY = 'aries:privacy_danger_confirms'
 
 const defaultSettings: DangerConfirmItem[] = [
   { dangerType: '删除文件或目录', label: '删除确认', desc: '执行删除操作前需要手动确认，防止误删重要文件', confirm: true },
@@ -101,7 +101,7 @@ export const usePrivacyStore = defineStore('privacy', () => {
   }
 })
 
-const COMMAND_PREFIX_KEY = 'mimo:privacy_command_prefixes'
+const COMMAND_PREFIX_KEY = 'aries:privacy_command_prefixes'
 
 function loadCommandPrefixes(): string[] {
   try {

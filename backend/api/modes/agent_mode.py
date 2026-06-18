@@ -172,7 +172,7 @@ def build_agent_system_prompt(
 ) -> str:
     """构建 Agent 模式的系统提示词（精简版）
 
-    work_dir: 当前 session 的工作目录；为空时回退到默认 ~/.MIMOClaw
+    work_dir: 当前 session 的工作目录；为空时回退到默认 ~/.Aries/work_dir
     session_id: 当前会话 ID；每次用户发消息时传入，供 AI 识别来源与默认推送目标
     """
     from pathlib import Path
@@ -181,12 +181,14 @@ def build_agent_system_prompt(
     if work_dir and work_dir.strip():
         wd = str(Path(work_dir).expanduser().resolve())
         # 临时脚本目录与工作目录并列
-        tmp_dir = str(Path(wd) / ".MIMOClaw_tmp")
+        tmp_dir = str(Path(wd) / ".Aries_tmp")
         target_note = wd
     else:
-        wd = str(Path.home() / ".MIMOClaw" / "work_dir")
-        tmp_dir = str(Path.home() / ".MIMOClaw" / "tmp")
-        target_note = f"{wd}\\{today_str}"
+        wd_path = Path.home() / ".Aries" / "work_dir"
+        wd_path.mkdir(parents=True, exist_ok=True)
+        wd = str(wd_path)
+        tmp_dir = str(Path.home() / ".Aries" / "tmp")
+        target_note = wd
 
     prompt = (
         "# 身份\n"

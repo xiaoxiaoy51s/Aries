@@ -426,8 +426,8 @@ watch(workDir, () => {
 onMounted(() => {
   // 不再自动创建终端
   // 监听「查看终端」事件，按需创建终端
-  window.addEventListener('mimo:focus-console', onFocusConsoleFromTool)
-  window.addEventListener('mimo:open-terminal', onOpenTerminal)
+  window.addEventListener('aries:focus-console', onFocusConsoleFromTool)
+  window.addEventListener('aries:open-terminal', onOpenTerminal)
 
   resizeObserver = new ResizeObserver(() => {
     if (resizeTimer) clearTimeout(resizeTimer)
@@ -451,8 +451,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  window.removeEventListener('mimo:focus-console', onFocusConsoleFromTool)
-  window.removeEventListener('mimo:open-terminal', onOpenTerminal)
+  window.removeEventListener('aries:focus-console', onFocusConsoleFromTool)
+  window.removeEventListener('aries:open-terminal', onOpenTerminal)
   resizeObserver?.disconnect()
   if (resizeTimer) clearTimeout(resizeTimer)
   disposeAllTabs()

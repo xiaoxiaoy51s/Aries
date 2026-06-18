@@ -13,6 +13,12 @@ export interface PlatformStatus {
   configured: boolean
 }
 
+export interface ActivePlatform {
+  platform: string
+  name: string
+  session_id: string
+}
+
 export interface QQConfigRequest {
   enabled: boolean
   app_id: string
@@ -33,6 +39,12 @@ export interface WeChatConfigRequest {
 }
 
 // ---------- 列表与状态 ----------
+
+export async function listActivePlatforms(): Promise<{ platforms: ActivePlatform[] }> {
+  const res = await fetch(`${getBaseUrl()}/platforms/active`)
+  if (!res.ok) throw new Error('获取活跃平台列表失败')
+  return res.json()
+}
 
 export async function listPlatforms(): Promise<{ platforms: PlatformStatus[] }> {
   const res = await fetch(`${getBaseUrl()}/platforms/`)

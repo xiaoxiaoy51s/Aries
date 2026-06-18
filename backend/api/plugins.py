@@ -30,7 +30,7 @@ def _reload_mcp_pool() -> None:
 
 @router.get("")
 async def list_plugins():
-    """返回用户在 ~/.MIMOClaw/mcp.json 中配置的 MCP 插件。"""
+    """返回用户在 ~/.Aries/mcp.json 中配置的 MCP 插件。"""
     from utils.mcp_runtime import get_mcp_diagnostics
 
     entries = discover_plugins()

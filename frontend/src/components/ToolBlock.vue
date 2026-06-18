@@ -162,13 +162,13 @@ async function openTerminal() {
       sessionId = await getTerminalSessionId(props.toolCallId) || ''
     }
     if (!sessionId) {
-      window.dispatchEvent(new CustomEvent('mimo:toast', {
+      window.dispatchEvent(new CustomEvent('aries:toast', {
         detail: { message: '终端不存在或已关闭', type: 'warning' }
       }))
       return
     }
-    window.dispatchEvent(new CustomEvent('mimo:focus-console'))
-    window.dispatchEvent(new CustomEvent('mimo:open-terminal', {
+    window.dispatchEvent(new CustomEvent('aries:focus-console'))
+    window.dispatchEvent(new CustomEvent('aries:open-terminal', {
       detail: { sessionId, command: argsPreview.value }
     }))
   } finally {

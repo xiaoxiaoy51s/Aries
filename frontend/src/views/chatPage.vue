@@ -18,7 +18,7 @@
     <div class="chat-content">
     <!-- 空状态 -->
     <div v-if="!hasActiveChat" class="chat-empty">
-      <h1 class="welcome-title">我们要在 MIMOClaw 里构建什么？</h1>
+      <h1 class="welcome-title">我们要在 Aries 里构建什么？</h1>
       <div class="composer composer-with-slash">
         <SlashComposerInput
           ref="emptyComposerRef"
@@ -263,7 +263,7 @@
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useModelStore } from '@/stores/model'
 import { usePrivacyStore, extractCommandPrefix } from '@/stores/privacy'
-import { streamChat, streamVision, stopChat, type StreamEvent } from '@/api/chat'
+import { streamChat, streamVision, stopChat, jsonToStreamEvent, type StreamEvent } from '@/api/chat'
 import { confirmTool } from '@/api/git'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { getSessionMessages, getSession, updateSessionMeta } from '@/api/sessions'
@@ -322,6 +322,162 @@ const emptyComposerRef = ref<InstanceType<typeof SlashComposerInput>>()
 const activeComposerRef = ref<InstanceType<typeof SlashComposerInput>>()
 const currentSessionId = ref<string | undefined>(undefined)
 let streamAbortController: AbortController | null = null
+
+// 平台消息 WebSocket：实时接收飞书/QQ/微信等平台的新消息通知
+let chatWs: WebSocket | null = null
+
+function startChatWs() {
+  stopChatWs()
+  if (!currentSessionId.value) return
+  const baseUrl = modelStore.getBaseUrl()
+  const wsBase = baseUrl.replace(/^http/, 'ws')
+  const wsUrl = `${wsBase}/ws/chat?session_id=${encodeURIComponent(currentSessionId.value)}`
+  console.log('[ChatWS] 连接', wsUrl)
+  chatWs = new WebSocket(wsUrl)
+  chatWs.onopen = () => {
+    console.log('[ChatWS] 已连接, session=', currentSessionId.value)
+  }
+  chatWs.onmessage = async (ev) => {
+    try {
+      const data = JSON.parse(ev.data)
+      if (data.type === 'stream_event') {
+        // 平台 AI 流式事件 - 实时更新 UI
+        handlePlatformStreamEvent(data.event)
+      } else if (data.type === 'new_message') {
+        // 平台用户消息到达 - 创建 assistant 占位消息并进入 loading
+        await loadNewMessages()
+        // 确保 assistant 占位消息存在并标记为 loading
+        ensurePlatformAssistantPlaceholder()
+      } else if (data.type === 'session_update') {
+        // AI 回复完成 - 重置流式状态，强制加载最终结果
+        platformStreaming = false
+        await loadNewMessages(true)
+      }
+    } catch {
+      // 忽略解析错误
+    }
+  }
+  chatWs.onclose = (ev) => {
+    console.log('[ChatWS] 连接关闭, code=', ev.code)
+    chatWs = null
+  }
+  chatWs.onerror = () => {
+    console.warn('[ChatWS] 连接错误')
+  }
+}
+
+function stopChatWs() {
+  if (chatWs) {
+    chatWs.onmessage = null
+    chatWs.onclose = null
+    chatWs.onerror = null
+    if (chatWs.readyState === WebSocket.OPEN || chatWs.readyState === WebSocket.CONNECTING) {
+      chatWs.close()
+    }
+    chatWs = null
+  }
+}
+
+// 平台流式输出状态
+let platformStreaming: boolean = false
+
+// 确保平台 session 有一个 loading 的 assistant 占位消息
+function ensurePlatformAssistantPlaceholder() {
+  if (!currentSessionId.value || isSending.value) return
+  const last = messages.value[messages.value.length - 1]
+  if (last && last.role === 'assistant' && last.isLoading) return
+  messages.value.push({
+    role: 'assistant',
+    content: '',
+    reasoning: [],
+    tools: [],
+    blocks: [],
+    isLoading: true,
+  })
+  hasActiveChat.value = true
+  platformStreaming = true
+  nextTick(() => scheduleScrollToBottom(true))
+}
+
+// 处理平台 AI 流式事件，实时更新 UI
+function handlePlatformStreamEvent(rawEvent: Record<string, unknown>) {
+  if (!currentSessionId.value) return
+  const evt = jsonToStreamEvent(rawEvent)
+  if (!evt) return
+
+  // 确保有 assistant 占位消息
+  ensurePlatformAssistantPlaceholder()
+  const assistantMsg = messages.value[messages.value.length - 1]
+  if (!assistantMsg || assistantMsg.role !== 'assistant') return
+  const assistantIdx = messages.value.length - 1
+
+  // 复用已有的 applyStreamEvent 逻辑
+  applyStreamEvent(assistantMsg, evt)
+  messages.value[assistantIdx] = { ...assistantMsg }
+  nextTick(() => scheduleScrollToBottom())
+}
+
+// 加载当前 session 的新消息（完整重载，处理新增和更新）
+async function loadNewMessages(force: boolean = false) {
+  if (!currentSessionId.value) return
+  // 用户正在从网页发送消息时跳过，避免打断流式输出
+  if (isSending.value) return
+  // 平台流式输出进行中时跳过，避免打断实时更新
+  if (platformStreaming) return
+  try {
+    const data = await getSessionMessages(currentSessionId.value, 100)
+    const allMsgs = data.messages || []
+
+    // 记录之前最后一条助手消息的 id+content，用于判断是否需要更新
+    const prevLast = messages.value[messages.value.length - 1]
+    const prevLastKey = prevLast
+      ? `${prevLast.role}:${prevLast.content?.length || 0}`
+      : ''
+
+    const dbLast = allMsgs[allMsgs.length - 1]
+    const dbLastKey = dbLast
+      ? `${dbLast.role}:${(dbLast.content || '').length}`
+      : ''
+
+    // 消息数量和最后一条内容都没变，且非强制更新，无需刷新
+    if (!force && allMsgs.length === messages.value.length && prevLastKey === dbLastKey) return
+
+    // 完整重载消息列表
+    const msgs: ChatMessage[] = allMsgs.map((m: any) => {
+      const base: ChatMessage = {
+        role: m.role as 'user' | 'assistant',
+        content: m.content || '',
+        mode: m.mode || 'agent',
+        reasoning: [],
+        tools: [],
+        blocks: [],
+        isLoading: false,
+        messageSnapshotJson: m.message_snapshot_json || undefined,
+      }
+      if (m.role === 'user') {
+        Object.assign(base, enrichUserMessage(m.content || ''))
+        base.images = parseStoredImagePaths(m.image_path)
+      }
+      return base
+    })
+
+    messages.value = msgs
+    hasActiveChat.value = msgs.length > 0
+    await nextTick()
+    scheduleScrollToBottom(true)
+
+    // 异步加载所有助手消息的快照
+    for (let i = 0; i < allMsgs.length; i++) {
+      if (allMsgs[i].role !== 'assistant') continue
+      const messageId = allMsgs[i].id
+      if (messageId) {
+        await loadMessageSnapshot(messageId, i, allMsgs[i])
+      }
+    }
+  } catch (err) {
+    console.error('加载新消息失败', err)
+  }
+}
 
 const canSend = computed(() => {
   return inputMessage.value.trim().length > 0 || attachedImages.value.length > 0
@@ -477,13 +633,14 @@ watch(() => modelStore.activeModel, (model) => {
 
 // 监听侧边栏新对话事件
 function onNewChat(e?: Event) {
+  stopChatWs()
   currentSessionId.value = undefined
   messages.value = []
   hasActiveChat.value = false
   inputMessage.value = ''
   clearAttachedImages()
   clearComposerCommand()
-  const newWorkDir = (e as CustomEvent | undefined)?.detail?.workDir || ''
+  const newWorkDir = (e as CustomEvent | undefined)?.detail?.workDir || DEFAULT_WORK_DIR
   pendingWorkDir.value = newWorkDir
   // 立即更新 UI 显示的工作目录，让用户看到正确的项目路径
   if (newWorkDir) {
@@ -497,11 +654,12 @@ function onNewChat(e?: Event) {
 const pendingWorkDir = ref('')
 
 // 当前工作目录（用于标签显示 + 选择）
-const workDir = ref('')
+const DEFAULT_WORK_DIR = '~/.Aries/work_dir'
+const workDir = ref(DEFAULT_WORK_DIR)
 const workDirMenuOpen = ref(false)
 const workDirHistory = ref<string[]>([])
 const workDirLabel = computed(() => {
-  if (!workDir.value) return '选择工作目录'
+  if (!workDir.value) return 'work_dir'
   // 只显示最后一段路径名 + 父目录名，更紧凑
   const normalized = workDir.value.replace(/\\/g, '/').replace(/\/$/, '')
   const parts = normalized.split('/')
@@ -510,18 +668,19 @@ const workDirLabel = computed(() => {
 
 async function loadWorkDir() {
   try {
-    const meta = await getSession('__project_mimoclaw__')
+    const meta = await getSession('__project_ariesclaw__')
     workDir.value = meta.work_dir || ''
   } catch (e) {
-    workDir.value = localStorage.getItem('mimo:workdir') || ''
+    workDir.value = localStorage.getItem('aries:workdir') || DEFAULT_WORK_DIR
   }
+  if (!workDir.value) workDir.value = DEFAULT_WORK_DIR
   workspaceStore.setWorkDir(workDir.value)
   loadWorkDirHistory()
 }
 
 function loadWorkDirHistory() {
   try {
-    const raw = localStorage.getItem('mimo:workdir_history')
+    const raw = localStorage.getItem('aries:workdir_history')
     const list = raw ? (JSON.parse(raw) as string[]) : []
     // 去重：使用 Set 去重后再转回数组
     const uniqueList = Array.from(new Set(list))
@@ -532,7 +691,7 @@ function loadWorkDirHistory() {
     }
     workDirHistory.value = uniqueList.slice(0, 8)
     // 同步更新 localStorage，确保下次读取也是去重的
-    localStorage.setItem('mimo:workdir_history', JSON.stringify(workDirHistory.value))
+    localStorage.setItem('aries:workdir_history', JSON.stringify(workDirHistory.value))
   } catch {
     workDirHistory.value = workDir.value ? [workDir.value] : []
   }
@@ -543,12 +702,12 @@ function pushWorkDirHistory(path: string) {
   list.unshift(path)
   workDirHistory.value = list.slice(0, 8)
   try {
-    localStorage.setItem('mimo:workdir_history', JSON.stringify(workDirHistory.value))
+    localStorage.setItem('aries:workdir_history', JSON.stringify(workDirHistory.value))
   } catch {}
 }
 
 function onWorkDirChanged(e: Event) {
-  workDir.value = (e as CustomEvent).detail || ''
+  workDir.value = (e as CustomEvent).detail || DEFAULT_WORK_DIR
   workspaceStore.setWorkDir(workDir.value)
   loadWorkDirHistory()
 }
@@ -573,13 +732,13 @@ async function pickWorkDir() {
 
 async function applyWorkDir(path: string) {
   try {
-    await updateSessionMeta('__project_mimoclaw__', { work_dir: path })
+    await updateSessionMeta('__project_ariesclaw__', { work_dir: path })
     workDir.value = path
     workspaceStore.setWorkDir(path)
     pendingWorkDir.value = path
-    localStorage.setItem('mimo:workdir', path)
+    localStorage.setItem('aries:workdir', path)
     pushWorkDirHistory(path)
-    window.dispatchEvent(new CustomEvent('mimo:workdir-changed', { detail: path }))
+    window.dispatchEvent(new CustomEvent('aries:workdir-changed', { detail: path }))
   } catch (e) {
     console.error('保存工作目录失败', e)
     alert('保存失败')
@@ -645,6 +804,7 @@ async function loadSessionById(id: string) {
     messages.value = []
     hasActiveChat.value = false
   } finally {
+    startChatWs()
     emit('sessionLoaded')
   }
 }
@@ -793,7 +953,7 @@ async function ensureSessionTitle(sessionId: string, text: string, workDir?: str
       title,
       ...(workDir ? { work_dir: workDir } : {}),
     })
-    window.dispatchEvent(new CustomEvent('mimo:refresh-sessions'))
+    window.dispatchEvent(new CustomEvent('aries:refresh-sessions'))
   } catch (e) {
     console.error('设置会话标题失败', e)
   }
@@ -886,12 +1046,12 @@ function onAddToChat(e: Event) {
 }
 
 onMounted(() => {
-  window.addEventListener('mimo:new-chat', onNewChat)
-  window.addEventListener('mimo:load-session', onLoadSession)
-  window.addEventListener('mimo:workdir-changed', onWorkDirChanged)
-  window.addEventListener('mimo:focus-console', onFocusConsole)
-  window.addEventListener('mimo:toast', onToast)
-  window.addEventListener('mimo:add-to-chat', onAddToChat)
+  window.addEventListener('aries:new-chat', onNewChat)
+  window.addEventListener('aries:load-session', onLoadSession)
+  window.addEventListener('aries:workdir-changed', onWorkDirChanged)
+  window.addEventListener('aries:focus-console', onFocusConsole)
+  window.addEventListener('aries:toast', onToast)
+  window.addEventListener('aries:add-to-chat', onAddToChat)
   document.addEventListener('mousedown', closeWorkDirMenu)
   document.addEventListener('keydown', onGlobalKeydown)
   loadWorkDir()
@@ -908,16 +1068,17 @@ watch(() => props.sessionIdToLoad, (id) => {
 
 onUnmounted(() => {
   clearConfirmCountdownTimer()
+  stopChatWs()
   if (scrollIdleTimer) {
     clearTimeout(scrollIdleTimer)
     scrollIdleTimer = null
   }
-  window.removeEventListener('mimo:new-chat', onNewChat)
-  window.removeEventListener('mimo:load-session', onLoadSession)
-  window.removeEventListener('mimo:workdir-changed', onWorkDirChanged)
-  window.removeEventListener('mimo:focus-console', onFocusConsole)
-  window.removeEventListener('mimo:toast', onToast)
-  window.removeEventListener('mimo:add-to-chat', onAddToChat)
+  window.removeEventListener('aries:new-chat', onNewChat)
+  window.removeEventListener('aries:load-session', onLoadSession)
+  window.removeEventListener('aries:workdir-changed', onWorkDirChanged)
+  window.removeEventListener('aries:focus-console', onFocusConsole)
+  window.removeEventListener('aries:toast', onToast)
+  window.removeEventListener('aries:add-to-chat', onAddToChat)
   document.removeEventListener('mousedown', closeWorkDirMenu)
   document.removeEventListener('keydown', onGlobalKeydown)
 })
@@ -1348,7 +1509,7 @@ async function sendMessage() {
       workDirAtSend
     )
   } else {
-    window.dispatchEvent(new CustomEvent('mimo:refresh-sessions'))
+    window.dispatchEvent(new CustomEvent('aries:refresh-sessions'))
   }
 
   streamAbortController = new AbortController()
@@ -1384,7 +1545,7 @@ async function sendMessage() {
     if (currentSessionId.value) {
       await refreshAssistantSnapshot(currentSessionId.value, assistantIdx)
     }
-    window.dispatchEvent(new CustomEvent('mimo:refresh-sessions'))
+    window.dispatchEvent(new CustomEvent('aries:refresh-sessions'))
   }
 }
 

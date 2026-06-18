@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
 
-DATABASE_PATH = (Path.home() / ".MIMOClaw" / "sqlite" / "agent.db").resolve()
+DATABASE_PATH = (Path.home() / ".Aries" / "sqlite" / "agent.db").resolve()
 
 
 def get_connection() -> sqlite3.Connection:

@@ -1,4 +1,4 @@
-# 启动 MIMOClaw（开发模式）
+# 启动 Aries（开发模式）
 # 流程：先启动后端 -> 等待 /health 就绪 -> 再启动前端 (Vite + Electron)
 
 $sysPath = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")

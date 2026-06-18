@@ -12,8 +12,11 @@ router = APIRouter(prefix="/files", tags=["files"])
 
 def _normalize_work_dir(work_dir: str | None) -> str:
     if work_dir and work_dir.strip():
-        return str(Path(work_dir).expanduser().resolve())
-    return str(Path.cwd())
+        path = Path(work_dir).expanduser().resolve()
+    else:
+        path = Path.home() / ".Aries" / "work_dir"
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 
 @router.get("/list")

@@ -7,7 +7,7 @@ from .model_config import ModelConfig, ModelItem, ModelCreate, ModelUpdate
 
 
 def _get_config_path() -> Path:
-    return Path.home() / ".MIMOClaw" / "config.json"
+    return Path.home() / ".Aries" / "config.json"
 
 
 def _sanitize(value: str) -> str:

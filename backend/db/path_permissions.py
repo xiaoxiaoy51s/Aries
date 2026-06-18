@@ -12,7 +12,7 @@ def _normalize(p: str) -> str:
 
 
 # 默认白名单路径：用户工作目录
-DEFAULT_WHITELIST_PATH = str((Path.home() / ".MIMOClaw" / "work_dir").resolve())
+DEFAULT_WHITELIST_PATH = str((Path.home() / ".Aries" / "work_dir").resolve())
 
 
 def init_default_whitelist():

@@ -12,3 +12,4 @@ from api.debug import router as debug_router
 from api.path_permissions import router as path_permissions_router
 from api.git_api import router as git_router
 from api.files_api import router as files_router
+from api.chat_ws import router as chat_ws_router

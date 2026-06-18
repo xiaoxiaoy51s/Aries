@@ -7,10 +7,10 @@ from json import JSONDecoder
 from pathlib import Path
 from typing import Any
 
-MIMOCLAW_ROOT = Path.home() / ".MIMOClaw"
-MCP_CONFIG_PATH = MIMOCLAW_ROOT / "mcp.json"
-MCP_EXAMPLE_PATH = MIMOCLAW_ROOT / "mcp.example.json"
-MCP_CACHE_ROOT = MIMOCLAW_ROOT / "mcps"
+ARIES_ROOT = Path.home() / ".Aries"
+MCP_CONFIG_PATH = ARIES_ROOT / "mcp.json"
+MCP_EXAMPLE_PATH = ARIES_ROOT / "mcp.example.json"
+MCP_CACHE_ROOT = ARIES_ROOT / "mcps"
 
 MCP_EXAMPLE_CONTENT = """{
   "mcpServers": {
@@ -59,7 +59,7 @@ class PluginEntry:
 
 
 def _ensure_config_dir() -> None:
-    MIMOCLAW_ROOT.mkdir(parents=True, exist_ok=True)
+    ARIES_ROOT.mkdir(parents=True, exist_ok=True)
     MCP_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
 
@@ -123,7 +123,7 @@ def build_mcp_http_headers(server: dict[str, Any]) -> dict[str, str]:
 
 
 def _extract_servers_block(parsed: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """兼容 mcpServers（Trae/Cursor）与 servers（MIMOClaw 旧写法）。"""
+    """兼容 mcpServers（Trae/Cursor）与 servers（Aries 旧写法）。"""
     merged: dict[str, dict[str, Any]] = {}
     for key in ("mcpServers", "servers"):
         block = parsed.get(key)

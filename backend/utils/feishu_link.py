@@ -40,7 +40,7 @@ _registration_threads: dict[str, threading.Thread] = {}
 
 
 def _load_feishu_config() -> dict:
-    config_path = Path.home() / ".MIMOClaw" / "bot_config.json"
+    config_path = Path.home() / ".Aries" / "bot_config.json"
     if not config_path.exists():
         return {}
     try:
@@ -50,7 +50,7 @@ def _load_feishu_config() -> dict:
 
 
 def _save_feishu_config(feishu: dict) -> None:
-    config_path = Path.home() / ".MIMOClaw" / "bot_config.json"
+    config_path = Path.home() / ".Aries" / "bot_config.json"
     config = {}
     if config_path.exists():
         try:
@@ -63,7 +63,7 @@ def _save_feishu_config(feishu: dict) -> None:
 
 
 def _get_feishu_home() -> Path:
-    return Path.home() / ".MIMOClaw" / "feishu-sdk"
+    return Path.home() / ".Aries" / "feishu-sdk"
 
 
 def _ensure_home() -> Path:
@@ -399,7 +399,7 @@ def logout_cli() -> None:
     config = _load_feishu_config()
     if "feishu" in config:
         del config["feishu"]
-        config_path = Path.home() / ".MIMOClaw" / "bot_config.json"
+        config_path = Path.home() / ".Aries" / "bot_config.json"
         config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
     with _qrcode_lock:

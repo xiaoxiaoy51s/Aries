@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 # Skills 目录：available 可加载，unavailable 仅展示不可加载
-SKILLS_ROOT = Path.home() / ".MIMOClaw" / "skills"
+SKILLS_ROOT = Path.home() / ".Aries" / "skills"
 SKILLS_AVAILABLE_DIR = SKILLS_ROOT / "available"
 SKILLS_UNAVAILABLE_DIR = SKILLS_ROOT / "unavailable"
 RESERVED_SKILL_DIRS = frozenset({"available", "unavailable"})
@@ -450,7 +450,7 @@ def execute_tool(
     if arguments is None:
         arguments = {}
 
-    # 0. MCP 插件工具（来自 ~/.MIMOClaw/mcp.json 中已启用的服务）
+    # 0. MCP 插件工具（来自 ~/.Aries/mcp.json 中已启用的服务）
     try:
         from utils.mcp_runtime import execute_mcp_tool
         mcp_result = execute_mcp_tool(tool_name, arguments)

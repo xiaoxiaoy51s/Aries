@@ -90,7 +90,7 @@ def list_projects():
     """按 work_dir 去重分组，返回项目（工作目录）列表及其下的 session。"""
     meta_list = list_session_meta(limit=1000)
 
-    # 按 work_dir 分组（排除 __project_mimoclaw__ 这种配置项）
+    # 按 work_dir 分组（排除 __project_aries__ 这种配置项）
     projects: dict[str, list[dict]] = {}
     for m in meta_list:
         sid = m.get("session_id", "")

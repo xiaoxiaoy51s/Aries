@@ -10,9 +10,9 @@ from typing import Any
 class UserFileManager:
     def __init__(self, user_email: str | None = None, work_dir: str | None = None) -> None:
         self.user_email = user_email or os.environ.get("USER_EMAIL", "")
-        # 默认存储根目录：~/.MIMOClaw（与 skills/session/uploads/temp 平级）
-        self.default_base = Path.home() / ".MIMOClaw"
-        # 用户工作区：默认存到 ~/.MIMOClaw/work_dir 下，让日期子目录更整洁；
+        # 默认存储根目录：~/.Aries（与 skills/session/uploads/temp 平级）
+        self.default_base = Path.home() / ".Aries"
+        # 用户工作区：默认存到 ~/.Aries/work_dir 下，让日期子目录更整洁；
         # 显式传 work_dir 时优先使用自定义目录。
         self.default_work_dir = self.default_base / "work_dir"
         if work_dir and work_dir.strip():
@@ -27,10 +27,8 @@ class UserFileManager:
         self.user_dir.mkdir(parents=True, exist_ok=True)
 
     def get_today_dir(self) -> Path:
-        today = datetime.now().strftime("%Y-%m-%d")
-        today_dir = self.user_dir / today
-        today_dir.mkdir(parents=True, exist_ok=True)
-        return today_dir
+        """已废弃：不再使用日期子目录，直接返回 user_dir。"""
+        return self.user_dir
 
     def get_user_dir(self) -> Path:
         return self.user_dir
@@ -83,22 +81,13 @@ class UserFileManager:
             return target
 
         path_str = str(candidate).replace("\\", "/")
-        # 如果工作目录是用户自定义的，就不要再套日期子目录
-        is_custom_work_dir = self.base_dir != self.default_work_dir
 
         user_dir_str = str(self.user_dir).replace("\\", "/")
-        today_str = datetime.now().strftime("%Y-%m-%d")
 
-        if use_today and not is_custom_work_dir and path_str.startswith(today_str + "/"):
-            base = self.user_dir
-            target = (base / candidate).resolve()
-        elif path_str.startswith(user_dir_str):
+        if path_str.startswith(user_dir_str):
             target = candidate.resolve()
         else:
-            if use_today and not is_custom_work_dir:
-                base = self.get_today_dir()
-            else:
-                base = self.user_dir
+            base = self.user_dir
             target = (base / candidate).resolve()
 
         if not self._is_allowed_path(target):

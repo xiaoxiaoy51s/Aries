@@ -258,7 +258,7 @@ function addSelectionToChat() {
   const startLine = selection.startLineNumber
   const endLine = selection.endLineNumber
   const fullPath = `${workDir.value}\\${selectedPath.value.replace(/\//g, '\\')}#L${startLine}-${endLine}`
-  window.dispatchEvent(new CustomEvent('mimo:add-to-chat', { detail: fullPath }))
+  window.dispatchEvent(new CustomEvent('aries:add-to-chat', { detail: fullPath }))
   showAddBtn.value = false
 }
 

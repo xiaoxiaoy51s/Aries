@@ -77,7 +77,7 @@
     <div v-else class="content">
       <div v-if="activeTab === 'plugins' && currentItems.length === 0" class="empty-panel">
         <p>尚未配置 MCP 插件。</p>
-        <p>请在 <code>{{ configPath || '~/.MIMOClaw/mcp.json' }}</code> 中自行添加，或点击右上角 + 通过界面添加。</p>
+        <p>请在 <code>{{ configPath || '~/.ariesClaw/mcp.json' }}</code> 中自行添加，或点击右上角 + 通过界面添加。</p>
       </div>
 
       <section v-else class="group-section">
@@ -134,7 +134,7 @@
           <template v-if="activeTab === 'plugins'">
             <p class="hint-text">
               请从 MCP Servers 介绍页复制配置 JSON（优先使用 NPX 或 UVX 配置），粘贴到下方输入框。
-              保存到 <code>{{ configPath || '~/.MIMOClaw/mcp.json' }}</code>，名称自动取 <code>mcpServers</code> 中的键名。
+              保存到 <code>{{ configPath || '~/.ariesClaw/mcp.json' }}</code>，名称自动取 <code>mcpServers</code> 中的键名。
             </p>
             <label class="field">
               <textarea
@@ -163,7 +163,7 @@
           </template>
           <template v-else>
             <p class="hint-text">
-              请将技能目录放入 <code>~/.MIMOClaw/skills/available/</code>，并确保包含 <code>SKILL.md</code> 文件，然后点击刷新。
+              请将技能目录放入 <code>~/.ariesClaw/skills/available/</code>，并确保包含 <code>SKILL.md</code> 文件，然后点击刷新。
             </p>
           </template>
           <p v-if="addError" class="add-error">{{ addError }}</p>

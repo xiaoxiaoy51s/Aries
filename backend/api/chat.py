@@ -119,7 +119,7 @@ def load_file_as_base64_url(file_path: str, mime_type: Optional[str] = None) -> 
 def save_base64_image(base64_str: str, upload_dir: str = None) -> str:
     if upload_dir is None:
         today = datetime.now().strftime("%Y/%m/%d")
-        upload_path = Path.home() / ".MIMOClaw" / "uploads" / today
+        upload_path = Path.home() / ".Aries" / "uploads" / today
         url_prefix = f"/uploads/{today}"
     else:
         upload_path = Path(upload_dir)

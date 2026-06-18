@@ -143,11 +143,11 @@ function onFocusConsole() {
 }
 
 onMounted(() => {
-  window.addEventListener('mimo:focus-console', onFocusConsole)
+  window.addEventListener('aries:focus-console', onFocusConsole)
 })
 
 onUnmounted(() => {
-  window.removeEventListener('mimo:focus-console', onFocusConsole)
+  window.removeEventListener('aries:focus-console', onFocusConsole)
 })
 </script>
 

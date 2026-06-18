@@ -9,11 +9,11 @@ from services.wechat_bot import start_wechat_bot, stop_wechat_bot
 
 _log = logging.getLogger(__name__)
 
-MIMOCLAW_HOME = Path.home() / ".MIMOClaw"
+ARIESCLAW_HOME = Path.home() / ".Aries"
 
 
 # 从统一的 bot 配置文件中读取启用的平台
-_BOT_CONFIG_PATH = MIMOCLAW_HOME / "bot_config.json"
+_BOT_CONFIG_PATH = ARIESCLAW_HOME / "bot_config.json"
 
 
 def _load_bot_config() -> dict:

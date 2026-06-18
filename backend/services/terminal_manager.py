@@ -159,7 +159,7 @@ class _TerminalSession:
         """交互式 Console 默认 PowerShell；winpty 必须用 argv 列表启动。"""
         if os.name != "nt":
             return [os.environ.get("SHELL", "/bin/bash")]
-        override = (os.environ.get("MIMOCLAW_CONSOLE_SHELL") or "").strip()
+        override = (os.environ.get("ARIESCLAW_CONSOLE_SHELL") or "").strip()
         if override:
             return shlex.split(override, posix=False)
         if shutil.which("pwsh"):
@@ -394,8 +394,11 @@ class TerminalManager:
 
     def _normalize_work_dir(self, work_dir: str | None) -> str:
         if work_dir and work_dir.strip():
-            return str(Path(work_dir).expanduser().resolve())
-        return str(Path.home() / ".MIMOClaw")
+            path = Path(work_dir).expanduser().resolve()
+        else:
+            path = Path.home() / ".Aries" / "work_dir"
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
 
     def get_session(self, session_id: str, work_dir: str | None = None) -> _TerminalSession:
         with self._session_lock:
@@ -707,7 +710,7 @@ class TerminalManager:
 
     @classmethod
     def clear_runtime_dir(cls) -> int:
-        """清理 ~/.MIMOClaw/temp/cli_runtime 下的 PTY/捕获残留文件。"""
+        """清理 ~/.Aries/temp/cli_runtime 下的 PTY/捕获残留文件。"""
         try:
             from utils.cli_executor import CLIExecutor
             return CLIExecutor.clear_runtime_dir()
@@ -757,7 +760,7 @@ class TerminalManager:
         time.sleep(0.3)
 
         uid = uuid.uuid4().hex[:8]
-        temp_dir = Path(tempfile.gettempdir()) / "MIMOClaw" / "pty_jobs"
+        temp_dir = Path(tempfile.gettempdir()) / "Aries" / "pty_jobs"
         temp_dir.mkdir(parents=True, exist_ok=True)
         cap_file = temp_dir / f"out_{uid}.txt"
         done_file = temp_dir / f"done_{uid}.txt"

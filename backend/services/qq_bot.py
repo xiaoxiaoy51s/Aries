@@ -118,6 +118,10 @@ class NonoQQBot(botpy.Client if BOTPY_AVAILABLE else object):
             self.last_chat_type = "c2c"
             self.last_user_openid = str(user_openid)
 
+        # 用 create_task 后台处理，不阻塞事件循环，让新消息能及时触发取消
+        asyncio.create_task(self._process_message_task(message, content))
+
+    async def _process_message_task(self, message: Message, content: str):
         try:
             async def _send_segment(seg: str):
                 await _reply_qq_message(message, seg)
@@ -125,6 +129,9 @@ class NonoQQBot(botpy.Client if BOTPY_AVAILABLE else object):
             reply, files = await process_inbound_message_async(
                 "qq", content, send_segment=_send_segment
             )
+        except asyncio.CancelledError:
+            _log.info("[QQ] 对话已被新消息取消")
+            return
         except RuntimeError as e:
             if "shutdown" in str(e).lower():
                 _log.warning("[QQ] 进程关闭中，跳过消息处理")
@@ -187,7 +194,7 @@ class _QQRunner:
 def _load_qq_config() -> dict:
     import json
     from pathlib import Path
-    config_path = Path.home() / ".MIMOClaw" / "bot_config.json"
+    config_path = Path.home() / ".Aries" / "bot_config.json"
     if not config_path.exists():
         return {}
     try:

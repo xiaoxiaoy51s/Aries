@@ -23,7 +23,7 @@ from utils.feishu_link import (
 
 router = APIRouter(prefix="/platforms", tags=["platforms"])
 
-_BOT_CONFIG_PATH = Path.home() / ".MIMOClaw" / "bot_config.json"
+_BOT_CONFIG_PATH = Path.home() / ".Aries" / "bot_config.json"
 
 PLATFORMS = ("qq", "feishu", "wechat")
 PLATFORM_NAMES = {"qq": "QQ", "feishu": "飞书", "wechat": "微信"}
@@ -131,6 +131,34 @@ def _is_configured(platform: str, pconf: dict) -> bool:
 
 
 # ---------- APIs ----------
+
+@router.get("/active")
+def list_active_platforms():
+    """返回已有消息记录的平台列表（根据 chat_messages 表判断）"""
+    from db.database import get_connection
+
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT DISTINCT session_id
+        FROM chat_messages
+        WHERE session_id IN ('__wechat__', '__qq__', '__feishu__')
+        """
+    ).fetchall()
+    conn.close()
+
+    active_ids = {row[0] for row in rows}
+    result = []
+    for p in PLATFORMS:
+        sid = f"__{p}__"
+        if sid in active_ids:
+            result.append({
+                "platform": p,
+                "name": PLATFORM_NAMES.get(p, p),
+                "session_id": sid,
+            })
+    return {"platforms": result}
+
 
 @router.get("/")
 def list_platforms():
@@ -287,6 +315,18 @@ def wechat_qrcode():
 def wechat_qrcode_poll(body: WeChatQRCodePollRequest):
     result = poll_qrcode_status(body.qrcode_key)
     if result.get("status") == "confirmed":
+        # 保存登录凭证到配置文件
+        config = _load_config()
+        existing = config.get("wechat", {})
+        existing.update({
+            "bot_token": result.get("bot_token", ""),
+            "ilink_bot_id": result.get("ilink_bot_id", ""),
+            "ilink_user_id": result.get("ilink_user_id", ""),
+            "baseurl": result.get("baseurl", ""),
+            "enabled": True,
+        })
+        config["wechat"] = existing
+        _save_config(config)
         _restart_platform("wechat")
     return result
 

@@ -16,7 +16,7 @@ export interface StreamEvent {
   meta?: { session_id?: string }
 }
 
-function jsonToStreamEvent(json: Record<string, unknown>): StreamEvent | null {
+export function jsonToStreamEvent(json: Record<string, unknown>): StreamEvent | null {
   // 处理错误事件
   if (json.error) {
     return { type: 'error', data: json.error }

@@ -6,8 +6,8 @@ const fs = require('fs')
 
 const BACKEND_PORT = 30000
 
-app.setName('MIMOClaw')
-app.setAboutPanelOptions({ applicationName: 'MIMOClaw' })
+app.setName('Aries')
+app.setAboutPanelOptions({ applicationName: 'Aries' })
 app.commandLine.appendSwitch('no-sandbox')
 
 let mainWindow = null
@@ -61,8 +61,8 @@ async function startBackend() {
   // 启动后端
   const isPackaged = app.isPackaged
   const backendExe = isPackaged
-    ? path.join(process.resourcesPath, 'mimo_backend.exe')
-    : path.join(__dirname, '..', 'resources', 'mimo_backend.exe')
+    ? path.join(process.resourcesPath, 'aries_backend.exe')
+    : path.join(__dirname, '..', 'resources', 'aries_backend.exe')
 
   if (fs.existsSync(backendExe)) {
     console.log(`[Backend] starting: ${backendExe}`)

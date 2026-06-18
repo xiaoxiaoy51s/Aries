@@ -474,7 +474,7 @@ function closeDetailDialog() {
 function openTaskSession(task: ScheduledTask) {
   const sessionId = task.session_id || (taskPushPlatform(task) ? `__${taskPushPlatform(task)}__` : '')
   if (!sessionId) return
-  window.dispatchEvent(new CustomEvent('mimo:open-session', { detail: sessionId }))
+  window.dispatchEvent(new CustomEvent('aries:open-session', { detail: sessionId }))
 }
 
 function openCreateDialog() {

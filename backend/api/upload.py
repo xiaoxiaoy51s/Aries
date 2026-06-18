@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
-UPLOAD_DIR = (Path.home() / ".MIMOClaw" / "uploads").resolve()
+UPLOAD_DIR = (Path.home() / ".Aries" / "uploads").resolve()
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 

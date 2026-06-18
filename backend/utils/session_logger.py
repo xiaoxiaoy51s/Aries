@@ -1,7 +1,7 @@
 """
 SessionLogger: 将 agent 每轮工作过程以 JSONL 格式写入文件（一条逻辑事件一行）。
 
-文件路径：~/.MIMOClaw/session/{YYYY-MM-DD}/{session_id}_{message_id}.jsonl
+文件路径：~/.Aries/session/{YYYY-MM-DD}/{session_id}_{message_id}.jsonl
 
 事件类型（按时间顺序）：
   - reasoning_text  : 一轮思考/工作说明（整段 flush，非逐 token 写盘）
@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SESSION_LOG_ROOT = Path.home() / ".MIMOClaw" / "session"
+SESSION_LOG_ROOT = Path.home() / ".Aries" / "session"
 
 
 def _utc_now() -> str:

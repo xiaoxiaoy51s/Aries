@@ -21,7 +21,7 @@ _lock = threading.Lock()
 def _load_feishu_config() -> dict:
     import json
     from pathlib import Path
-    config_path = Path.home() / ".MIMOClaw" / "bot_config.json"
+    config_path = Path.home() / ".Aries" / "bot_config.json"
     if not config_path.exists():
         return {}
     try:
@@ -78,27 +78,38 @@ class _FeishuRunner:
             chat_id = (msg.chat_id or "").strip()
             if chat_id:
                 self.last_chat_id = chat_id
-            try:
-                async def _send_segment(seg: str):
-                    await self._channel.send(chat_id, {"text": seg})
 
-                reply, _files = await process_inbound_message_async(
-                    "feishu", text, send_segment=_send_segment
-                )
-                _log.info("[飞书] Agent 分段推送完成, chat_id=%s", chat_id)
-            except RuntimeError as e:
-                if "shutdown" in str(e).lower():
-                    _log.warning("[飞书] 进程关闭中，跳过消息处理")
-                    return
-                raise
-            if reply and self._channel:
-                try:
-                    await self._channel.send(chat_id, {"text": reply})
-                    _log.info("[飞书] 已回复 chat_id=%s, len=%d", chat_id, len(reply))
-                except Exception as send_err:
-                    _log.error("[飞书] 发送失败: %s", send_err)
+            # 用 create_task 后台处理，不阻塞事件循环，让新消息能及时触发取消
+            asyncio.create_task(self._process_message_task(text, chat_id))
         except Exception as e:
             _log.error("[飞书] 处理消息失败: %s", e)
+
+    async def _process_message_task(self, text: str, chat_id: str):
+        try:
+            async def _send_segment(seg: str):
+                await self._channel.send(chat_id, {"text": seg})
+
+            reply, _files = await process_inbound_message_async(
+                "feishu", text, send_segment=_send_segment
+            )
+            _log.info("[飞书] Agent 分段推送完成, chat_id=%s", chat_id)
+        except asyncio.CancelledError:
+            _log.info("[飞书] 对话已被新消息取消")
+            return
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                _log.warning("[飞书] 进程关闭中，跳过消息处理")
+                return
+            raise
+        except Exception as e:
+            _log.error("[飞书] 处理消息失败: %s", e)
+            return
+        if reply and self._channel:
+            try:
+                await self._channel.send(chat_id, {"text": reply})
+                _log.info("[飞书] 已回复 chat_id=%s, len=%d", chat_id, len(reply))
+            except Exception as send_err:
+                _log.error("[飞书] 发送失败: %s", send_err)
 
     async def _connect(self):
         import contextlib

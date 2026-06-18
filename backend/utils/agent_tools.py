@@ -64,7 +64,7 @@ def _build_read_skill_file_definition() -> dict[str, Any]:
                 "properties": {
                     "skill_name": {
                         "type": "string",
-                        "description": "技能目录名（与 ~/.MIMOClaw/skills/available/ 下的子目录名一致）。",
+                        "description": "技能目录名（与 ~/.Aries/skills/available/ 下的子目录名一致）。",
                     },
                     "file_path": {
                         "type": "string",

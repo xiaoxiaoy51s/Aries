@@ -210,6 +210,7 @@ import AutomationPage from './AutomationPage.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import SearchDialog from '@/components/SearchDialog.vue'
 import { listProjects, updateSessionMeta, deleteSession } from '@/api/sessions'
+import { listActivePlatforms } from '@/api/platform'
 import { useModelStore } from '@/stores/model'
 import { useSidebar } from '@/composables/useSidebar'
 
@@ -248,12 +249,22 @@ const renameInputRef = ref<HTMLInputElement | null>(null)
 const showDeleteModal = ref(false)
 const sessionToDelete = ref<ProjectSession | null>(null)
 
-// 三个平台固定的固定 session id（与后端 platform_chat.session_id_for 对应）
-const platformSessions = [
-  { id: '__feishu__', name: '飞书', platform: 'feishu' },
-  { id: '__qq__', name: 'QQ', platform: 'qq' },
-  { id: '__wechat__', name: '微信', platform: 'wechat' },
-]
+// 平台会话列表（根据 chat_messages 表中是否有对应 session_id 动态显示）
+const platformSessions = ref<{ id: string; name: string; platform: string }[]>([])
+
+async function loadActivePlatforms() {
+  try {
+    const data = await listActivePlatforms()
+    platformSessions.value = (data.platforms || []).map((p: any) => ({
+      id: p.session_id,
+      name: p.name,
+      platform: p.platform,
+    }))
+  } catch (e) {
+    console.error('加载活跃平台失败', e)
+    platformSessions.value = []
+  }
+}
 
 function isPlatformId(id: string) {
   return id === '__feishu__' || id === '__qq__' || id === '__wechat__'
@@ -279,26 +290,27 @@ async function loadProjects(retries = 5, delay = 1500) {
 
 function onRefreshProjects() {
   void loadProjects()
+  void loadActivePlatforms()
 }
 
 onMounted(async () => {
-  await Promise.all([loadProjects(), modelStore.loadModels()])
-  window.addEventListener('mimo:refresh-sessions', onRefreshProjects)
-  window.addEventListener('mimo:workdir-changed', onRefreshProjects)
-  window.addEventListener('mimo:open-session', onOpenSession)
+  await Promise.all([loadProjects(), modelStore.loadModels(), loadActivePlatforms()])
+  window.addEventListener('aries:refresh-sessions', onRefreshProjects)
+  window.addEventListener('aries:workdir-changed', onRefreshProjects)
+  window.addEventListener('aries:open-session', onOpenSession)
 })
 
 onUnmounted(() => {
-  window.removeEventListener('mimo:refresh-sessions', onRefreshProjects)
-  window.removeEventListener('mimo:workdir-changed', onRefreshProjects)
-  window.removeEventListener('mimo:open-session', onOpenSession)
+  window.removeEventListener('aries:refresh-sessions', onRefreshProjects)
+  window.removeEventListener('aries:workdir-changed', onRefreshProjects)
+  window.removeEventListener('aries:open-session', onOpenSession)
 })
 
 function createNewChat() {
   currentPage.value = 'chat'
   currentSessionId.value = null
   currentProject.value = null
-  window.dispatchEvent(new CustomEvent('mimo:new-chat'))
+  window.dispatchEvent(new CustomEvent('aries:new-chat'))
 }
 
 function selectProject(project: Project) {
@@ -320,7 +332,7 @@ function createNewChatInProject(project: Project) {
   currentPage.value = 'chat'
   currentProject.value = project
   currentSessionId.value = null
-  window.dispatchEvent(new CustomEvent('mimo:new-chat', {
+  window.dispatchEvent(new CustomEvent('aries:new-chat', {
     detail: { workDir: project.work_dir }
   }))
 }
@@ -354,7 +366,7 @@ async function selectSession(id: string) {
     currentProject.value = proj || null
   }
   await nextTick()
-  window.dispatchEvent(new CustomEvent('mimo:load-session', { detail: id }))
+  window.dispatchEvent(new CustomEvent('aries:load-session', { detail: id }))
 }
 
 function onOpenSession(e: Event) {

@@ -66,11 +66,11 @@ class CLIExecutor:
     def _runtime_root(cls) -> Path:
         """ps1 调度/日志/done 文件的根目录。
 
-        统一使用 ~/.MIMOClaw/temp/cli_runtime，避免：
+        统一使用 ~/.Aries/temp/cli_runtime，避免：
         1. 把临时文件散落到系统 TEMP 中；
         2. 避免 AI 进程把日志写到 work_dir 时造成的死锁/误读。
         """
-        root = Path.home() / ".MIMOClaw" / "temp" / "cli_runtime"
+        root = Path.home() / ".Aries" / "temp" / "cli_runtime"
         root.mkdir(parents=True, exist_ok=True)
         return root
 
@@ -78,7 +78,7 @@ class CLIExecutor:
         from utils.user_file_manager import UserFileManager
         self.manager = UserFileManager(work_dir=work_dir)
         self._user_home_dir = Path.home().resolve()
-        # 显式工作目录时使用该目录；否则沿用默认 ~/.MIMOClaw
+        # 显式工作目录时使用该目录；否则沿用默认 ~/.Aries
         if work_dir and work_dir.strip():
             self._allowed_dir = Path(work_dir).expanduser().resolve()
         else:
@@ -698,7 +698,7 @@ class CLIExecutor:
 
     @classmethod
     def clear_runtime_dir(cls) -> int:
-        """清理 ~/.MIMOClaw/temp/cli_runtime 下的残留文件（dispatch_*/done_*）。
+        """清理 ~/.Aries/temp/cli_runtime 下的残留文件（dispatch_*/done_*）。
 
         适用于：用户暂停/关闭文件/切换会话时，确保下一轮不会误读上一次未结束的日志。
         """

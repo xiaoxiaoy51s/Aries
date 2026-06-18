@@ -1,5 +1,5 @@
 {
-  "name": "mimoclaw-desktop",
+  "name": "aries-desktop",
   "version": "1.0.0",
   "private": true,
   "main": "electron/main.js",
@@ -28,8 +28,8 @@
     "wait-on": "^8.0.5"
   },
   "build": {
-    "appId": "com.mimoclaw.desktop",
-    "productName": "MIMOClaw",
+    "appId": "com.aries.desktop",
+    "productName": "Aries",
     "directories": {
       "output": "release"
     },
@@ -40,8 +40,8 @@
     ],
     "extraResources": [
       {
-        "from": "resources/mimo_backend.exe",
-        "to": "mimo_backend.exe"
+        "from": "resources/aries_backend.exe",
+        "to": "aries_backend.exe"
       }
     ],
     "nsis": {

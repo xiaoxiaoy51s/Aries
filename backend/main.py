@@ -12,7 +12,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-from api import config_router, chat_router, upload_router, skills_router, plugins_router, sessions_router, debug_router, scheduled_tasks_router, platforms_router, system_router, path_permissions_router, terminal_router, git_router, files_router
+from api import config_router, chat_router, upload_router, skills_router, plugins_router, sessions_router, debug_router, scheduled_tasks_router, platforms_router, system_router, path_permissions_router, terminal_router, git_router, files_router, chat_ws_router
 from db.database import init_database
 from utils.scheduler import run_scheduler
 
@@ -74,8 +74,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="MIMOClaw API",
-    description="MIMOClaw AI Agent Backend",
+    title="Aries API",
+    description="Aries AI Agent Backend",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -88,7 +88,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-uploads_path = (Path.home() / ".MIMOClaw" / "uploads").resolve()
+uploads_path = (Path.home() / ".Aries" / "uploads").resolve()
 uploads_path.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(uploads_path)), name="uploads")
 
@@ -106,11 +106,12 @@ app.include_router(path_permissions_router)
 app.include_router(terminal_router)
 app.include_router(git_router)
 app.include_router(files_router)
+app.include_router(chat_ws_router)
 
 
 @app.get("/")
 def root():
-    return {"message": "MIMOClaw API", "version": "1.0.0"}
+    return {"message": "Aries API", "version": "1.0.0"}
 
 
 @app.get("/health")

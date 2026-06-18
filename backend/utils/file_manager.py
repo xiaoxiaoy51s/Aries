@@ -80,8 +80,8 @@ class FileManagerTool:
                         },
                         "use_today": {
                             "type": "boolean",
-                            "description": "是否在今天的日期目录中查找文件。默认 true（与 write_file 一致）。",
-                            "default": True,
+                            "description": "是否在今天的日期目录中查找文件。默认 false（不再使用日期子目录）。",
+                            "default": False,
                         },
                     },
                     "required": ["file_path"],
@@ -127,8 +127,8 @@ class FileManagerTool:
                         },
                         "use_today": {
                             "type": "boolean",
-                            "description": "是否使用今天的日期目录。默认 true。",
-                            "default": True,
+                            "description": "是否使用今天的日期目录。默认 false（不再使用日期子目录）。",
+                            "default": False,
                         },
                     },
                     "required": ["file_path", "content"],
@@ -200,8 +200,8 @@ class FileManagerTool:
                         },
                         "use_today": {
                             "type": "boolean",
-                            "description": "是否在今天的日期目录中查找文件。默认 true（与 write_file 一致）。",
-                            "default": True,
+                            "description": "是否在今天的日期目录中查找文件。默认 false（不再使用日期子目录）。",
+                            "default": False,
                         },
                     },
                     "required": ["file_path", "edit_type", "new_content"],
@@ -317,7 +317,7 @@ class FileManagerTool:
         start_line: int | None = None,
         end_line: int | None = None,
         fuzzy_search: bool = True,
-        use_today: bool = True,
+        use_today: bool = False,
         skip_confirmation: bool = False,
     ) -> dict[str, Any]:
         """Read file content with optional line range."""
@@ -394,7 +394,7 @@ class FileManagerTool:
         append: bool = False,
         create_dirs: bool = True,
         encoding: str = "utf-8",
-        use_today: bool = True,
+        use_today: bool = False,
         skip_confirmation: bool = False,
     ) -> dict[str, Any]:
         """Write content to file."""
@@ -441,7 +441,7 @@ class FileManagerTool:
         use_regex: bool = False,
         occurrence: int = -1,
         encoding: str = "utf-8",
-        use_today: bool = True,
+        use_today: bool = False,
         skip_confirmation: bool = False,
     ) -> dict[str, Any]:
         """Edit specific parts of a file."""
