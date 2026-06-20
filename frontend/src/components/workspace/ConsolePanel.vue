@@ -102,8 +102,13 @@ function newTabId() {
 }
 
 function setHostRef(id: string, el: HTMLElement | null) {
-  if (el) hostRefs.set(id, el)
-  else hostRefs.delete(id)
+  if (el) {
+    hostRefs.set(id, el)
+    // 终端 host 元素创建时立即开始观察，确保大小变化时触发 fit
+    resizeObserver?.observe(el)
+  } else {
+    hostRefs.delete(id)
+  }
 }
 
 function openTerminalUrl(url: string) {
@@ -133,6 +138,7 @@ function createTerminal(tab: TerminalTab) {
     lineHeight: 1.15,
     fontFamily: "'Cascadia Mono', 'Consolas', 'Courier New', monospace",
     scrollback: 5000,
+    convertEol: true,
     theme: {
       background: '#ffffff',
       foreground: '#000000',
@@ -183,14 +189,16 @@ function createTerminal(tab: TerminalTab) {
     },
   })
 
+  // Ctrl+C：始终发送 \x03 给 PTY（中断进程）。
+  // 如有选中文本，同时复制到剪贴板。
   tab.term.attachCustomKeyEventHandler((event) => {
     if (event.type === 'keydown' && event.ctrlKey && event.key.toLowerCase() === 'c') {
       const selection = tab.term?.getSelection()
       if (selection) {
         void navigator.clipboard?.writeText(selection).catch(() => {})
         tab.term?.clearSelection()
-        return false
       }
+      // 不 return false：让 xterm.js 把 \x03 发送给 winpty
     }
     return true
   })
@@ -230,14 +238,17 @@ function connectTab(tab: TerminalTab, reset = true) {
     if (gen !== tab.wsGen) return
     // 等待 xterm 渲染完成后再 attach
     nextTick().then(() => {
-      fitTab(tab)
-      ws.send(JSON.stringify({
-        type: 'attach',
-        rows: tab.term?.rows || 24,
-        cols: tab.term?.cols || 80,
-        reset,
-        replay: !reset,
-      }))
+      // 确保容器有实际尺寸后再 fit
+      requestAnimationFrame(() => {
+        fitTab(tab)
+        ws.send(JSON.stringify({
+          type: 'attach',
+          rows: tab.term?.rows || 24,
+          cols: tab.term?.cols || 80,
+          reset,
+          replay: !reset,
+        }))
+      })
     })
   }
 
@@ -248,6 +259,17 @@ function connectTab(tab: TerminalTab, reset = true) {
       if (msg.type === 'ready') {
         tab.attached = true
         tab.connected = true
+        // 收到 ready 后再次 fit，确保终端尺寸与容器一致
+        nextTick(() => {
+          fitTab(tab)
+          if (tab.ws?.readyState === WebSocket.OPEN && tab.term) {
+            tab.ws.send(JSON.stringify({
+              type: 'resize',
+              rows: tab.term.rows,
+              cols: tab.term.cols,
+            }))
+          }
+        })
         tab.term?.focus()
         return
       }
@@ -433,21 +455,20 @@ onMounted(() => {
     if (resizeTimer) clearTimeout(resizeTimer)
     resizeTimer = setTimeout(() => {
       const tab = activeTab.value
-      if (tab && tab.attached) {
+      if (tab && tab.attached && tab.term) {
+        // 先 fit 让终端重新计算 cols
         fitTab(tab)
+        // 通知后端新的尺寸
         if (tab.ws?.readyState === WebSocket.OPEN) {
           tab.ws.send(JSON.stringify({
             type: 'resize',
-            rows: tab.term?.rows || 24,
-            cols: tab.term?.cols || 80,
+            rows: tab.term.rows,
+            cols: tab.term.cols,
           }))
         }
       }
     }, 150)
   })
-
-  // 观察所有 host 元素
-  hostRefs.forEach((el) => resizeObserver?.observe(el))
 })
 
 onUnmounted(() => {
@@ -605,7 +626,6 @@ onUnmounted(() => {
   left: 0;
   width: 100%;
   height: 100%;
-  padding: 4px;
 }
 
 .console-empty {

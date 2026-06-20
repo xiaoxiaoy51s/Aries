@@ -38,6 +38,22 @@
               </svg>
               路径权限
             </li>
+            <li
+              :class="{ active: activeTab === 'pets' }"
+              @click="activeTab = 'pets'; loadPets()"
+            >
+              <svg t="1781971061983" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" 
+              p-id="3864" width="16" height="16">
+              <path d="M636.589292 466.203569c-30.641231-33.988923-74.326646-53.492185-119.855261-53.492184-45.536492 
+              0-89.221908 19.495385-119.863139 53.492184L183.288123 703.188677c-46.355692 51.436308-55.6032 
+              124.463262-23.559877 186.045046 31.578585 60.675938 95.586462 94.538831 163.005046 86.244431l194.000739-23.835569 
+              194.000738 23.835569c6.750523 0.827077 13.469538 1.236677 20.133416 1.236677 59.809477 0 114.467446-32.886154 
+              142.879507-87.488985 32.043323-61.581785 22.795815-134.600862-23.567754-186.037169L636.589292 466.203569z 
+              m181.248 393.940677c-15.375754 29.538462-49.569477 58.927262-99.422523 52.791139l-197.844677-24.308185a31.373785 
+              31.373785 0 0 0-7.687877 0L315.045415 912.935385c-49.845169 
+              6.104615-84.046769-23.252677-99.422523-52.791139-15.745969-30.255262-20.204308-76.288 14.469908-114.766769l213.582769-236.985108c18.983385-21.062892 44.929969-32.657723 73.050585-32.657723 28.120615 0 54.0672 11.602708 73.050584 32.657723l213.58277 236.985108c34.682092 38.478769 30.215877 84.511508 14.477784 114.766769zM266.531446 364.016246c22.795815 18.660431 48.529723 28.349046 75.019816 28.349046 3.654892 0 7.325538-0.181169 11.004061-0.551384 74.988308-7.546092 126.282831-88.9856 116.791139-185.391262-5.293292-53.736369-28.900431-101.415385-64.779816-130.788431-25.560615-20.936862-56.083692-30.790892-86.031754-27.797661-74.980431 7.546092-126.282831 88.9856-116.791138 185.391261 5.301169 53.736369 28.908308 101.407508 64.787692 130.788431z m58.320739-253.487261c1.504492-0.157538 2.985354-0.220554 4.442584-0.220554 14.871631 0 27.277785 7.467323 35.351631 14.076061 22.677662 18.573785 38.376369 51.546585 41.984 88.213662 5.8368 59.273846-21.819077 112.632123-60.392369 116.515446-16.832985 1.693538-30.932677-6.592985-39.786339-13.847631-22.685538-18.573785-38.384246-51.546585-41.991877-88.213661-5.8368-59.281723 21.819077-112.64 60.39237-116.523323zM653.501046 391.806031c3.528862 0.354462 7.057723 0.527754 10.594462 0.527754 26.442831 0 52.877785-9.854031 75.429415-28.325416 35.871508-29.373046 59.486523-77.044185 64.779815-130.788431 9.491692-96.405662-41.810708-177.845169-116.791138-185.391261-30.286769-3.040492-60.085169 6.561477-86.023877 27.789785-35.879385 29.373046-59.486523 77.052062-64.787692 130.78843-9.483815 96.421415 41.818585 177.853046 116.799015 185.399139z m-54.082954-179.215754c3.607631-36.6592 19.306338-69.639877 41.991877-88.213662 8.861538-7.254646 22.992738-15.588431 39.786339-13.84763 38.573292 3.883323 66.229169 57.2416 60.392369 116.515446-3.607631 36.6592-19.306338 69.639877-41.984 88.213661-8.861538 7.254646-23.008492 15.556923-39.786339 13.847631-38.573292-3.875446-66.237046-57.2416-60.400246-116.515446zM231.077415 464.659692c-8.491323-43.189169-31.783385-80.273723-63.905477-101.746215-24.064-16.0768-51.704123-22.039631-77.839753-16.777846C26.647631 358.730831-11.894154 432.317046 3.402831 510.164677c8.491323 43.197046 31.791262 80.2816 63.913354 101.746215 18.353231 12.264369 38.793846 18.644677 59.069046 18.644677 6.293662 0 12.579446-0.6144 18.770707-1.858954 62.676677-12.603077 101.226338-86.189292 85.921477-164.036923zM102.329108 559.521477c-18.0224-12.043815-31.885785-35.036554-37.092431-61.518769-8.483446-43.149785 8.239262-84.409108 36.517415-90.096246 2.205538-0.441108 4.371692-0.645908 6.474831-0.645908 9.641354 0 18.109046 4.151138 23.930092 8.042338 18.0224 12.043815 31.885785 35.036554 37.084554 61.510893 8.483446 43.149785-8.231385 84.409108-36.509538 90.096246-12.303754 2.465477-23.315692-2.654523-30.404923-7.388554zM934.675692 346.135631c-26.119877-5.253908-53.783631 0.701046-77.839754 16.777846-32.122092 21.464615-55.414154 58.549169-63.905476 101.746215-15.304862 77.847631 23.2448 151.425969 85.921476 164.029046 6.199138 1.244554 12.477046 1.858954 18.770708 1.858954 20.267323 0 40.715815-6.380308 59.069046-18.644677 32.122092-21.464615 55.414154-58.557046 63.905477-101.746215 15.296985-77.839754-23.2448-151.425969-85.921477-164.021169z m24.087631 151.874954c-5.206646 26.474338-19.070031 49.467077-37.084554 61.518769-7.089231 4.741908-18.109046 9.877662-30.404923 7.396431-28.270277-5.687138-44.992985-46.946462-36.509538-90.096247 5.206646-26.474338 19.070031-49.474954 37.09243-61.518769 7.081354-4.741908 18.132677-9.846154 30.404924-7.396431 28.2624 5.679262 44.985108 46.938585 36.501661 90.096247z" fill="" p-id="3865"></path></svg>
+              桌面宠物
+            </li>
           </ul>
         </nav>
 
@@ -260,6 +276,42 @@
                 </div>
               </div>
             </div>
+
+            <!-- 桌面宠物 -->
+            <div v-if="activeTab === 'pets'" class="settings-section">
+              <div class="section-header">
+                <span class="section-desc">桌面宠物（Codex 兼容格式：spritesheet.webp + pet.json）。宠物目录：~/.Aries/pets/</span>
+                <div class="section-header-actions">
+                  <button type="button" class="icon-btn" :disabled="petsLoading" title="打开宠物文件夹" @click="openPetsFolder">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                    </svg>
+                  </button>
+                  <button type="button" class="icon-btn" :disabled="petsLoading" :title="petsLoading ? '加载中…' : '刷新'" @click="loadPets">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ 'spin': petsLoading }">
+                      <path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 3v6h6"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <div v-if="petsLoading && petsList.length === 0" class="path-empty">加载中...</div>
+              <div v-else-if="petsList.length === 0" class="path-empty">
+                暂无宠物，请将 Codex 宠物（spritesheet.webp + pet.json）放入 ~/.Aries/pets/&lt;宠物名&gt;/ 目录
+              </div>
+              <div v-else class="pet-grid">
+                <div
+                  v-for="pet in petsList"
+                  :key="pet.id"
+                  class="pet-card"
+                  @click="showPetOnDesktop(pet)"
+                >
+                  <div class="pet-preview">
+                    <div class="pet-preview-sprite" :style="getPetPreviewStyle(pet)" />
+                  </div>
+                  <div class="pet-name" :title="pet.displayName || pet.name">{{ pet.displayName || pet.name }}</div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -323,6 +375,7 @@ import {
   type PathPermission,
 } from '@/api/pathPermissions'
 import { selectDirectory } from '@/api/system'
+import { listPets, type PetInfo } from '@/api/pets'
 import ModelEditModal from './ModelEditModal.vue'
 
 const props = defineProps<{ visible: boolean }>()
@@ -521,10 +574,10 @@ onUnmounted(() => {
   stopFeishuPoll()
 })
 
-const activeTab = ref<'models' | 'accounts' | 'paths'>('models')
+const activeTab = ref<'models' | 'accounts' | 'paths' | 'pets'>('models')
 
 const tabTitle = computed(() => {
-  const map = { models: '模型管理', accounts: '账号绑定', paths: '路径权限' } as const
+  const map = { models: '模型管理', accounts: '账号绑定', paths: '路径权限', pets: '桌面宠物' } as const
   return map[activeTab.value]
 })
 
@@ -634,6 +687,85 @@ async function handleAddPath(type: 'whitelist' | 'blacklist') {
     alert(e.message || '添加失败')
   }
 }
+
+// ---------- 桌面宠物 ----------
+const petsList = ref<PetInfo[]>([])
+const petsLoading = ref(false)
+
+async function loadPets() {
+  petsLoading.value = true
+  try {
+    const res = await listPets()
+    petsList.value = res.pets || []
+  } catch (e) {
+    console.error('加载宠物列表失败', e)
+    petsList.value = []
+  } finally {
+    petsLoading.value = false
+  }
+}
+
+function getPetFullUrl(url: string): string {
+  return `${useModelStore().getBaseUrl()}${url}`
+}
+
+function getPetPreviewStyle(pet: PetInfo): Record<string, string> {
+  // 用 idle 行第 0 帧作为缩略图：通过 background-position/size 截取
+  const cols = pet.columns || 8
+  const rows = pet.rows || 9
+  const idle = pet.states?.find(s => s.name === 'idle')
+  const row = idle?.row ?? 0
+  const url = pet.spritesheetUrl || pet.previewUrl
+  if (!url) return {}
+  const xPct = 0
+  const yPct = rows > 1 ? (row / (rows - 1)) * 100 : 0
+  return {
+    backgroundImage: `url("${getPetFullUrl(url)}")`,
+    backgroundSize: `${cols * 100}% ${rows * 100}%`,
+    backgroundPosition: `${xPct}% ${yPct}%`,
+    backgroundRepeat: 'no-repeat',
+    imageRendering: 'pixelated',
+  }
+}
+
+async function openPetsFolder() {
+  try {
+    const res = await fetch(`${useModelStore().getBaseUrl()}/files/open-in-editor`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // 后端 _normalize_work_dir 会解析 ~，传相对路径让它落到 ~/.Aries/pets
+      body: JSON.stringify({ work_dir: '~/.Aries/pets', editor: 'explorer' }),
+    })
+    const data = await res.json()
+    if (data.error) {
+      window.dispatchEvent(new CustomEvent('aries:toast', {
+        detail: { message: data.error, type: 'error' },
+      }))
+    }
+  } catch (e: any) {
+    window.dispatchEvent(new CustomEvent('aries:toast', {
+      detail: { message: e?.message || '打开文件夹失败', type: 'error' },
+    }))
+  }
+}
+
+function showPetOnDesktop(pet: PetInfo) {
+  const spriteRel = pet.spritesheetUrl || pet.animations?.idle
+  if (!spriteRel) return
+  // 用 JSON 反复解包，确保传入 IPC 的是纯 plain object（避免 Vue Proxy 不可克隆）
+  const spec = JSON.parse(JSON.stringify({
+    url: getPetFullUrl(spriteRel),
+    name: pet.displayName || pet.name,
+    frameWidth: pet.frameWidth || 192,
+    frameHeight: pet.frameHeight || 208,
+    columns: pet.columns || 8,
+    rows: pet.rows || 9,
+    states: pet.states || undefined,
+  }))
+  window.electronAPI?.showPet(spec)
+  localStorage.setItem('pet:active', JSON.stringify(spec))
+  localStorage.setItem('pet:enabled', '1')
+}
 </script>
 
 <style scoped>
@@ -649,8 +781,8 @@ async function handleAddPath(type: 'whitelist' | 'blacklist') {
 
 .modal-container {
   display: flex;
-  width: 720px;
-  height: 42vh;
+  width: min(1080px, 92vw);
+  height: min(720px, 86vh);
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -778,6 +910,47 @@ async function handleAddPath(type: 'whitelist' | 'blacklist') {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.section-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border-strong, #ddd);
+  border-radius: 6px;
+  color: var(--text-secondary, #666);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--accent-hover, #f3f3f3);
+  color: var(--text, #222);
+}
+
+.icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.icon-btn .spin {
+  animation: icon-btn-spin 0.9s linear infinite;
+  transform-origin: center;
+}
+
+@keyframes icon-btn-spin {
+  to { transform: rotate(360deg); }
 }
 
 .secondary-btn {
@@ -1249,5 +1422,100 @@ async function handleAddPath(type: 'whitelist' | 'blacklist') {
   font-size: 12px;
   color: var(--text-muted);
   padding: 8px 12px;
+}
+
+/* 桌面宠物 */
+.pet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.pet-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.pet-card:hover {
+  border-color: var(--accent, #3b82f6);
+  background: var(--accent-hover, rgba(59, 130, 246, 0.08));
+}
+
+.pet-card.selected {
+  border-color: var(--accent, #3b82f6);
+  background: var(--accent-hover, rgba(59, 130, 246, 0.12));
+}
+
+.pet-preview {
+  width: 96px;
+  height: 104px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.pet-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.pet-preview-sprite {
+  width: 100%;
+  height: 100%;
+}
+
+.pet-name {
+  font-size: 12px;
+  color: var(--text);
+  text-align: center;
+  word-break: break-all;
+  line-height: 1.3;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pet-animations {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  width: 100%;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.pet-anim-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.pet-anim-item img {
+  width: 48px;
+  height: 52px;
+  object-fit: contain;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 4px;
+}
+
+.pet-anim-item span {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
 }
 </style>

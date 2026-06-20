@@ -30,6 +30,18 @@ AUTO_DETACH_READY_PATTERNS = (
     r"\bserver (?:running|started|listening)\b",
     r"\blistening on\b",
     r"\bpress h \+ enter to show help\b",
+    # 通用启动完成信号
+    r"\bstarted\b.*\bagent\b",
+    r"\bagent\b.*\bstarted\b",
+    r"\b(?:model|client|server|embedding|ocr|llm)\b.*\binitiali[sz]ed\b",
+    r"\binitiali[sz]ed\b.*\b(?:model|client|server)\b",
+    r"\bstartup complete\b",
+    r"\bready\b.*\b(?:to accept|for connections|on port)\b",
+    r"\buvicorn running\b",
+    r"\bflask running\b",
+    r"\bdjango .* version\b.*\bstarting\b",
+    r"\bgunicorn .* booted\b",
+    r"\bApplication startup complete\b",
 )
 PERSISTENT_COMMAND_PATTERNS = (
     r"^(?:npm|pnpm|yarn|bun)(?:\.cmd)?\s+(?:run\s+)?(?:dev|start|serve)(?:\s|$)",
@@ -41,16 +53,20 @@ PERSISTENT_COMMAND_PATTERNS = (
     r"^(?:npx\s+)?svelte-kit\s+dev(?:\s|$)",
     r"^(?:npx\s+)?webpack\s+serve(?:\s|$)",
     r"^(?:npx\s+)?vue-cli-service\s+serve(?:\s|$)",
+    # Python / 通用启动脚本：长运行服务
+    r"^python(?:3)?(?:\.exe)?\s+(?:main|app|run|server|start|manage)\b",
+    r"^python(?:3)?(?:\.exe)?\s+\S+\s+(?:runserver|serve|start)\b",
+    r"^python(?:3)?(?:\.exe)?\s+-m\s+(?:uvicorn|gunicorn|flask|django)\b",
+    r"^uvicorn\b",
+    r"^gunicorn\b",
+    r"^flask\b.*\brun\b",
+    # go / rust / java 服务启动
+    r"^go\s+run\b",
+    r"^cargo\s+run\b",
+    r"^java\s+-jar\b",
 )
-AUTO_DETACH_STABLE_SECONDS = 1.5
+AUTO_DETACH_STABLE_SECONDS = 2.5
 PERSISTENT_COMMAND_START_TIMEOUT = 45
-INTERACTIVE_PROMPT_PATTERNS = (
-    r"\(y/n\)",
-    r"\[Y/n\]",
-    r"\[y/N\]",
-    r"continue\?",
-    r"proceed\?",
-)
 # Shell prompt detection patterns for command completion
 _SHELL_PROMPT_PATTERNS = (
     rb"PS [A-Za-z]:[^\r\n>]*>[\s]*$",
@@ -59,23 +75,47 @@ _SHELL_PROMPT_PATTERNS = (
     rb"[^>\s]+@[^>\s]+:[^>]*\$[\s]*$",
     rb"[^>\s]+@[^>\s]+:[^>]*#[\s]*$",
 )
-# cmd.exe echoes these when xterm sends device-attribute queries; they break the cursor.
+# cmd.exe / PowerShell 在 PTY 下产生的噪声序列：
+# 1. 设备属性查询响应（DA1/DA2 等）
+# 2. 光标显示/隐藏、光标位置查询响应
+# 3. 标题设置等 OSC 序列
 _NOISE_OUTPUT_RE = re.compile(
     r"\x1b\[\?1;2c"
     r"|\x1b\[>0;[0-9;]*c"
     r"|\x1b\[\?62;[0-9;]*c"
     r"|\x1b\[c"
     r"|\x1b\[(?:1|2)t"
-    r"|\x1b\[\?(?:1004|9001)[hl]"
+    r"|\x1b\[\?(?:1004|9001|25|2004)[hl]"
     r"|\x1b\][0-9;]*[^\x07\x1b]*(?:\x07|\x1b\\)"
 )
-_MAX_OUTPUT_BUFFER_CHARS = 256_000
+# 通用 ANSI CSI 序列清理：光标移动、擦除、SGR 颜色等。
+# 用于回放给 AI 时剥离所有控制序列，避免乱码。
+_ANSI_CSI_RE = re.compile(
+    r"\x1b\[[0-9;?]*[ -/]*[@-~]"
+)
+# 其他 ANSI 转义（单字符 ESC + 字符，如 ESC 7/8/=/>）
+_ANSI_SINGLE_RE = re.compile(
+    r"\x1b[=>78MNc]"
+)
+# 回车/制表符保留，但连续空行压缩
+_MULTI_BLANK_RE = re.compile(
+    r"\n{3,}"
+)
+_MAX_OUTPUT_BUFFER_CHARS = 500_000
+# 返回给 AI 的快照最大字符数（前端 xterm 渲染不受此限制）
+_MAX_AI_SNAPSHOT_CHARS = 20_000
 
 
 def _sanitize_terminal_output(data: str) -> str:
     if not data:
         return data
-    return _NOISE_OUTPUT_RE.sub("", data)
+    cleaned = _NOISE_OUTPUT_RE.sub("", data)
+    # 剩余的 CSI 序列（光标移动 / SGR 颜色 / 擦除等）全部剥离
+    cleaned = _ANSI_CSI_RE.sub("", cleaned)
+    cleaned = _ANSI_SINGLE_RE.sub("", cleaned)
+    # 压缩连续空行（PTY 输出常含大量空行）
+    cleaned = _MULTI_BLANK_RE.sub("\n\n", cleaned)
+    return cleaned.strip()
 
 
 def _is_persistent_command(command: str) -> bool:
@@ -117,11 +157,25 @@ class _TerminalSession:
         self.work_dir = str(Path(work_dir).expanduser().resolve())
         self.lock = threading.Lock()
         self._pty: Any = None
+        self._pid: int | None = None
         self._alive = False
         self._rows = 30
         self._cols = 120
         self._output_buffer = ""
         self._callbacks: list[OutputCallback] = []
+        self._closed_notified = False
+
+    @property
+    def pid(self) -> int | None:
+        """返回底层 PtyProcess 的 PID，shell 未启动时返回 None。"""
+        if self._pid is not None:
+            return self._pid
+        if self._pty is not None:
+            try:
+                self._pid = self._pty.pid
+            except Exception:
+                pass
+        return self._pid
 
     def is_running(self) -> bool:
         if not self._alive or self._pty is None:
@@ -137,22 +191,23 @@ class _TerminalSession:
         """保持与 _TerminalSession.close 配套使用：返回会话是否在运行。"""
         return self.is_running()
 
-    def set_interrupt_action_for_all(self, action: str) -> None:
-        """将该 action 写入 TerminalManager._interrupt_actions 的所有 invocation。
-
-        由于 invocation_id 在跨模块时不一定一致，这里用 sentinel 把所有未消费的
-        action 一次性设成同一行为，等待下一次轮询时被 consume。
-        """
-        try:
-            with TerminalManager._interrupt_lock:
-                for key in list(TerminalManager._interrupt_actions.keys()):
-                    TerminalManager._interrupt_actions[key] = action
-        except Exception:
-            pass
-
     def clear_output_buffer(self) -> None:
         with self.lock:
             self._output_buffer = ""
+
+    def buffer_length(self) -> int:
+        """返回当前 buffer 长度，用于记录命令执行前的位置。"""
+        with self.lock:
+            return len(self._output_buffer)
+
+    def snapshot_buffer_from(self, start: int) -> str:
+        """返回从指定位置开始的 buffer 内容（sanitize 后，截断到 AI 快照上限）。"""
+        with self.lock:
+            content = self._output_buffer[start:]
+        content = _sanitize_terminal_output(content)
+        if len(content) > _MAX_AI_SNAPSHOT_CHARS:
+            content = content[-_MAX_AI_SNAPSHOT_CHARS:]
+        return content
 
     @staticmethod
     def _interactive_shell_argv() -> list[str]:
@@ -192,6 +247,7 @@ class _TerminalSession:
                 cwd=self.work_dir,
                 dimensions=(self._rows, self._cols),
             )
+            self._pid = self._pty.pid
         else:
             import pty
             import subprocess
@@ -206,9 +262,11 @@ class _TerminalSession:
                 cwd=self.work_dir,
                 text=False,
             )
+            self._pid = self._pty.pid
             self._master_fd = master
             os.close(slave)
         self._alive = True
+        self._closed_notified = False
         threading.Thread(target=self._reader_loop, daemon=True, name=f"pty-{self.work_dir}").start()
 
     def ensure_shell_ready(self, rows: int = 30, cols: int = 120) -> None:
@@ -246,6 +304,7 @@ class _TerminalSession:
                     self._pty.terminate()
         except Exception:
             pass
+        self._pid = None
 
     def restart_shell(self, rows: int = 30, cols: int = 120) -> None:
         with self.lock:
@@ -261,37 +320,40 @@ class _TerminalSession:
         self.restart_shell(rows=rows, cols=cols)
 
     def _reader_loop(self) -> None:
-        while self._alive and self._pty is not None:
-            try:
-                if os.name == "nt":
-                    if not self._pty.isalive():
-                        self._alive = False
-                        break
-                    chunk = self._pty.read(4096)
-                    if not chunk:
-                        time.sleep(0.05)
-                        continue
-                else:
-                    import select
-
-                    ready, _, _ = select.select([self._master_fd], [], [], 0.1)
-                    if not ready:
-                        if self._pty.poll() is not None:
+        try:
+            while self._alive and self._pty is not None:
+                try:
+                    if os.name == "nt":
+                        if not self._pty.isalive():
                             self._alive = False
                             break
-                        continue
-                    chunk = os.read(self._master_fd, 4096).decode("utf-8", errors="replace")
-                self._emit(chunk)
-            except Exception:
-                self._alive = False
-                time.sleep(0.1)
+                        chunk = self._pty.read(4096)
+                        if not chunk:
+                            time.sleep(0.05)
+                            continue
+                    else:
+                        import select
+
+                        ready, _, _ = select.select([self._master_fd], [], [], 0.1)
+                        if not ready:
+                            if self._pty.poll() is not None:
+                                self._alive = False
+                                break
+                            continue
+                        chunk = os.read(self._master_fd, 4096).decode("utf-8", errors="replace")
+                    self._emit(chunk)
+                except Exception:
+                    self._alive = False
+                    time.sleep(0.1)
+        finally:
+            if not self._alive:
+                self._notify_closed("进程已退出")
 
     def _emit(self, data: str) -> None:
         if not data:
             return
-        data = _sanitize_terminal_output(data)
-        if not data:
-            return
+        # 前端 xterm 需要原始 ANSI 序列才能正确渲染换行、光标移动、颜色等。
+        # buffer 中保留原始输出；给 AI 看的快照/回放再在取用时 sanitize。
         with self.lock:
             self._output_buffer += data
             if len(self._output_buffer) > _MAX_OUTPUT_BUFFER_CHARS:
@@ -343,11 +405,27 @@ class _TerminalSession:
                 pass
 
     def get_replay_buffer(self) -> str:
+        """前端 xterm 回放：返回原始 buffer（保留 ANSI 控制序列）。
+
+        PowerShell 的 prompt 大量使用 CSI 序列（\x1b[2K 清行、\r 回车等）
+        来控制光标和换行。剥离这些序列后只剩 \\r + 纯文本，xterm 只回车
+        不换行，导致所有输出挤在一行。原始 buffer 交给 xterm 渲染才能
+        正确还原终端显示。
+        """
         with self.lock:
-            return _sanitize_terminal_output(self._output_buffer)
+            return self._output_buffer
+
+    def _notify_closed(self, reason: str = "会话已关闭") -> None:
+        if self._closed_notified:
+            return
+        self._closed_notified = True
+        self._emit(f"\r\n[Terminal] {reason}\r\n")
 
     def close(self) -> None:
+        # 关闭前先通知订阅者；保留 buffer，前端仍可回放历史输出。
+        self._notify_closed("会话已关闭")
         self._alive = False
+        self._pid = None
         try:
             if os.name == "nt" and self._pty:
                 self._pty.close(force=True)
@@ -357,9 +435,13 @@ class _TerminalSession:
             pass
 
     def snapshot_buffer(self) -> str:
-        """Return current buffer without clearing."""
+        """Return current buffer without clearing (sanitized, truncated for AI)."""
         with self.lock:
-            return _sanitize_terminal_output(self._output_buffer)
+            content = self._output_buffer
+        content = _sanitize_terminal_output(content)
+        if len(content) > _MAX_AI_SNAPSHOT_CHARS:
+            content = content[-_MAX_AI_SNAPSHOT_CHARS:]
+        return content
 
     def kill_command(self) -> None:
         """Send Ctrl+C to the PTY to interrupt the currently running foreground command."""
@@ -424,20 +506,6 @@ class TerminalManager:
         session = self.get_agent_session(work_dir)
         session.force_reset()
 
-    @staticmethod
-    def _launch_detached_command(command: str, work_dir: str) -> dict[str, Any]:
-        """独立子进程后台运行，不创建控制台窗口。"""
-        proc = subprocess.Popen(
-            command,
-            shell=True,
-            cwd=work_dir,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=0,
-        )
-        return {"pid": proc.pid}
-
     def attach_interactive(
         self,
         session_id: str,
@@ -457,7 +525,8 @@ class TerminalManager:
         if reset:
             session.restart_shell(rows=rows, cols=cols)
         elif not session.is_running():
-            session._spawn_shell(rows=rows, cols=cols)
+            # shell 进程已退出，重启但保留 buffer（用户可以查看回放）
+            session._spawn_shell(rows=rows, cols=cols, clear_buffer=False)
         else:
             session.resize(rows, cols)
         return session
@@ -506,104 +575,6 @@ class TerminalManager:
         prefix = f"\r\n[Agent] {message}\r\n"
         session = self.get_agent_session(work_dir)
         session._emit(prefix)
-
-    @staticmethod
-    def _looks_interactive(output: str) -> bool:
-        tail = output[-500:] if len(output) > 500 else output
-        return any(re.search(p, tail, re.IGNORECASE) for p in INTERACTIVE_PROMPT_PATTERNS)
-
-    @staticmethod
-    def _looks_auto_detach(output: str) -> bool:
-        return any(re.search(p, output, re.IGNORECASE) for p in AUTO_DETACH_READY_PATTERNS)
-
-    @staticmethod
-    def _kill_process_tree(pid: int) -> None:
-        """Kill an entire process tree on Windows (taskkill /T /F)."""
-        if os.name != "nt":
-            return
-        try:
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-        except Exception:
-            pass
-
-    @staticmethod
-    def _run_subprocess_and_wait(command: str, work_dir: str, timeout: int) -> dict[str, Any]:
-        """Agent shared 模式：独立子进程执行并捕获输出，避免 PTY 死锁。
-
-        使用 Popen + taskkill /T 替代 subprocess.run，确保超时时杀掉整个进程树，
-        避免遗留子进程（如 shell=True 下 cmd.exe → powershell 的子链）。
-        """
-        captured = ""
-        return_code = 0
-        timed_out = False
-        process: subprocess.Popen[str] | None = None
-        try:
-            process = subprocess.Popen(
-                command,
-                shell=True,
-                cwd=work_dir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            stdout, stderr = process.communicate(timeout=max(1, timeout))
-            return_code = int(process.returncode or 0)
-            stdout = (stdout or "").strip()
-            stderr = (stderr or "").strip()
-            if stderr:
-                captured = f"{stdout}\n[STDERR]\n{stderr}".strip() if stdout else stderr
-            else:
-                captured = stdout
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            return_code = -1
-            partial_out = (exc.stdout or "").strip() if isinstance(exc.stdout, str) else ""
-            partial_err = (exc.stderr or "").strip() if isinstance(exc.stderr, str) else ""
-            if process is not None:
-                # communicate 超时后子进程可能仍在，强制杀整棵树；勿再调用 communicate（会卡住）
-                TerminalManager._kill_process_tree(process.pid)
-                try:
-                    process.kill()
-                except Exception:
-                    pass
-                for stream in (process.stdout, process.stderr):
-                    if stream:
-                        try:
-                            stream.close()
-                        except Exception:
-                            pass
-                try:
-                    process.wait(timeout=2)
-                except Exception:
-                    pass
-            if partial_err:
-                captured = f"{partial_out}\n[STDERR]\n{partial_err}".strip() if partial_out else partial_err
-            else:
-                captured = partial_out
-        result = {
-            "success": return_code == 0 and not timed_out,
-            "return_code": return_code,
-            "output_capture": captured,
-            "auto_detached": auto_detached,
-            "timed_out": timed_out,
-            "interrupted_action": None,
-            "working_dir": work_dir,
-        }
-        if result.get("timed_out"):
-            try:
-                from utils.cli_process_cleanup import cleanup_stale_cli_processes
-
-                cleanup_stale_cli_processes(force=True)
-            except Exception:
-                pass
-        return result
 
     @classmethod
     def set_interrupt_action(cls, invocation_id: str, action: str) -> None:
@@ -672,11 +643,6 @@ class TerminalManager:
                 session = instance._sessions.get(sid)
                 if session is None:
                     continue
-                if action:
-                    try:
-                        session.set_interrupt_action_for_all(action)
-                    except Exception:
-                        pass
                 if session.is_alive():
                     session.close()
                     closed.append(sid)
@@ -696,10 +662,6 @@ class TerminalManager:
                 session = instance._sessions.get(sid)
                 if session is None:
                     continue
-                try:
-                    session.set_interrupt_action_for_all("terminate")
-                except Exception:
-                    pass
                 if session.is_alive():
                     session.close()
                     closed.append(sid)
@@ -754,44 +716,60 @@ class TerminalManager:
                 "interrupted_action": None,
                 "working_dir": target_dir,
                 "session_id": session_id,
+                "pid": session.pid,
             }
 
         # 等待 shell 初始化完成（prompt 出现）
         time.sleep(0.3)
 
         uid = uuid.uuid4().hex[:8]
-        temp_dir = Path(tempfile.gettempdir()) / "Aries" / "pty_jobs"
+        temp_dir = Path.home() / ".Aries" / "temp" / "cli_runtime"
         temp_dir.mkdir(parents=True, exist_ok=True)
         cap_file = temp_dir / f"out_{uid}.txt"
         done_file = temp_dir / f"done_{uid}.txt"
         cmd_ps1 = temp_dir / f"cmd_{uid}.ps1"
-        wrapper_ps1 = temp_dir / f"wrap_{uid}.ps1"
 
-        for f in (cap_file, done_file, cmd_ps1, wrapper_ps1):
-            f.unlink(missing_ok=True)
-
-        cmd_ps1.write_text(command, encoding="utf-8")
+        # 清理残留旧文件
+        for f in (cap_file, done_file, cmd_ps1):
+            try:
+                f.unlink(missing_ok=True)
+            except PermissionError:
+                pass
 
         cap_path = str(cap_file).replace("'", "''")
         done_path = str(done_file).replace("'", "''")
         cmd_path = str(cmd_ps1).replace("'", "''")
-        wrapper_content = (
+
+        # 将命令 + 捕获逻辑 + 退出码全部写入 ps1 文件
+        # 避免：1) PTY 行长度限制导致命令被截断  2) PowerShell 命令行解析破坏引号
+        script = (
             f"$ErrorActionPreference = 'Continue'\r\n"
+            f"chcp 65001 > $null\r\n"
+            f"$OutputEncoding = [System.Text.Encoding]::UTF8\r\n"
+            f"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\r\n"
             f"$capFile = '{cap_path}'\r\n"
             f"$doneFile = '{done_path}'\r\n"
+            f"$code = 0\r\n"
             f"try {{\r\n"
-            f"    & '{cmd_path}' 2>&1 | Tee-Object -FilePath $capFile\r\n"
+            f"    {command} 2>&1 | ForEach-Object {{\r\n"
+            f"        Write-Host $_\r\n"
+            f"        $_ | Out-File -FilePath $capFile -Encoding utf8 -Append\r\n"
+            f"    }}\r\n"
             f"    $code = $LASTEXITCODE\r\n"
+            f"    if ($code -eq $null) {{ $code = 0 }}\r\n"
             f"}} catch {{\r\n"
             f"    $_ | Out-String | Write-Host\r\n"
             f"    $code = 1\r\n"
             f"}}\r\n"
-            f"$code | Out-File -FilePath $doneFile -Encoding utf8\r\n"
+            f"[System.IO.File]::WriteAllText($doneFile, $code.ToString())\r\n"
         )
-        wrapper_ps1.write_text(wrapper_content, encoding="utf-8")
+        cmd_ps1.write_bytes(b'\xef\xbb\xbf' + script.encode("utf-8"))
 
-        wrapper_path = str(wrapper_ps1).replace("'", "''")
-        session.write(f"\r\n& '{wrapper_path}'\r\n")
+        # 记录执行前的 buffer 位置，捕获时只取新内容（不清空 buffer，前端保留历史）
+        buffer_start = session.buffer_length()
+
+        # 执行 ps1 文件
+        session.write(f"\r\n& '{cmd_path}'\r\n")
 
         captured = ""
         return_code = 0
@@ -801,22 +779,26 @@ class TerminalManager:
         auto_detached = False
         persistent_command = _is_persistent_command(command)
         ready_at: float | None = None
+        last_ready_len = 0
+        last_buffer_len = 0
+        last_change_at = time.monotonic()
 
+        # persistent 命令不再立即返回：走下面的循环检测 ready 信号，
+        # 检测到后 auto_detach 返回，AI 能看到完整启动日志。
+        # 超时仍未 ready 也 auto_detach（不 kill），保证进程保留可回放。
         if persistent_command:
             self._persistent_sessions.add(session_id)
-            time.sleep(0.8)
-            return {
-                "success": True,
-                "return_code": 0,
-                "output_capture": _sanitize_terminal_output(session.snapshot_buffer()) or "开发服务器已在终端中启动",
-                "auto_detached": True,
-                "timed_out": False,
-                "interrupted_action": None,
-                "working_dir": target_dir,
-                "session_id": session_id,
-            }
+            # persistent 命令使用更短的内部门限：ready 检测窗口最多 15s，
+            # 不要让 AI 传入的 30s/60s timeout 全部耗尽。
+            effective_timeout = min(timeout, 15)
+            logger.info(
+                "[PTY] persistent command detected, effective_timeout=%ss (ai_timeout=%ss)",
+                effective_timeout, timeout,
+            )
+        else:
+            effective_timeout = timeout
 
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + effective_timeout
         while time.monotonic() < deadline:
             if invocation_id:
                 action = TerminalManager.consume_interrupt_action(invocation_id)
@@ -841,16 +823,40 @@ class TerminalManager:
                     break
 
             snapshot = session.snapshot_buffer()
+            snapshot_len = len(snapshot)
+
+            # 跟踪 buffer 是否还在增长（用于停滞检测）
+            if snapshot_len != last_buffer_len:
+                last_buffer_len = snapshot_len
+                last_change_at = time.monotonic()
+
             if persistent_command and _detect_auto_detach_ready(snapshot):
-                if ready_at is None:
+                logger.debug("[PTY] ready signal detected in buffer (%d chars)", snapshot_len)
+                # 多阶段启动（如 Embedding → OCR → LLM 依次 initialized）：
+                # 每次输出变化都重置 ready_at，等启动真正稳定后再 detach。
+                current_len = snapshot_len
+                if ready_at is None or current_len != last_ready_len:
                     ready_at = time.monotonic()
+                    last_ready_len = current_len
                 elif time.monotonic() - ready_at >= AUTO_DETACH_STABLE_SECONDS:
+                    logger.info("[PTY] ready signal stable for %.1fs, auto-detaching", AUTO_DETACH_STABLE_SECONDS)
                     auto_detached = True
                     is_backgrounded = True
                     self._persistent_sessions.add(session_id)
                     break
             else:
                 ready_at = None
+                last_ready_len = 0
+                # 停滞检测：persistent 命令如果 buffer 5s 没有新输出，
+                # 认为启动阶段结束（可能 ready pattern 没覆盖到），直接 auto_detach。
+                if persistent_command and snapshot_len > 100:
+                    stall_seconds = time.monotonic() - last_change_at
+                    if stall_seconds >= 5.0:
+                        logger.info("[PTY] buffer stalled for %.1fs, auto-detaching (no ready match)", stall_seconds)
+                        auto_detached = True
+                        is_backgrounded = True
+                        self._persistent_sessions.add(session_id)
+                        break
 
             # 备用：如果检测到提示符且 done_file 即将出现
             if _detect_shell_prompt(snapshot):
@@ -861,6 +867,7 @@ class TerminalManager:
             time.sleep(0.15)
         else:
             if persistent_command:
+                logger.info("[PTY] persistent command reached effective timeout, auto-detaching (not kill)")
                 auto_detached = True
                 is_backgrounded = True
                 self._persistent_sessions.add(session_id)
@@ -869,24 +876,23 @@ class TerminalManager:
                 session.kill_command()
                 time.sleep(0.3)
 
-        # 读取结果
+        # 读取结果（只取本次命令执行后的新内容，不含历史输出）
         if is_backgrounded:
             return_code = 0
-            captured = _sanitize_terminal_output(session.snapshot_buffer()) or "命令已转入后台运行"
+            captured = session.snapshot_buffer_from(buffer_start) or "命令已转入后台运行"
         elif done_file.exists():
             try:
-                return_code = int(done_file.read_text(encoding="utf-8").strip() or "0")
+                raw = done_file.read_text(encoding="utf-8-sig", errors="replace").strip()
+                return_code = int(raw) if raw.lstrip("-").isdigit() else 0
             except Exception:
                 return_code = 1
             if cap_file.exists():
-                captured = cap_file.read_text(encoding="utf-8", errors="replace")
+                captured = _sanitize_terminal_output(cap_file.read_text(encoding="utf-8-sig", errors="replace"))
+            else:
+                captured = session.snapshot_buffer_from(buffer_start)
         else:
             return_code = -1
-            captured = session.snapshot_buffer()
-
-        # 清理临时文件
-        for f in (cap_file, done_file, cmd_ps1, wrapper_ps1):
-            f.unlink(missing_ok=True)
+            captured = session.snapshot_buffer_from(buffer_start)
 
         return {
             "success": return_code == 0 and not timed_out and not interrupted_action,
@@ -897,132 +903,7 @@ class TerminalManager:
             "interrupted_action": interrupted_action,
             "working_dir": target_dir,
             "session_id": session_id,
-        }
-
-    @staticmethod
-    def _run_command_in_agent_pty(
-        command: str,
-        work_dir: str,
-        timeout: int,
-        invocation_id: str | None = None,
-    ) -> dict[str, Any]:
-        """将命令注入 agent PTY 会话（ConsolePanel 可见），通过临时文件捕获输出。
-
-        逻辑：
-        1. 检测 agent PTY 是否有 ConsolePanel 订阅者；没有则 fallback 到隐藏子进程
-        2. 将用户命令写入临时 .ps1，构建包装脚本用 Tee-Object 同时输出到屏幕和文件
-        3. 注入 PTY 并轮询 done 文件等待完成
-        4. 超时或用户取消时向 PTY 发送 Ctrl+C
-        """
-        manager = TerminalManager.get_instance()
-        session = manager.get_agent_session(work_dir)
-
-        # 检查是否有 ConsolePanel 连接
-        with session.lock:
-            has_subscribers = len(session._callbacks) > 0
-        if not has_subscribers:
-            return TerminalManager._run_subprocess_and_wait(command, work_dir, timeout)
-
-        # 确保 PTY 存活
-        session.ensure_shell_ready()
-        if not session.is_running():
-            return TerminalManager._run_subprocess_and_wait(command, work_dir, timeout)
-
-        uid = uuid.uuid4().hex[:8]
-        temp_dir = Path(tempfile.gettempdir()) / "NonoClaw_cli_runtime" / "pty_jobs"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        cap_file = temp_dir / f"out_{uid}.txt"
-        done_file = temp_dir / f"done_{uid}.txt"
-        cmd_ps1 = temp_dir / f"cmd_{uid}.ps1"
-        wrapper_ps1 = temp_dir / f"wrap_{uid}.ps1"
-
-        # 清理可能残留的旧文件
-        for f in (cap_file, done_file, cmd_ps1, wrapper_ps1):
-            f.unlink(missing_ok=True)
-
-        # 将用户命令写入独立 .ps1
-        cmd_ps1.write_text(command, encoding="utf-8")
-
-        # 构建包装脚本：执行用户命令，Tee 输出到屏幕+捕获文件，完成后写退出码文件
-        cap_path = str(cap_file).replace("'", "''")
-        done_path = str(done_file).replace("'", "''")
-        cmd_path = str(cmd_ps1).replace("'", "''")
-        wrapper_content = (
-            f"$ErrorActionPreference = 'Continue'\r\n"
-            f"$capFile = '{cap_path}'\r\n"
-            f"$doneFile = '{done_path}'\r\n"
-            f"try {{\r\n"
-            f"    & '{cmd_path}' 2>&1 | Tee-Object -FilePath $capFile\r\n"
-            f"    $code = $LASTEXITCODE\r\n"
-            f"}} catch {{\r\n"
-            f"    $_ | Out-String | Write-Host\r\n"
-            f"    $code = 1\r\n"
-            f"}}\r\n"
-            f"$code | Out-File -FilePath $doneFile -Encoding utf8\r\n"
-        )
-        wrapper_ps1.write_text(wrapper_content, encoding="utf-8")
-
-        # 发送 ANSI 标记提示 AI 命令开始
-        session._emit(
-            "\r\n\x1b[33m━━━ AI 命令开始执行 ━━━\x1b[0m\r\n"
-        )
-        # 注入包装脚本到 PTY
-        wrapper_path = str(wrapper_ps1).replace("'", "''")
-        session.write(f"& '{wrapper_path}'\r\n")
-
-        captured = ""
-        return_code = 0
-        timed_out = False
-        interrupted = False
-
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if invocation_id:
-                action = TerminalManager.consume_interrupt_action(invocation_id)
-                if action:
-                    interrupted = True
-                    session.write("\x03")  # Ctrl+C
-                    time.sleep(0.3)
-                    break
-
-            if done_file.exists():
-                break
-
-            time.sleep(0.15)
-        else:
-            timed_out = True
-            session.write("\x03")
-            time.sleep(0.3)
-
-        # 读取结果
-        if done_file.exists():
-            try:
-                return_code = int(done_file.read_text(encoding="utf-8").strip() or "0")
-            except Exception:
-                return_code = 1
-        else:
-            return_code = -1
-
-        if cap_file.exists():
-            captured = cap_file.read_text(encoding="utf-8", errors="replace")
-
-        # 发送 ANSI 标记提示 AI 命令结束
-        session._emit(
-            f"\r\n\x1b[33m━━━ AI 命令执行完毕 (exit: {return_code}) ━━━\x1b[0m\r\n"
-        )
-
-        # 清理临时文件
-        for f in (cap_file, done_file, cmd_ps1, wrapper_ps1):
-            f.unlink(missing_ok=True)
-
-        return {
-            "success": return_code == 0 and not timed_out and not interrupted,
-            "return_code": return_code,
-            "output_capture": captured,
-            "auto_detached": False,
-            "timed_out": timed_out,
-            "interrupted_action": "interrupt" if interrupted else None,
-            "working_dir": work_dir,
+            "pid": session.pid,
         }
 
     def run_command_and_wait(
@@ -1032,16 +913,18 @@ class TerminalManager:
         timeout: int = 300,
         invocation_id: str | None = None,
     ) -> dict[str, Any]:
-        """通过 agent PTY 执行命令（ConsolePanel 可见），无订阅者时 fallback 到隐藏子进程。"""
-        try:
-            from utils.cli_process_cleanup import cleanup_stale_cli_processes
+        """前端手动执行命令：委托给 open_terminal_for_command，使用 agent 共享 session。
 
-            cleanup_stale_cli_processes()
-        except ImportError:
-            pass
+        统一走 PTY 路径，消除 _run_command_in_agent_pty / _run_subprocess_and_wait
+        两套重复逻辑。agent session 让 ConsolePanel 能直接看到输出。
+        """
         target_dir = self._normalize_work_dir(work_dir)
-
-        pty_result = self._run_command_in_agent_pty(
-            command, target_dir, timeout, invocation_id
+        # 使用 agent session，让前端 ConsolePanel 能看到命令执行过程
+        agent_sid = self.resolve_agent_session_id(work_dir)
+        return self.open_terminal_for_command(
+            command=command,
+            work_dir=target_dir,
+            timeout=timeout,
+            invocation_id=invocation_id,
+            session_id=agent_sid,
         )
-        return pty_result

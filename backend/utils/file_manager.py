@@ -1,29 +1,66 @@
 """
 File Manager - 基础文件管理工具
 被 agent_tools.py 直接引用，作为核心后端功能
+支持使用 ripgrep 进行高性能文件搜索和内容搜索
 """
 from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 logger = logging.getLogger(__name__)
 
+# 延迟导入 ripgrep 模块，避免在未安装 ripgrep 时崩溃
+_ripgrep_available: bool | None = None
+
+
+def _check_ripgrep_available() -> bool:
+    """检查 ripgrep 是否可用"""
+    global _ripgrep_available
+    if _ripgrep_available is None:
+        try:
+            from utils.ripgrep import is_ripgrep_available
+            _ripgrep_available = is_ripgrep_available()
+        except Exception:
+            _ripgrep_available = False
+    return _ripgrep_available
+
 
 class FileManagerTool:
-    """Unified file management tool with all file operations."""
+    """Unified file management tool with all file operations.
+    
+    支持两种搜索模式：
+    1. ripgrep 模式：高性能搜索，适合大型代码库
+    2. Python 原生模式：兼容性好，适合未安装 ripgrep 的环境
+    """
 
     def __init__(self, user_email: str | None = None, work_dir: str | None = None) -> None:
         from utils.user_file_manager import UserFileManager
         self.manager = UserFileManager(work_dir=work_dir)
         self._work_dir = work_dir or ""
+        self._ripgrep_service = None
+        self._ripgrep_checked = False
 
     @property
     def base_dir(self) -> Path:
         return self.manager.get_user_dir()
+
+    def _get_ripgrep_service(self):
+        """获取 ripgrep 服务（延迟初始化）"""
+        if not self._ripgrep_checked:
+            self._ripgrep_checked = True
+            if _check_ripgrep_available():
+                try:
+                    from utils.ripgrep import get_ripgrep_service
+                    self._ripgrep_service = get_ripgrep_service()
+                    logger.info("已启用 ripgrep 高性能搜索模式")
+                except Exception as e:
+                    logger.warning(f"初始化 ripgrep 失败，将使用 Python 原生搜索: {e}")
+        return self._ripgrep_service
 
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         """Return all tool definitions for file operations."""
@@ -216,8 +253,12 @@ class FileManagerTool:
             "function": {
                 "name": "list_files",
                 "description": (
-                    "列出目录下的文件和子目录。"
+                    "列出目录下的文件和子目录（底层使用 ripgrep 高性能引擎）。"
                     "支持相对路径或电脑任意位置的绝对路径，可按文件名模式过滤。"
+                    "\n\n【适用场景】"
+                    "- 浏览项目结构、查找特定类型的文件"
+                    "- 支持 glob 模式匹配（如 *.py、**/*.ts）"
+                    "- 大型代码库也能快速响应"
                 ),
                 "parameters": {
                     "type": "object",
@@ -245,17 +286,17 @@ class FileManagerTool:
             "function": {
                 "name": "search_file",
                 "description": (
-                    "在指定目录或整个代码库中搜索文件内容。"
-                    "支持关键字搜索，返回匹配的文件路径、行号和内容。"
-                    "适合查找函数定义、变量使用、特定代码模式等。"
+                    "在指定目录或整个代码库中搜索文件内容（底层使用 ripgrep 高性能引擎）。"
+                    "支持关键字/正则表达式搜索，返回匹配的文件路径、行号和上下文内容。"
+                    "\n\n【适用场景】"
+                    "- 查找函数定义、变量使用、特定代码模式"
+                    "- 理解代码库结构、追踪调用关系"
+                    "- 大型代码库也能快速响应，适合频繁调用"
                     "\n\n【搜索范围】"
-                    "- 可以搜索单个文件"
-                    "- 可以搜索整个目录（递归）"
+                    "- 可以搜索单个文件、整个目录（递归）"
                     "- 可以按文件类型过滤（如 *.py, *.js）"
                     "\n\n【返回结果】"
-                    "- 匹配的文件路径"
-                    "- 匹配的行号"
-                    "- 匹配行及上下文内容"
+                    "- 匹配的文件路径、行号、匹配行及上下文内容"
                     "- 总匹配数统计"
                 ),
                 "parameters": {
@@ -535,7 +576,10 @@ class FileManagerTool:
         skip_confirmation: bool = False,
         **extra: Any,
     ) -> dict[str, Any]:
-        """List files in directory."""
+        """List files in directory.
+        
+        优先使用 ripgrep 进行高性能文件搜索，如果 ripgrep 不可用则回退到 Python 原生实现。
+        """
         # 检查列出的目录是否超出工作目录
         target_dir = self.manager.resolve_list_dir(subdir if subdir else None)
         oob = self._check_out_of_bounds(target_dir, skip_confirmation)
@@ -547,6 +591,23 @@ class FileManagerTool:
             pattern = str(extra.pop("patern") or "*")
         extra.pop("pattenrn", None)
         extra.pop("patern", None)
+        
+        # 尝试使用 ripgrep 进行高性能搜索
+        ripgrep_service = self._get_ripgrep_service()
+        if ripgrep_service and pattern != "*":
+            try:
+                files = ripgrep_service.glob(
+                    pattern=pattern,
+                    cwd=str(target_dir),
+                    limit=1000,
+                    exclude_patterns=["__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build"],
+                )
+                if files:
+                    return self._format_list_files_result(files, pattern)
+            except Exception as e:
+                logger.warning(f"ripgrep glob 失败，回退到 Python 原生搜索: {e}")
+        
+        # 回退到 Python 原生实现
         try:
             files = self.manager.list_files(
                 subdir=subdir if subdir else None,
@@ -597,6 +658,34 @@ class FileManagerTool:
             "count": len(files),
         }
 
+    def _format_list_files_result(self, files: list[dict[str, Any]], pattern: str) -> dict[str, Any]:
+        """格式化 ripgrep 搜索结果"""
+        file_list = []
+        for file_info in files:
+            display_path = file_info.get("relative_path") or file_info.get("path") or file_info.get("name", "")
+            size = file_info.get("size", 0)
+            size_str = self._format_size(size)
+            file_list.append(f"{display_path} ({size_str})")
+        
+        output_lines = [
+            f"找到 {len(files)} 个文件 (使用 ripgrep 高性能搜索)",
+            f"搜索模式: {pattern}",
+            "",
+            "文件列表:",
+        ]
+        output_lines.extend(file_list[:50])
+        if len(file_list) > 50:
+            output_lines.append(f"  ... 还有 {len(file_list) - 50} 个文件")
+        
+        return {
+            "success": True,
+            "error": "",
+            "output": "\n".join(output_lines),
+            "files": files,
+            "count": len(files),
+            "search_mode": "ripgrep",
+        }
+
     def execute_search_file(
         self,
         *,
@@ -610,7 +699,10 @@ class FileManagerTool:
         exclude_dirs: list[str] | None = None,
         skip_confirmation: bool = False,
     ) -> dict[str, Any]:
-        """Search for content across files."""
+        """Search for content across files.
+        
+        优先使用 ripgrep 进行高性能内容搜索，如果 ripgrep 不可用则回退到 Python 原生实现。
+        """
         if not keyword:
             return {
                 "success": False,
@@ -647,6 +739,29 @@ class FileManagerTool:
                 "total_matches": 0,
                 "files_matched": 0,
             }
+        
+        # 尝试使用 ripgrep 进行高性能搜索
+        ripgrep_service = self._get_ripgrep_service()
+        if ripgrep_service:
+            try:
+                ripgrep_matches = ripgrep_service.grep(
+                    pattern=keyword,
+                    cwd=str(search_path),
+                    include=pattern if pattern != "*" else None,
+                    limit=max_results,
+                    context_lines=context_lines,
+                    case_sensitive=case_sensitive,
+                    use_regex=use_regex,
+                    exclude_dirs=exclude_dirs,
+                )
+                if ripgrep_matches:
+                    return self._format_search_result(
+                        ripgrep_matches, keyword, search_path, pattern, context_lines
+                    )
+            except Exception as e:
+                logger.warning(f"ripgrep grep 失败，回退到 Python 原生搜索: {e}")
+        
+        # 回退到 Python 原生实现
         flags = 0 if case_sensitive else re.IGNORECASE
         try:
             if use_regex:
@@ -677,40 +792,67 @@ class FileManagerTool:
                 return True
             return fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(str(path), pattern)
 
-        for file_path in search_path.rglob("*"):
-            if file_path.is_dir():
+        # 优化：使用 os.scandir 递归遍历（比 rglob 快），逐行读取文件（避免大文件内存爆炸）
+        exclude_set = set(exclude_dirs)
+        max_file_size = 10 * 1024 * 1024  # 跳过大于 10MB 的文件
+
+        def scan_dir(directory: Path) -> Generator[Path, None, None]:
+            """使用 os.scandir 递归扫描目录，性能优于 rglob"""
+            try:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        if entry.name in exclude_set:
+                            continue
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                yield from scan_dir(Path(entry.path))
+                            elif entry.is_file(follow_symlinks=False):
+                                p = Path(entry.path)
+                                if pattern == "*" or fnmatch.fnmatch(p.name, pattern):
+                                    yield p
+                        except OSError:
+                            continue
+            except OSError:
+                return
+
+        for file_path in scan_dir(search_path):
+            # 跳过过大文件
+            try:
+                if file_path.stat().st_size > max_file_size:
+                    continue
+            except OSError:
                 continue
-            if should_exclude(file_path):
-                continue
-            if not match_pattern(file_path):
-                continue
+
+            file_matches = []
+            file_lines: list[str] = []  # 缓存行内容用于上下文
+
             try:
                 with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
+                    for line_num, line in enumerate(f, 1):
+                        file_lines.append(line.rstrip("\n\r"))
+                        if len(file_lines) > context_lines + 2:
+                            # 只保留需要的行数，避免内存浪费
+                            if context_lines > 0:
+                                file_lines = file_lines[-(context_lines + 2):]
+
+                        for match in regex.finditer(line):
+                            if total_matches >= max_results:
+                                break
+                            # 构建上下文（需要重新读取部分行）
+                            matched_text = match.group()
+                            file_matches.append({
+                                "line_number": line_num,
+                                "context": [{"line_number": line_num, "content": line.rstrip("\n\r"), "is_match": True}],
+                                "matched_text": matched_text,
+                            })
+                            total_matches += 1
+                            break  # 每行只记录第一个匹配，避免过多结果
+
+                        if total_matches >= max_results:
+                            break
             except Exception:
                 continue
-            file_matches = []
-            for match in regex.finditer(content):
-                if total_matches >= max_results:
-                    break
-                line_start = content.rfind("\n", 0, match.start()) + 1
-                line_num = content[:line_start].count("\n") + 1
-                lines = content.split("\n")
-                context_start = max(0, line_num - context_lines - 1)
-                context_end = min(len(lines), line_num + context_lines)
-                context = []
-                for i in range(context_start, context_end):
-                    context.append({
-                        "line_number": i + 1,
-                        "content": lines[i],
-                        "is_match": i == line_num - 1,
-                    })
-                file_matches.append({
-                    "line_number": line_num,
-                    "context": context,
-                    "matched_text": match.group(),
-                })
-                total_matches += 1
+
             if file_matches:
                 files_matched += 1
                 matches.append({
@@ -721,6 +863,7 @@ class FileManagerTool:
                 })
             if total_matches >= max_results:
                 break
+
         output_lines = [
             f"搜索完成",
             f"关键字: {keyword}",
@@ -745,6 +888,73 @@ class FileManagerTool:
             "matches": matches,
             "total_matches": total_matches,
             "files_matched": files_matched,
+        }
+
+    def _format_search_result(
+        self,
+        matches: list[dict[str, Any]],
+        keyword: str,
+        search_path: Path,
+        pattern: str,
+        context_lines: int,
+    ) -> dict[str, Any]:
+        """格式化 ripgrep 搜索结果"""
+        # 按文件分组
+        files_dict: dict[str, list[dict[str, Any]]] = {}
+        for match in matches:
+            file_path = match.get("file", "")
+            if file_path not in files_dict:
+                files_dict[file_path] = []
+            files_dict[file_path].append(match)
+        
+        # 格式化输出
+        formatted_matches = []
+        for file_path, file_matches in files_dict.items():
+            rel_path = file_matches[0].get("relative_path", file_path)
+            formatted_matches.append({
+                "file": file_path,
+                "relative_path": rel_path,
+                "matches": file_matches,
+                "match_count": len(file_matches),
+            })
+        
+        # 生成输出文本
+        output_lines = [
+            f"搜索完成 (使用 ripgrep 高性能搜索)",
+            f"关键字: {keyword}",
+            f"搜索目录: {search_path}",
+            f"文件模式: {pattern}",
+            f"找到 {len(formatted_matches)} 个文件，共 {len(matches)} 处匹配",
+        ]
+        
+        for match_info in formatted_matches[:10]:
+            output_lines.append(f"\n文件: {match_info['relative_path']} ({match_info['match_count']} 处匹配)")
+            output_lines.append("-" * 60)
+            for m in match_info["matches"][:3]:
+                line_number = m.get("line_number", 0)
+                matched_text = m.get("matched_text", "")
+                context = m.get("context", [])
+                
+                # 显示上下文
+                for ctx in context:
+                    ctx_line = ctx.get("line_number", 0)
+                    ctx_content = ctx.get("content", "")
+                    is_match = ctx.get("is_match", False)
+                    prefix = "> " if is_match else "  "
+                    output_lines.append(f"{prefix}{ctx_line:4d}| {ctx_content}")
+                output_lines.append("")
+        
+        if len(formatted_matches) > 10:
+            output_lines.append(f"\n... 还有 {len(formatted_matches) - 10} 个文件 ...")
+        
+        return {
+            "success": True,
+            "error": "",
+            "output": "\n".join(output_lines),
+            "matches": formatted_matches,
+            "total_matches": len(matches),
+            "files_matched": len(formatted_matches),
+            "search_mode": "ripgrep",
         }
 
     def _check_out_of_bounds(self, target_path: Path, skip_confirmation: bool = False) -> dict[str, Any] | None:
@@ -776,6 +986,11 @@ class FileManagerTool:
                     "danger_types": ["路径在黑名单中"],
                     "danger_info": perm_result.get("reason", "黑名单限制"),
                 }
+
+        # approval_mode 兜底：'full' 全部跳过；'review' 仅高风险才弹确认
+        from utils.app_setting import should_skip_confirmation
+        if should_skip_confirmation(["文件操作超出工作目录"]):
+            return None
 
         return {
             "success": False,

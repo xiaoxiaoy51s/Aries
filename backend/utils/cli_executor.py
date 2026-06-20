@@ -13,7 +13,47 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
+
+
+class ExecuteResult(TypedDict, total=False):
+    """CLIExecutor.execute() 的返回类型。
+
+    成功时 success=True；失败/危险命令/越界时 success=False，error 描述原因。
+    需要用户确认时 requires_confirmation=True。
+    """
+    success: bool
+    """命令是否成功执行（exit code 0 且无超时/中断）"""
+    return_code: int
+    """命令退出码（仅 subprocess/PTY 路径有）"""
+    output: str
+    """格式化的文本输出（完整描述）"""
+    captured_output: str
+    """原始命令输出（仅 PTY 路径有）"""
+    error: str
+    """错误描述（仅失败时）"""
+    command: str
+    """执行的命令"""
+    working_dir: str
+    """执行目录"""
+    requires_confirmation: bool
+    """是否需要用户确认"""
+    danger_types: list[str]
+    """触发的危险类型列表"""
+    danger_info: str
+    """危险操作描述"""
+    interrupted: bool
+    """是否被用户中断"""
+    interrupted_action: str
+    """中断时的动作（"terminate" 或 "background"）"""
+    session_id: str
+    """PTY 终端会话 ID"""
+    auto_detached: bool
+    """是否已自动转入后台"""
+    timed_out: bool
+    """是否超时"""
+    pid: int
+    """后台进程 PID"""
 
 
 class CLIExecutor:
@@ -44,16 +84,6 @@ class CLIExecutor:
         r"^pip\s+",
         r"^npm\s+",
     ]
-
-    AUTO_DETACH_READY_PATTERNS = (
-        r"http://localhost:\d+/?",
-        r"https://localhost:\d+/?",
-        r"\bvite\b.*\bready\b",
-        r"\bready in\b",
-        r"\bpress h \+ enter to show help\b",
-        r"\blocal:\s+http://",
-    )
-    AUTO_DETACH_STABLE_SECONDS = 1.5
 
     _powershell_lock = threading.Lock()
     _resolved_powershell_exe: str | None = None
@@ -154,45 +184,6 @@ class CLIExecutor:
         return str(value or "").replace("'", "''")
 
     @staticmethod
-    def _is_dir_listing_command(command: str) -> bool:
-        normalized = (command or "").strip()
-        import shlex
-        try:
-            tokens = shlex.split(normalized, posix=False)
-        except Exception:
-            tokens = normalized.split()
-        if not tokens:
-            return False
-        first = tokens[0].lower().rstrip("/\\").rstrip(":")
-        return first in ("dir", "ls", "gci", "get-childitem", "childitem")
-
-    @staticmethod
-    def _ensure_wide_dir_output(command: str) -> str:
-        import shlex
-        normalized = (command or "").strip()
-        lower = normalized.lower()
-        if any(flag in lower for flag in ("-name", " | ", "format-table", "select-object", "out-string")):
-            return normalized
-        try:
-            tokens = shlex.split(normalized, posix=False)
-        except Exception:
-            return normalized
-        first = (tokens[0] or "").lower().rstrip("/\\").rstrip(":")
-        if first not in ("dir", "ls", "gci", "get-childitem", "childitem"):
-            return normalized
-        args_str = " ".join(tokens[1:]) if len(tokens) > 1 else "."
-        wrapped = (
-            f"Get-ChildItem {args_str} | "
-            "Select-Object @{N='Mode';E={$_.Mode}}, "
-            "@{N='LastWriteTime';E={$_.LastWriteTime.ToString('yyyy-MM-dd HH:mm')}}, "
-            "@{N='Size';E={if($_.PSIsContainer){'  <DIR>'}else{'{0,12:N0}' -f $_.Length}}}, "
-            "Name | "
-            "Format-Table -AutoSize | "
-            "Out-String -Width 4096"
-        )
-        return wrapped
-
-    @staticmethod
     def _build_windows_shell_path_candidates() -> list[str]:
         candidates: list[str] = []
         system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
@@ -289,10 +280,10 @@ class CLIExecutor:
                     "如果命令包含删除、重命名、系统级变更等危险操作，会返回需要用户确认。"
                     "\n\n【重要提示】"
                     "1. 当返回 'file is locked' 或 'Internal error' 但 exit_code=0 时，说明命令实际已成功执行，无需重试。"
-                    "2. 对于 pip install 等网络操作，建议设置 timeout 为 120 秒或更长。"
+                    "2. 对于 pip install 等网络操作，建议设置 timeout 为 90 秒或更长。"
                     "3. 执行 Python 脚本时，如果脚本路径包含空格，请使用引号包裹。"
-                    "4. 对于 npm run dev、pnpm dev、yarn dev、vite、next dev 等开发服务器，必须设置 open_in_terminal=true，timeout 建议 30-60 秒；服务启动成功后系统会自动转入后台，不要为了等待服务结束设置很长 timeout。"
-                    "5. 对于需要用户看实时输出的长命令（如 npm create、git clone），可将 open_in_terminal 设为 true。"
+                    "4. 对于 npm run dev、pnpm dev、yarn dev、vite、next dev 等开发服务器，timeout 建议 20-40 秒；服务启动成功后系统会自动转入后台，不要为了等待服务结束设置很长 timeout。"
+                    "5. 默认复用当前工作目录已有的终端会话；如需隔离执行，设置 new_terminal=true。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -314,11 +305,11 @@ class CLIExecutor:
                             "description": "超时时间（秒）。简单命令建议 30s；开发服务器建议 30-60s，启动后会自动后台保留；pip install 等网络操作可用 120s+；默认 300。",
                             "default": 300,
                         },
-                        "open_in_terminal": {
+                        "new_terminal": {
                             "type": "boolean",
                             "description": (
-                                "是否在用户可见的终端中执行。默认 false（后台执行）。"
-                                "适用于需要用户看到实时输出或交互的命令。设为 true 时命令会在前端终端面板中显示。"
+                                "是否新开一个独立终端会话。默认 false（复用当前工作目录已有的终端）。"
+                                "设为 true 时会创建新的终端会话，适用于需要隔离执行的命令。"
                             ),
                             "default": False,
                         },
@@ -329,42 +320,29 @@ class CLIExecutor:
             },
         }
 
-    def execute(
+    def _check_command_security(
         self,
         command: str,
-        working_dir: str | None = None,
-        timeout: int = 300,
-        skip_confirmation: bool = False,
-        invocation_id: str | None = None,
-        open_in_terminal: bool = False,
-        terminal_session_id: str | None = None,
-    ) -> dict[str, Any]:
-        normalized_command = str(command or "").strip()
-        if not normalized_command:
-            return {
-                "success": False,
-                "error": "Missing command",
-                "output": "缺少要执行的命令",
-                "command": "",
-                "working_dir": str(self._allowed_dir),
-                "requires_confirmation": False,
-            }
-        if normalized_command.startswith("claude"):
-            if "--permission-mode" not in normalized_command and "-p" in normalized_command:
-                normalized_command = normalized_command.replace("-p", "-p --permission-mode bypassPermissions", 1)
-        timeout = max(1, min(timeout, self.MAX_TIMEOUT_SECONDS))
-        target_dir = self._resolve_target_dir(working_dir)
-        is_blocked, block_msg = self._is_blocked_command(normalized_command)
+        target_dir: str,
+        working_dir: str | None,
+        skip_confirmation: bool,
+        allowed_dir: str,
+    ) -> dict[str, Any] | None:
+        """安全检查：blocked、dangerous、path permission、OOB。
+
+        返回 None 表示安全，返回 dict 表示需要中断执行（错误或确认）。
+        """
+        is_blocked, block_msg = self._is_blocked_command(command)
         if is_blocked:
             return {
                 "success": False,
                 "error": f"Command blocked: {block_msg}",
-                "output": f"命令被阻止\n命令: {normalized_command}\n原因: {block_msg}",
-                "command": normalized_command,
+                "output": f"命令被阻止\n命令: {command}\n原因: {block_msg}",
+                "command": command,
                 "working_dir": str(target_dir),
                 "requires_confirmation": False,
             }
-        danger_check = self._check_dangerous_command(normalized_command)
+        danger_check = self._check_dangerous_command(command)
         is_oob = self._is_working_dir_outside_allowed(working_dir)
         from db.path_permissions import check_path_permission
         perm_result = check_path_permission(str(target_dir))
@@ -377,12 +355,12 @@ class CLIExecutor:
                     "success": False,
                     "error": "Path blocked",
                     "output": (
-                        f"命令执行被拒绝\n命令: {normalized_command}\n"
+                        f"命令执行被拒绝\n命令: {command}\n"
                         f"执行目录: {target_dir}\n"
                         f"原因: {perm_result.get('reason', '黑名单限制')}\n"
                         f"用户已将该路径加入黑名单，禁止 AI 在此执行命令。"
                     ),
-                    "command": normalized_command,
+                    "command": command,
                     "working_dir": str(target_dir),
                     "requires_confirmation": False,
                     "danger_types": ["路径在黑名单中"],
@@ -399,121 +377,193 @@ class CLIExecutor:
                     "danger_info": oob_info,
                 }
         if danger_check and not skip_confirmation:
+            # approval_mode 兜底：'full' 全部跳过；'review' 仅高风险才弹确认
+            from utils.app_setting import should_skip_confirmation
+            if should_skip_confirmation(danger_check.get("danger_types")):
+                return None
             return {
                 "success": False,
                 "error": "Confirmation required",
                 "output": (
-                    f"危险命令需要确认\n命令: {normalized_command}\n"
+                    f"危险命令需要确认\n命令: {command}\n"
                     f"原因: {danger_check['danger_info']}\n请由用户手动确认后再继续执行。"
                 ),
-                "command": normalized_command,
+                "command": command,
                 "working_dir": str(target_dir),
                 "requires_confirmation": True,
                 "danger_types": danger_check["danger_types"],
                 "danger_info": danger_check["danger_info"],
             }
+        return None
+
+    def _is_persistent(self, command: str) -> bool:
+        """检查命令是否为长运行服务，应走 PTY 终端路径。"""
+        try:
+            from services.terminal_manager import _is_persistent_command
+            return _is_persistent_command(command)
+        except Exception:
+            return False
+
+    def _exec_pty(
+        self,
+        command: str,
+        target_dir: str,
+        timeout: int,
+        invocation_id: str | None,
+        terminal_session_id: str | None = None,
+        new_terminal: bool = False,
+    ) -> dict[str, Any] | None:
+        """通过 PTY 终端执行命令，返回结果或 None（fallback 到 subprocess）。"""
+        try:
+            from services.terminal_manager import TerminalManager
+            tm = TerminalManager.get_instance()
+            # new_terminal=True 时传 session_id=None 强制创建新会话
+            effective_session_id = None if new_terminal else terminal_session_id
+            return tm.open_terminal_for_command(
+                command=command,
+                work_dir=target_dir,
+                timeout=timeout,
+                invocation_id=invocation_id,
+                session_id=effective_session_id,
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("PTY execution failed: %s", exc)
+            return None
+
+    def execute(
+        self,
+        command: str,
+        working_dir: str | None = None,
+        timeout: int = 300,
+        skip_confirmation: bool = False,
+        invocation_id: str | None = None,
+        terminal_session_id: str | None = None,
+        new_terminal: bool = False,
+    ) -> dict[str, Any]:
+        normalized_command = str(command or "").strip()
+        if not normalized_command:
+            return {
+                "success": False,
+                "error": "Missing command",
+                "output": "缺少要执行的命令",
+                "command": "",
+                "working_dir": str(self._allowed_dir),
+                "requires_confirmation": False,
+            }
+        if normalized_command.startswith("claude"):
+            if "--permission-mode" not in normalized_command and "-p" in normalized_command:
+                normalized_command = normalized_command.replace("-p", "-p --permission-mode bypassPermissions", 1)
+        timeout = max(1, min(timeout, self.MAX_TIMEOUT_SECONDS))
+        target_dir = self._resolve_target_dir(working_dir)
+
+        # 安全检查
+        err = self._check_command_security(
+            normalized_command, str(target_dir), working_dir, skip_confirmation, str(self._allowed_dir)
+        )
+        if err is not None:
+            return err
+
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        # 根据 open_in_terminal 选择执行方式
-        if open_in_terminal:
-            # AI 主动在终端中执行：创建专用终端会话，前端可连接查看
-            try:
-                from services.terminal_manager import TerminalManager
-                tm = TerminalManager.get_instance()
-                pty_result = tm.open_terminal_for_command(
-                    command=normalized_command,
-                    work_dir=str(target_dir),
-                    timeout=timeout,
-                    invocation_id=invocation_id,
-                )
-            except Exception as exc:
-                pty_result = None
+        # PTY 终端路径
+        pty_result = self._exec_pty(normalized_command, str(target_dir), timeout, invocation_id, terminal_session_id, new_terminal)
+        if pty_result is not None:
+            return_code = int(pty_result.get("return_code") or 0)
+            captured = str(pty_result.get("output_capture") or "").strip()
+            timed_out = bool(pty_result.get("timed_out"))
+            interrupted_action = pty_result.get("interrupted_action")
+            session_id = pty_result.get("session_id")
+            pid = pty_result.get("pid")
+            auto_detached = bool(pty_result.get("auto_detached"))
 
-            if pty_result is not None:
-                return_code = int(pty_result.get("return_code") or 0)
-                captured = str(pty_result.get("output_capture") or "").strip()
-                timed_out = bool(pty_result.get("timed_out"))
-                interrupted_action = pty_result.get("interrupted_action")
-                session_id = pty_result.get("session_id")
-                auto_detached = bool(pty_result.get("auto_detached"))
-
-                if interrupted_action:
-                    return {
-                        "success": False,
-                        "interrupted": True,
-                        "interrupted_action": interrupted_action,
-                        "error": "Command interrupted by user",
-                        "output": (
-                            f"命令已被用户中断\n命令: {normalized_command}\n"
-                            f"执行目录: {target_dir}\n"
-                            f"中断前终端输出:\n{self._truncate_output(captured) if captured else '(无输出)'}"
-                        ),
-                        "command": normalized_command,
-                        "working_dir": str(target_dir),
-                        "requires_confirmation": False,
-                        "captured_output": captured,
-                        "session_id": session_id,
-                    }
-                if auto_detached:
-                    return {
-                        "success": True,
-                        "return_code": 0,
-                        "captured_output": captured,
-                        "output": (
-                            f"开发服务器已启动并转入后台运行\n"
-                            f"命令: {normalized_command}\n"
-                            f"执行目录: {target_dir}\n"
-                            f"可在右侧控制台查看或停止该服务。"
-                        ),
-                        "command": normalized_command,
-                        "working_dir": str(target_dir),
-                        "requires_confirmation": False,
-                        "session_id": session_id,
-                        "auto_detached": True,
-                    }
-
-                if timed_out:
-                    return {
-                        "success": False,
-                        "error": f"Command timed out after {timeout} seconds",
-                        "output": (
-                            f"命令执行超时\n命令: {normalized_command}\n"
-                            f"执行目录: {target_dir}\n超时时间: {timeout} 秒\n"
-                            f"终端输出:\n{self._truncate_output(captured) if captured else '(无输出)'}"
-                        ),
-                        "command": normalized_command,
-                        "working_dir": str(target_dir),
-                        "requires_confirmation": False,
-                        "captured_output": captured,
-                        "session_id": session_id,
-                    }
-
-                output_lines = [
-                    f"Command: {normalized_command}",
-                    f"Working directory: {target_dir}",
-                    f"Return code: {return_code}",
-                ]
-                if captured:
-                    output_lines.append(self._truncate_output(captured))
-                else:
-                    output_lines.append("(empty output)")
-
+            if interrupted_action:
                 return {
-                    "success": return_code == 0,
-                    "return_code": return_code,
+                    "success": False,
+                    "interrupted": True,
+                    "interrupted_action": interrupted_action,
+                    "error": "Command interrupted by user",
+                    "output": (
+                        f"命令已被用户中断\n命令: {normalized_command}\n"
+                        f"执行目录: {target_dir}\n"
+                        f"中断前终端输出:\n{self._truncate_output(captured) if captured else '(无输出)'}"
+                    ),
+                    "command": normalized_command,
+                    "working_dir": str(target_dir),
+                    "requires_confirmation": False,
                     "captured_output": captured,
-                    "output": "\n".join(output_lines),
+                    "session_id": session_id,
+                    "pid": pid,
+                }
+            if auto_detached:
+                return {
+                    "success": True,
+                    "return_code": 0,
+                    "captured_output": captured,
+                    "output": (
+                        f"开发服务器已启动并转入后台运行\n"
+                        f"命令: {normalized_command}\n"
+                        f"执行目录: {target_dir}\n"
+                        f"可在右侧控制台查看或停止该服务。"
+                    ),
                     "command": normalized_command,
                     "working_dir": str(target_dir),
                     "requires_confirmation": False,
                     "session_id": session_id,
-                    "auto_detached": auto_detached,
+                    "pid": pid,
+                    "auto_detached": True,
                 }
 
-            # PTY 不可用时 fallback 到隐藏子进程
-            pty_result = None
+            if timed_out:
+                return {
+                    "success": False,
+                    "error": f"Command timed out after {timeout} seconds",
+                    "output": (
+                        f"命令执行超时\n命令: {normalized_command}\n"
+                        f"执行目录: {target_dir}\n超时时间: {timeout} 秒\n"
+                        f"终端输出:\n{self._truncate_output(captured) if captured else '(无输出)'}"
+                    ),
+                    "command": normalized_command,
+                    "working_dir": str(target_dir),
+                    "requires_confirmation": False,
+                    "captured_output": captured,
+                    "session_id": session_id,
+                    "pid": pid,
+                }
 
-        # 后台静默执行（open_in_terminal=false 或 PTY fallback）
+            output_lines = [
+                f"Command: {normalized_command}",
+                f"Working directory: {target_dir}",
+                f"Return code: {return_code}",
+            ]
+            if captured:
+                output_lines.append(self._truncate_output(captured))
+            else:
+                output_lines.append("(empty output)")
+
+            return {
+                "success": return_code == 0,
+                "return_code": return_code,
+                "captured_output": captured,
+                "output": "\n".join(output_lines),
+                "command": normalized_command,
+                "working_dir": str(target_dir),
+                "requires_confirmation": False,
+                "session_id": session_id,
+                "pid": pid,
+                "auto_detached": auto_detached,
+            }
+
+        # PTY 不可用，fallback 到 subprocess 路径
+        # 检查是否为 persistent 命令（subprocess 路径也需要知道）
+        is_persistent = False
+        try:
+            from services.terminal_manager import _is_persistent_command
+            is_persistent = _is_persistent_command(normalized_command)
+        except Exception:
+            pass
+
+        # 后台静默执行（PTY fallback）
         try:
             process = subprocess.Popen(
                 normalized_command,
@@ -542,6 +592,7 @@ class CLIExecutor:
         stdout = ""
         stderr = ""
         timed_out = False
+        auto_detached = False
         interrupted_action = None
         deadline = time.monotonic() + timeout
         try:
@@ -567,13 +618,20 @@ class CLIExecutor:
                             stdout, stderr = process.communicate(timeout=5)
                         break
                 if time.monotonic() >= deadline:
-                    timed_out = True
-                    self._terminate_process(process, force=True)
-                    try:
-                        stdout, stderr = process.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        stdout = stdout or ""
-                        stderr = (stderr or "").strip()
+                    if is_persistent:
+                        # persistent 命令超时不 kill：进程保留运行，返回后台运行消息。
+                        # 不尝试读取 stdout/stderr（会阻塞），AI 可在 ConsolePanel 查看输出。
+                        auto_detached = True
+                        stdout = ""
+                        stderr = ""
+                    else:
+                        timed_out = True
+                        self._terminate_process(process, force=True)
+                        try:
+                            stdout, stderr = process.communicate(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            stdout = stdout or ""
+                            stderr = (stderr or "").strip()
                     break
         finally:
             if invocation_id:
@@ -605,6 +663,21 @@ class CLIExecutor:
                 "command": normalized_command,
                 "working_dir": str(target_dir),
                 "requires_confirmation": False,
+            }
+        if auto_detached:
+            return {
+                "success": True,
+                "return_code": 0,
+                "output": (
+                    f"开发服务器已启动并转入后台运行\n"
+                    f"命令: {normalized_command}\n"
+                    f"执行目录: {target_dir}\n"
+                    f"可在右侧控制台查看或停止该服务。"
+                ),
+                "command": normalized_command,
+                "working_dir": str(target_dir),
+                "requires_confirmation": False,
+                "auto_detached": True,
             }
         if timed_out:
             return {

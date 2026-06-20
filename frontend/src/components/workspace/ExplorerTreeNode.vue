@@ -4,22 +4,18 @@
     <div
       v-if="node.isDir"
       class="explorer-folder"
-      :class="{ expanded: node.expanded }"
+      :class="{ expanded: node.expanded, loading: isLoading }"
       @click="$emit('toggle', node)"
+      @contextmenu.prevent="$emit('contextmenu', { node, event: $event })"
     >
       <span class="explorer-arrow">
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <path d="m9 18 6-6-6-6"/>
+        <svg v-if="!isLoading" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="9 18 15 12 9 6"/>
         </svg>
+        <span v-else class="arrow-spinner"></span>
       </span>
-      <span class="explorer-icon" :style="{ color: '#7b8fa3' }">
-        <svg v-if="node.expanded" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-        </svg>
-        <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M20 20v-8a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8"/>
-          <path d="M4 10V6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v1"/>
-        </svg>
+      <span class="explorer-icon">
+        <img :src="folderIconSrc" width="16" height="16" alt="" @error="(e: Event) => (e.target as HTMLImageElement).style.display = 'none'" />
       </span>
       <span class="explorer-label">{{ node.name }}</span>
     </div>
@@ -30,13 +26,11 @@
       class="explorer-file"
       :class="{ active: selectedPath === node.path }"
       @click="$emit('select', node.path)"
+      @contextmenu.prevent="$emit('contextmenu', { node, event: $event })"
     >
       <span class="explorer-indent"></span>
-      <span class="explorer-icon" :style="{ color: iconColor }">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
-          <polyline points="14 2 14 8 20 8"/>
-        </svg>
+      <span class="explorer-icon">
+        <img :src="fileIconSrc" width="16" height="16" alt="" @error="(e: Event) => (e.target as HTMLImageElement).style.display = 'none'" />
       </span>
       <span class="explorer-label">{{ node.name }}</span>
     </div>
@@ -49,8 +43,10 @@
         :node="child"
         :selected-path="selectedPath"
         :tree-data="treeData"
+        :loading-folders="loadingFolders"
         @select="$emit('select', $event)"
         @toggle="$emit('toggle', $event)"
+        @contextmenu="$emit('contextmenu', $event)"
       />
     </div>
   </div>
@@ -58,6 +54,9 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { getIconForFile, getIconForFolder, getIconForOpenFolder, DEFAULT_FILE, DEFAULT_FOLDER_OPENED } from 'vscode-icons-js'
+
+const ICON_CDN = '/file-icons'
 
 interface TreeNode {
   name: string
@@ -71,11 +70,13 @@ const props = defineProps<{
   node: TreeNode
   selectedPath: string | null
   treeData?: Record<string, TreeNode>
+  loadingFolders?: Set<string>
 }>()
 
 defineEmits<{
   select: [path: string]
   toggle: [node: TreeNode]
+  contextmenu: [payload: { node: TreeNode; event: MouseEvent }]
 }>()
 
 const childNodes = computed(() => {
@@ -91,16 +92,20 @@ const childNodes = computed(() => {
   })
 })
 
-const iconColor = computed(() => {
-  const ext = props.node.name.split('.').pop()?.toLowerCase() || ''
-  const colors: Record<string, string> = {
-    js: '#f1e05a', ts: '#3178c6', tsx: '#3178c6', jsx: '#61dafb',
-    vue: '#42b883', html: '#e34c26', css: '#563d7c', scss: '#c6538c',
-    json: '#f1e05a', md: '#083fa1', py: '#3572A5',
-    go: '#00ADD8', rs: '#dea584', java: '#b07219', c: '#555555', cpp: '#f34b7d',
-    sh: '#89e051', yml: '#cb171e', yaml: '#cb171e', xml: '#0060ac',
-  }
-  return colors[ext] || '#6e7681'
+const fileIconSrc = computed(() => {
+  const iconName = getIconForFile(props.node.name) || DEFAULT_FILE
+  return `${ICON_CDN}/${iconName}`
+})
+
+const folderIconSrc = computed(() => {
+  const iconName = props.node.expanded
+    ? (getIconForOpenFolder(props.node.name) || DEFAULT_FOLDER_OPENED)
+    : (getIconForFolder(props.node.name) || DEFAULT_FOLDER_OPENED)
+  return `${ICON_CDN}/${iconName}`
+})
+
+const isLoading = computed(() => {
+  return props.loadingFolders?.has(props.node.path) || false
 })
 </script>
 
@@ -128,15 +133,39 @@ const iconColor = computed(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
   transition: transform 0.15s;
-  color: var(--text-muted);
+  color: var(--text-secondary, #888);
+  border-radius: 2px;
+}
+
+.explorer-arrow:hover {
+  background: rgba(0, 0, 0, 0.06);
 }
 
 .explorer-folder.expanded .explorer-arrow {
   transform: rotate(90deg);
+}
+
+.explorer-folder.loading {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.arrow-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--text-muted, #999);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .explorer-icon {

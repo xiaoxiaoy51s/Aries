@@ -44,6 +44,50 @@ export async function getSessionHistory(sessionId: string, limit = 20, userOnly 
   return res.json()
 }
 
+export interface ContextUsageBreakdown {
+  system_prompt: number
+  tool_definitions: number
+  rules: number
+  skills: number
+  summarized_conversation: number
+  conversation: number
+}
+
+export interface ContextUsageInfo {
+  estimated_tokens: number
+  context_window: number
+  usage_percent: number
+  message_count?: number
+  breakdown: ContextUsageBreakdown
+  recent_message_count?: number
+  memory_count?: number
+  reasoning_count?: number
+  recent_window_tokens?: number
+}
+
+export async function getSessionContextUsage(sessionId: string): Promise<ContextUsageInfo> {
+  const res = await fetch(`${getBaseUrl()}/sessions/${sessionId}/context-usage`)
+  if (!res.ok) throw new Error('获取上下文使用情况失败')
+  return res.json()
+}
+
+export interface CompactResult {
+  session_id: string
+  compacted: boolean
+  memory: any
+  before: ContextUsageInfo
+  after: ContextUsageInfo
+}
+
+export async function compactSession(sessionId: string): Promise<CompactResult> {
+  const res = await fetch(`${getBaseUrl()}/sessions/${sessionId}/compact`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  if (!res.ok) throw new Error('压缩会话失败')
+  return res.json()
+}
+
 export async function deleteSession(sessionId: string) {
   const res = await fetch(`${getBaseUrl()}/sessions/${sessionId}`, {
     method: 'DELETE',

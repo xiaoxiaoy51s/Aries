@@ -22,19 +22,7 @@
         @click="selected = 2"
       >
         <span class="option-num">2</span>
-        <span class="option-text">
-          是，且对以后以「<code>{{ commandPrefix }}</code>」开头的命令不再询问
-        </span>
-      </li>
-      <li
-        role="option"
-        :aria-selected="selected === 3"
-        class="codex-option"
-        :class="{ active: selected === 3 }"
-        @click="selected = 3"
-      >
-        <span class="option-num">3</span>
-        <span class="option-text">否，请告诉我如何调整</span>
+        <span class="option-text">否</span>
       </li>
     </ul>
 
@@ -54,8 +42,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
-import { extractCommandPrefix } from '@/stores/privacy'
+import { ref, watch } from 'vue'
 
 const props = defineProps<{
   description: string
@@ -64,13 +51,11 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  submit: [mode: 'yes' | 'yes_remember' | 'no']
+  submit: [mode: 'yes' | 'no']
   skip: []
 }>()
 
-const selected = ref<1 | 2 | 3>(1)
-
-const commandPrefix = computed(() => extractCommandPrefix(props.command) || '…')
+const selected = ref<1 | 2>(1)
 
 watch(
   () => props.command,
@@ -81,7 +66,6 @@ watch(
 
 function submit() {
   if (selected.value === 1) emit('submit', 'yes')
-  else if (selected.value === 2) emit('submit', 'yes_remember')
   else emit('submit', 'no')
 }
 </script>

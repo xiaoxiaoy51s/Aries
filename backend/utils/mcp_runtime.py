@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sys
 import threading
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -268,7 +269,13 @@ class McpConnectionPool:
         with self._lock:
             if self._started:
                 return
-            self._loop = asyncio.new_event_loop()
+            # Windows: MCP stdio 传输需要 ProactorEventLoop 来支持子进程；
+            # 主循环已切换为 SelectorEventLoop，这里显式创建 ProactorEventLoop。
+            if sys.platform == "win32":
+                from asyncio.windows_events import ProactorEventLoop
+                self._loop = ProactorEventLoop()
+            else:
+                self._loop = asyncio.new_event_loop()
             self._thread = threading.Thread(
                 target=self._run_loop,
                 name="mcp-connection-pool",
@@ -599,13 +606,6 @@ def build_mcp_prompt_context() -> str:
     enabled = [p for p in plugins if p.enabled]
 
     if not enabled:
-        disabled = [p for p in plugins if not p.enabled]
-        if disabled:
-            names = "、".join(p.id for p in disabled)
-            return (
-                "【MCP 插件】\n"
-                f"以下 MCP 已配置但未启用：{names}。请在插件页开启后 Agent 才能调用。\n"
-            )
         return ""
 
     lines = [

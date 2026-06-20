@@ -1,0 +1,1784 @@
+<template>
+  <div class="composer" :class="{ 'composer-with-slash': true, 'composer-bottom': isBottom }">
+    <!-- MCP 状态面板（覆盖在输入框上方，绝对定位） -->
+    <div v-if="mcpPanelOpen" class="mcp-panel">
+      <div class="mcp-panel-header">
+        <span class="mcp-panel-title">MCP</span>
+        <button type="button" class="mcp-panel-close" @click="closeMcpPanel">关闭</button>
+      </div>
+      <div v-if="mcpLoading" class="mcp-panel-loading">加载中…</div>
+      <div v-else-if="!mcpPlugins.length" class="mcp-panel-empty">暂无 MCP 配置</div>
+      <div v-else class="mcp-panel-list">
+        <div
+          v-for="plugin in mcpPlugins"
+          :key="plugin.id"
+          class="mcp-panel-item"
+        >
+          <div class="mcp-panel-item-info">
+            <span class="mcp-panel-item-name">{{ plugin.id }}</span>
+            <span class="mcp-panel-item-desc">{{ plugin.description || plugin.command || '无描述' }}</span>
+          </div>
+          <button
+            type="button"
+            class="mcp-panel-item-status"
+            :class="{ 'mcp-panel-item-status--enabled': plugin.enabled }"
+            :disabled="mcpStatusBusy === plugin.id"
+            @click.stop="toggleMcpPlugin(plugin)"
+          >
+            {{ plugin.enabled ? '已启用' : '未启用' }}
+          </button>
+        </div>
+      </div>
+    </div>
+    <div v-if="reviewPanelOpen" class="review-panel" @mousedown.prevent>
+      <button type="button" class="review-panel-item" @click="applyReviewPrompt('unstaged')">
+        <span class="review-panel-title">审查未暂存更改</span>
+        <span class="review-panel-desc">审查 git diff 的未暂存变更</span>
+      </button>
+      <button type="button" class="review-panel-item" @click="applyReviewPrompt('staged')">
+        <span class="review-panel-title">审查已暂存更改</span>
+        <span class="review-panel-desc">审查 git diff --cached 的已暂存变更</span>
+      </button>
+      <button type="button" class="review-panel-item" @click="applyReviewPrompt('branch')">
+        <span class="review-panel-title">对比基础分支</span>
+        <span class="review-panel-desc">审查当前分支相对基础分支的全部变更</span>
+      </button>
+      <button type="button" class="review-panel-item" @click="applyReviewPrompt('commit')">
+        <span class="review-panel-title">审查最近提交</span>
+        <span class="review-panel-desc">审查最近一次提交的代码变更</span>
+      </button>
+      <button type="button" class="review-panel-item" @click="applyReviewPrompt('full')">
+        <span class="review-panel-title">全面审查</span>
+        <span class="review-panel-desc">对当前工作目录做完整代码审查</span>
+      </button>
+    </div>
+    <slot />
+    <SlashComposerInput
+      ref="composerRef"
+      v-model:plain-text="plainTextProxy"
+      v-model:active-command="activeSlashCommandProxy"
+      v-model:objective="commandObjectiveProxy"
+      v-model:plugin-menu-open="pluginMenuOpenProxy"
+      v-model:attached-images="attachedImagesProxy"
+      :rows="rows"
+      :max-rows="5"
+      :disabled="isSending"
+      :plugin-items="pluginItems"
+      :skill-items="skillItems"
+      @send="$emit('send')"
+      @plugin-select="onPluginClick"
+      @slash-keydown="onPluginKeydown"
+    />
+    <div v-if="pluginMenuOpenProxy" class="plugin-menu" @mousedown.prevent>
+      <div class="plugin-menu-body">
+        <div class="plugin-menu-group">
+          <div
+            v-for="(item, idx) in filteredPluginItems"
+            :key="item.id"
+            class="plugin-menu-item"
+            :class="{
+              'plugin-menu-item--active': idx === pluginSelectedIndex,
+              'plugin-menu-item--disabled': item.disabled,
+            }"
+            @click="onPluginClick(item)"
+            @mouseenter="pluginSelectedIndex = idx"
+          >
+            <div class="plugin-menu-icon" v-html="pluginIconFor(item.icon)"></div>
+            <div class="plugin-menu-text">
+              <span class="plugin-menu-label">{{ item.label }}</span>
+              <span class="plugin-menu-desc">{{ item.description }}</span>
+            </div>
+            <div v-if="item.badge" class="plugin-menu-badge">{{ item.badge }}</div>
+          </div>
+        </div>
+        <div v-if="filteredSkillItems.length" class="plugin-menu-divider"></div>
+        <div v-if="filteredSkillItems.length" class="plugin-menu-group">
+          <div class="plugin-menu-group-title">技能</div>
+          <div
+            v-for="(skill, sIdx) in filteredSkillItems"
+            :key="skill.id"
+            class="plugin-menu-item"
+            :class="{
+              'plugin-menu-item--active': filteredPluginItems.length + sIdx === pluginSelectedIndex,
+              'plugin-menu-item--disabled': skill.disabled,
+            }"
+            @click="onPluginClick(skill)"
+            @mouseenter="pluginSelectedIndex = filteredPluginItems.length + sIdx"
+          >
+            <div class="plugin-menu-icon" v-html="pluginIconFor(skill.icon)"></div>
+            <div class="plugin-menu-text">
+              <span class="plugin-menu-label">{{ skill.label }}</span>
+              <span class="plugin-menu-desc">{{ skill.description }}</span>
+            </div>
+            <div v-if="skill.badge" class="plugin-menu-badge">{{ skill.badge }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="composer-toolbar">
+      <div class="composer-left">
+        <button
+          type="button"
+          class="icon-btn"
+          title="上传图片"
+          :disabled="isSending || !!activeSlashCommandProxy"
+          @click="$emit('openImagePicker')"
+        >
+          +
+        </button>
+        <div class="approval-picker">
+          <button
+            type="button"
+            class="approval-trigger"
+            :title="currentApprovalOption?.label || '请求批准'"
+            @click="approvalMenuOpen = !approvalMenuOpen"
+          >
+            <span class="approval-trigger-icon" v-html="approvalIcon(currentApprovalOption?.icon || 'hand')"></span>
+            <span class="approval-trigger-label">{{ currentApprovalOption?.label || '请求批准' }}</span>
+            <svg class="approval-trigger-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="m6 9 6 6 6-6"/>
+            </svg>
+          </button>
+          <div
+            v-if="approvalMenuOpen"
+            class="approval-menu"
+            @mousedown.prevent
+          >
+            <div class="approval-menu-list">
+              <button
+                v-for="opt in approvalOptions"
+                :key="opt.id"
+                type="button"
+                class="approval-menu-item"
+                :class="{ 'approval-menu-item--active': opt.id === selectedApproval }"
+                @click="selectApproval(opt.id)"
+              >
+                <span class="approval-menu-icon" v-html="approvalIcon(opt.icon)"></span>
+                <span class="approval-menu-text">
+                  <span class="approval-menu-label">{{ opt.label }}</span>
+                  <span class="approval-menu-desc">{{ opt.description }}</span>
+                </span>
+                <svg
+                  v-if="opt.id === selectedApproval"
+                  class="approval-menu-check"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                >
+                  <path d="M20 6 9 17l-5-5"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="composer-right">
+        <select
+          :value="selectedModel"
+          class="model-select"
+          @change="$emit('update:selectedModel', ($event.target as HTMLSelectElement).value)"
+        >
+          <option v-if="modelList.length === 0" value="" disabled>暂无模型</option>
+          <option v-for="model in modelList" :key="model.id" :value="model.model">
+            {{ model.name }}
+          </option>
+        </select>
+        <button
+          v-if="!isSending"
+          type="button"
+          class="send-btn"
+          :disabled="!canSend"
+          @click="$emit('send')"
+        >
+          <span class="send-icon-inner">
+            <svg class="send-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="m5 12 7-7 7 7M12 19V5"/>
+            </svg>
+          </span>
+        </button>
+        <button
+          v-else
+          type="button"
+          class="send-btn send-btn--streaming"
+          title="停止生成"
+          @click="$emit('stop')"
+        >
+          <span class="loading-spinner">
+            <span class="spinner-circle"></span>
+          </span>
+        </button>
+      </div>
+    </div>
+    <!-- 底部工具栏：仅在欢迎界面显示 -->
+    <div v-if="!isBottom && showWorkDir" class="composer-bottom-bar">
+      <div class="bottom-bar-item workdir-picker-bottom">
+        <button
+          type="button"
+          class="bottom-bar-btn"
+          :title="workDirLabel || '选择工作目录'"
+          @click="workDirMenuOpen = !workDirMenuOpen"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+          <span class="bottom-bar-label">{{ workDirLabel || '新建文件夹' }}</span>
+        </button>
+        <div v-if="workDirMenuOpen" class="workdir-menu" @click.stop>
+          <div class="workdir-menu-title">历史工作目录</div>
+          <ul v-if="(workDirHistory || []).length" class="workdir-menu-list">
+            <li
+              v-for="dir in (workDirHistory || [])"
+              :key="dir"
+              class="workdir-menu-item"
+              :class="{ active: dir === workDir }"
+              @click="onApplyWorkDir(dir)"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              </svg>
+              <span class="workdir-menu-path" :title="dir">{{ dir }}</span>
+            </li>
+          </ul>
+          <div v-else class="workdir-menu-empty">暂无历史工作目录</div>
+          <div class="workdir-menu-divider"></div>
+          <button type="button" class="workdir-menu-new" @click="$emit('pickWorkDir')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+            <span>新工作目录</span>
+          </button>
+        </div>
+      </div>
+      <div class="bottom-bar-item">
+        <button type="button" class="bottom-bar-btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+            <line x1="8" y1="21" x2="16" y2="21"/>
+            <line x1="12" y1="17" x2="12" y2="21"/>
+          </svg>
+          <span class="bottom-bar-label">本地模式</span>
+        </button>
+      </div>
+      <div class="bottom-bar-item">
+        <button type="button" class="bottom-bar-btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="6" y1="3" x2="6" y2="15"/>
+            <circle cx="18" cy="6" r="3"/>
+            <circle cx="6" cy="18" r="3"/>
+            <path d="M18 9a9 9 0 0 1-9 9"/>
+          </svg>
+          <span class="bottom-bar-label">master</span>
+        </button>
+      </div>
+    </div>
+    <RoleEditorModal
+      :visible="roleModalVisible"
+      :work-dir="props.workDir || null"
+      @close="roleModalVisible = false"
+      @saved="() => {}"
+    />
+    <!-- 压缩确认弹窗 -->
+    <Teleport to="body">
+      <div v-if="compactModalOpen" class="compact-overlay" @mousedown.self="compactModalOpen = false">
+        <div class="compact-modal">
+          <div class="compact-modal-header">
+            <span class="compact-modal-title">压缩会话上下文</span>
+            <button type="button" class="compact-modal-close" @click="compactModalOpen = false">×</button>
+          </div>
+          <div class="compact-modal-body">
+            <p class="compact-modal-desc">
+              将较早的对话消息压缩为结构化记忆摘要，保留近期消息窗口。
+              压缩后可显著降低上下文 token 占用，但历史细节会有损失。
+            </p>
+            <div class="compact-modal-info">
+              <div class="compact-info-row">
+                <span class="compact-info-label">会话 ID</span>
+                <span class="compact-info-value compact-info-mono">{{ props.sessionId || '（无活动会话）' }}</span>
+              </div>
+              <div class="compact-info-row">
+                <span class="compact-info-label">当前占用</span>
+                <span class="compact-info-value compact-info-highlight">已使用 {{ props.contextUsagePercent ?? 0 }}%</span>
+              </div>
+            </div>
+            <div v-if="contextUsageRows.length" class="context-usage-breakdown">
+              <div class="context-usage-header">
+                <span class="context-usage-title">Context Usage</span>
+                <span class="context-usage-total">
+                  ~{{ formatTokens(contextUsageInfo?.estimated_tokens ?? 0) }}
+                  / {{ formatTokens(contextUsageInfo?.context_window ?? 200000) }} Tokens
+                </span>
+              </div>
+              <div class="context-usage-bar">
+                <span
+                  v-for="row in contextUsageRows"
+                  :key="row.key"
+                  class="context-usage-bar-seg"
+                  :style="{ width: row.percent + '%', background: row.color }"
+                  :title="row.label + ': ' + formatTokens(row.tokens)"
+                />
+              </div>
+              <ul class="context-usage-list">
+                <li v-for="row in contextUsageRows" :key="row.key" class="context-usage-item">
+                  <span class="context-usage-dot" :style="{ background: row.color }" />
+                  <span class="context-usage-label">{{ row.label }}</span>
+                  <span class="context-usage-value">{{ formatTokens(row.tokens) }}</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+          <div class="compact-modal-footer">
+            <button type="button" class="compact-btn compact-btn-cancel" @click="compactModalOpen = false" :disabled="compactLoading">取消</button>
+            <button type="button" class="compact-btn compact-btn-confirm" @click="confirmCompact" :disabled="compactLoading || !props.sessionId">
+              {{ compactLoading ? '压缩中…' : '确认压缩' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import SlashComposerInput, { type ComposerImage } from '@/components/SlashComposerInput.vue'
+import RoleEditorModal from '@/components/RoleEditorModal.vue'
+import { getInitPrompt } from '@/api/memory'
+import { listPlugins, updatePluginStatus, type PluginItem as McpPluginItem } from '@/api/plugins'
+import { listPets } from '@/api/pets'
+import { listSkills, type SkillItem as ApiSkillItem } from '@/api/skills'
+import { compactSession } from '@/api/sessions'
+import { getApprovalMode, setApprovalMode, type ApprovalMode } from '@/api/pathPermissions'
+import { useModelStore } from '@/stores/model'
+
+interface SlashCommandDef {
+  id: string
+  label?: string
+}
+
+interface ModelItem {
+  id: string
+  model: string
+  name: string
+}
+
+interface PluginItem {
+  id: string
+  icon: string
+  label: string
+  description: string
+  badge?: string
+  disabled?: boolean
+}
+
+const props = defineProps<{
+  modelValue: string
+  attachedImages: ComposerImage[]
+  activeSlashCommand: SlashCommandDef | null
+  commandObjective: string
+  pluginMenuOpen: boolean
+  isSending: boolean
+  selectedModel: string
+  modelList: ModelItem[]
+  canSend: boolean
+  showWorkDir?: boolean
+  workDir?: string
+  workDirLabel?: string
+  workDirHistory?: string[]
+  rows?: number
+  isBottom?: boolean
+  contextUsagePercent?: number
+  contextUsageInfo?: {
+    estimated_tokens?: number
+    context_window?: number
+    usage_percent?: number
+    breakdown?: {
+      system_prompt?: number
+      tool_definitions?: number
+      rules?: number
+      skills?: number
+      summarized_conversation?: number
+      conversation?: number
+    }
+  } | null
+  sessionId?: string
+}>()
+
+const emit = defineEmits<{
+  'update:modelValue': [value: string]
+  'update:attachedImages': [value: ComposerImage[]]
+  'update:activeSlashCommand': [value: SlashCommandDef | null]
+  'update:commandObjective': [value: string]
+  'update:pluginMenuOpen': [value: boolean]
+  'update:selectedModel': [value: string]
+  send: []
+  stop: []
+  openImagePicker: []
+  pickWorkDir: []
+  applyWorkDir: [path: string]
+  toggleSideChat: []
+  compactDone: []
+}>()
+
+const composerRef = ref<InstanceType<typeof SlashComposerInput>>()
+const workDirMenuOpen = ref(false)
+const roleModalVisible = ref(false)
+const reviewPanelOpen = ref(false)
+const mcpPanelOpen = ref(false)
+const mcpPlugins = ref<McpPluginItem[]>([])
+const mcpLoading = ref(false)
+const mcpStatusBusy = ref<string | null>(null)
+const compactModalOpen = ref(false)
+const compactLoading = ref(false)
+
+// 请求批准（Approval）下拉菜单状态
+type ApprovalOption = {
+  id: ApprovalMode
+  icon: 'hand' | 'shield-alert' | 'unlock'
+  label: string
+  description: string
+}
+const approvalOptions: ApprovalOption[] = [
+  {
+    id: 'request',
+    icon: 'hand',
+    label: '请求批准',
+    description: '编辑外部文件和使用互联网时始终询问',
+  },
+  {
+    id: 'review',
+    icon: 'shield-alert',
+    label: '替我审批',
+    description: '仅对检测到的风险操作请求批准',
+  },
+  {
+    id: 'full',
+    icon: 'unlock',
+    label: '完全访问权限',
+    description: '可不受限制地访问互联网和您电脑上的任何文件',
+  },
+]
+const approvalMenuOpen = ref(false)
+const selectedApproval = ref<ApprovalOption['id']>('request')
+const currentApprovalOption = computed(
+  () => approvalOptions.find((o) => o.id === selectedApproval.value) || approvalOptions[0]
+)
+function selectApproval(id: ApprovalOption['id']) {
+  const prev = selectedApproval.value
+  selectedApproval.value = id
+  approvalMenuOpen.value = false
+  setApprovalMode(id).catch((err) => {
+    // 失败回滚 UI，避免与后端不一致
+    console.error('设置批准模式失败', err)
+    selectedApproval.value = prev
+  })
+}
+function approvalIcon(name: string): string {
+  const ICON_PATHS: Record<string, string> = {
+    hand:
+      '<path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v9"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
+    'shield-alert':
+      '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
+    unlock:
+      '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
+  }
+  const inner = ICON_PATHS[name] || ICON_PATHS.hand
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block">${inner}</svg>`
+}
+
+// Proxies for v-model bindings that need to be wired through props+emit
+const plainTextProxy = computed({
+  get: () => props.modelValue,
+  set: (val) => emit('update:modelValue', val)
+})
+const activeSlashCommandProxy = computed({
+  get: () => props.activeSlashCommand,
+  set: (val) => emit('update:activeSlashCommand', val)
+})
+const commandObjectiveProxy = computed({
+  get: () => props.commandObjective,
+  set: (val) => emit('update:commandObjective', val)
+})
+const pluginMenuOpenProxy = computed({
+  get: () => props.pluginMenuOpen,
+  set: (val) => emit('update:pluginMenuOpen', val)
+})
+const attachedImagesProxy = computed({
+  get: () => props.attachedImages,
+  set: (val) => emit('update:attachedImages', val)
+})
+
+const pluginItems = computed<PluginItem[]>(() => {
+  const percent = props.contextUsagePercent ?? 0
+  const compactBadge = percent > 0 ? `已使用 ${percent}%` : undefined
+  return [
+    { id: 'init', icon: 'file-text', label: '初始化', description: '生成当前项目的 Agent 记忆' },
+    { id: 'role', icon: 'shield', label: '规则', description: '设置 AI 行为约束规则' },
+    { id: 'mcp', icon: 'cpu', label: 'MCP', description: '显示 MCP 服务器状态' },
+    { id: 'review', icon: 'code', label: '代码审查', description: '审查未暂存的更改' },
+    { id: 'sidechat', icon: 'sidebar', label: '侧边聊天', description: '在临时分支中发起对话' },
+    { id: 'compact', icon: 'zap', label: '压缩', description: '压缩此会话的上下文', badge: compactBadge },
+    { id: 'pet', icon: 'brain', label: '宠物', description: '唤醒或收起桌面宠物' },
+    { id: 'fork', icon: 'git-branch', label: '派生', description: '创建分支至本地或全新工作树' },
+  ]
+})
+
+// Context Usage 分项配置（与 Claude Code Context Usage 视图对齐）
+const CONTEXT_USAGE_ROWS: { key: string; label: string; color: string }[] = [
+  { key: 'system_prompt', label: 'System prompt', color: '#a3a3a3' },
+  { key: 'tool_definitions', label: 'Tool definitions', color: '#7c3aed' },
+  { key: 'rules', label: 'Rules', color: '#16a34a' },
+  { key: 'skills', label: 'Skills', color: '#d97706' },
+  { key: 'summarized_conversation', label: 'Summarized conversation', color: '#dc2626' },
+  { key: 'conversation', label: 'Conversation', color: '#f59e0b' },
+]
+
+const contextUsageRows = computed(() => {
+  const breakdown = props.contextUsageInfo?.breakdown
+  if (!breakdown) return [] as Array<{ key: string; label: string; color: string; tokens: number; percent: number }>
+  const window = props.contextUsageInfo?.context_window || 200000
+  return CONTEXT_USAGE_ROWS.map((row) => {
+    const tokens = (breakdown as Record<string, number | undefined>)[row.key] ?? 0
+    const percent = window > 0 ? (tokens / window) * 100 : 0
+    return { ...row, tokens, percent }
+  }).filter((r) => r.tokens > 0)
+})
+
+function formatTokens(n: number): string {
+  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K'
+  return String(n)
+}
+
+// 技能列表：从后端 /api/skills 获取，与 SkillsPage 数据源保持一致
+const skillItems = ref<PluginItem[]>([])
+
+function skillIcon(name: string): string {
+  const ch = (name || '').trim().charAt(0).toUpperCase()
+  return ch || 'sparkles'
+}
+
+async function loadSkillItems() {
+  try {
+    const list = await listSkills()
+    skillItems.value = list.map((s: ApiSkillItem) => ({
+      id: s.folder_name,
+      icon: skillIcon(s.name),
+      label: s.name,
+      description: s.description || '无描述',
+      badge: s.enabled
+        ? (s.group === 'system' ? '系统' : '个人')
+        : '未启用',
+      disabled: !s.enabled,
+    }))
+  } catch (e) {
+    console.error('加载技能列表失败', e)
+    skillItems.value = []
+  }
+}
+
+function onApplyWorkDir(dir: string) {
+  workDirMenuOpen.value = false
+  emit('applyWorkDir', dir)
+}
+
+const pluginSelectedIndex = ref(0)
+
+const currentSlashQuery = computed(() => {
+  const text = props.modelValue || ''
+  const lines = text.split('\n')
+  const last = lines[lines.length - 1] || ''
+  return last.startsWith('/') ? last.slice(1).toLowerCase() : ''
+})
+
+const filteredPluginItems = computed(() => {
+  const q = currentSlashQuery.value
+  if (!q) return pluginItems.value
+  return pluginItems.value.filter(
+    (i) => i.id.toLowerCase().includes(q) || i.label.toLowerCase().includes(q)
+  )
+})
+
+const filteredSkillItems = computed(() => {
+  const q = currentSlashQuery.value
+  if (!q) return skillItems.value
+  return skillItems.value.filter(
+    (i) => i.id.toLowerCase().includes(q) || i.label.toLowerCase().includes(q)
+  )
+})
+
+const totalPluginItems = computed(
+  () => filteredPluginItems.value.length + filteredSkillItems.value.length
+)
+
+watch([filteredPluginItems, filteredSkillItems], () => {
+  if (pluginSelectedIndex.value >= totalPluginItems.value) {
+    pluginSelectedIndex.value = 0
+  }
+})
+
+function onPluginKeydown(e: KeyboardEvent) {
+  if (!pluginMenuOpenProxy.value) return
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    const n = totalPluginItems.value
+    if (n > 0) pluginSelectedIndex.value = (pluginSelectedIndex.value + 1) % n
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    const n = totalPluginItems.value
+    if (n > 0) pluginSelectedIndex.value = (pluginSelectedIndex.value - 1 + n) % n
+  } else if (e.key === 'Enter' || e.key === 'Tab') {
+    const list = [...filteredPluginItems.value, ...filteredSkillItems.value]
+    const item = list[pluginSelectedIndex.value]
+    if (item) {
+      e.preventDefault()
+      onPluginClick(item)
+    } else if (totalPluginItems.value > 0) {
+      e.preventDefault()
+    }
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    const lines = (props.modelValue || '').split('\n')
+    if (lines.length && lines[lines.length - 1].startsWith('/')) {
+      lines.pop()
+      plainTextProxy.value = lines.join('\n')
+    }
+  }
+}
+
+function pluginIconFor(name: string): string {
+  const ICON_PATHS: Record<string, string> = {
+    'file-text':
+      '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/>',
+    cpu:
+      '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 15h3M1 9h3M1 15h3"/>',
+    'git-branch':
+      '<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
+    zap:
+      '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+    code:
+      '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
+    target:
+      '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
+    sidebar:
+      '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/>',
+    brain:
+      '<path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44"/><path d="M12 2a8 8 0 0 0-8 8c0 3.866 2.582 7.13 6.12 8.18"/><path d="M12 22a8 8 0 0 0 8-8c0-3.866-2.582-7.13-6.12-8.18"/>',
+    maximize:
+      '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="12" y1="8" x2="12" y2="16"/>',
+    package:
+      '<line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
+    layers:
+      '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
+    user:
+      '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+    lightbulb:
+      '<path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7z"/>',
+  }
+  const inner = ICON_PATHS[name] || ICON_PATHS['file-text']
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block">${inner}</svg>`
+}
+
+async function onPluginClick(item: PluginItem) {
+  if (item.disabled) return
+  // 移除当前以 / 开头的最后一行（来自斜杠菜单）
+  const lines = (props.modelValue || '').split('\n')
+  if (lines.length && lines[lines.length - 1].startsWith('/')) {
+    lines.pop()
+  }
+  // 计算清理后的文本（同步可见，不依赖 props 回流）
+  const cleaned = lines.join('\n')
+  plainTextProxy.value = cleaned
+  pluginMenuOpenProxy.value = false
+
+  // 技能项：插入 @skill:<id> 标签到输入框
+  const isSkill = skillItems.value.some((s) => s.id === item.id)
+  if (isSkill) {
+    const sep = cleaned && !cleaned.endsWith('\n') && !cleaned.endsWith(' ') ? ' ' : ''
+    plainTextProxy.value = `${cleaned}${sep}@skill:${item.id} `
+    nextTick(() => composerRef.value?.focus?.())
+    return
+  }
+
+  if (item.id === 'init') {
+    try {
+      const res = await getInitPrompt()
+      if (res.prompt) {
+        plainTextProxy.value = res.prompt
+      }
+    } catch (e) {
+      console.error('获取 Init Prompt 失败', e)
+    }
+    nextTick(() => composerRef.value?.focus?.())
+    return
+  }
+  if (item.id === 'role') {
+    roleModalVisible.value = true
+    pluginMenuOpenProxy.value = false
+    return
+  }
+  if (item.id === 'mcp') {
+    mcpPanelOpen.value = true
+    reviewPanelOpen.value = false
+    pluginMenuOpenProxy.value = false
+    loadMcpPlugins()
+    return
+  }
+  if (item.id === 'review') {
+    reviewPanelOpen.value = true
+    mcpPanelOpen.value = false
+    pluginMenuOpenProxy.value = false
+    return
+  }
+  if (item.id === 'pet') {
+    togglePet()
+    return
+  }
+  if (item.id === 'sidechat') {
+    emit('toggleSideChat')
+    return
+  }
+  if (item.id === 'compact') {
+    compactModalOpen.value = true
+    pluginMenuOpenProxy.value = false
+    return
+  }
+  console.log('[Plugin] clicked:', item.id)
+}
+
+// ---------- 会话压缩 ----------
+async function confirmCompact() {
+  const sid = props.sessionId
+  if (!sid || compactLoading.value) return
+  compactLoading.value = true
+  try {
+    await compactSession(sid)
+    compactModalOpen.value = false
+    emit('compactDone')
+  } catch (e) {
+    console.error('压缩会话失败', e)
+  } finally {
+    compactLoading.value = false
+  }
+}
+
+// ---------- 宠物开关 ----------
+async function togglePet() {
+  const api = window.electronAPI
+  if (!api) return
+  const visible = await api.isPetVisible()
+  if (visible) {
+    api.hidePet()
+    // 用户主动关闭，持久化"已关闭"，启动时不再自动恢复
+    localStorage.setItem('pet:enabled', '0')
+  } else {
+    // 从 localStorage 读取上次选中的宠物
+    const saved = localStorage.getItem('pet:active')
+    if (!saved) {
+      // 没有保存过，从后端拉取第一个宠物
+      try {
+        const res = await listPets()
+        const pet = res.pets?.[0]
+        if (pet) {
+          const spec = buildPetSpec(pet)
+          if (spec) {
+            api.showPet(spec)
+            localStorage.setItem('pet:active', JSON.stringify(spec))
+            localStorage.setItem('pet:enabled', '1')
+          }
+        }
+      } catch (e) {
+        console.error('加载宠物列表失败', e)
+      }
+    } else {
+      const spec = JSON.parse(saved)
+      api.showPet(spec)
+      localStorage.setItem('pet:enabled', '1')
+    }
+  }
+}
+
+/** 把后端 PetInfo 转成 pet.html 期望的 spec（含 spritesheet metadata） */
+function buildPetSpec(pet: any): any | null {
+  const baseUrl = useModelStore().getBaseUrl()
+  const spriteRel = pet.spritesheetUrl || pet.animations?.idle
+  if (!spriteRel) return null
+  // 用 JSON 反复解包，确保传入 IPC 的是纯 plain object（避免 Vue Proxy 不可克隆）
+  return JSON.parse(JSON.stringify({
+    url: `${baseUrl}${spriteRel}`,
+    name: pet.displayName || pet.name,
+    frameWidth: pet.frameWidth || 192,
+    frameHeight: pet.frameHeight || 208,
+    columns: pet.columns || 8,
+    rows: pet.rows || 9,
+    states: pet.states || undefined,
+  }))
+}
+
+function applyReviewPrompt(mode: 'unstaged' | 'staged' | 'branch' | 'commit' | 'full') {
+  reviewPanelOpen.value = false
+  plainTextProxy.value = `@code_review ${mode}`
+  nextTick(() => composerRef.value?.focus?.())
+}
+
+async function loadMcpPlugins() {
+  mcpLoading.value = true
+  try {
+    const res = await listPlugins()
+    mcpPlugins.value = res.plugins
+  } catch (e) {
+    console.error('加载 MCP 列表失败', e)
+  } finally {
+    mcpLoading.value = false
+  }
+}
+
+async function toggleMcpPlugin(plugin: McpPluginItem) {
+  const nextEnabled = !plugin.enabled
+  mcpStatusBusy.value = plugin.id
+  try {
+    await updatePluginStatus(plugin.id, nextEnabled)
+    plugin.enabled = nextEnabled
+  } catch (e) {
+    console.error('更新 MCP 状态失败', e)
+  } finally {
+    mcpStatusBusy.value = null
+  }
+}
+
+function closeMcpPanel() {
+  mcpPanelOpen.value = false
+}
+
+function closeMenus(e: MouseEvent) {
+  const target = e.target as HTMLElement | null
+  if (!target) return
+  if (!target.closest('.workdir-picker-bottom')) {
+    workDirMenuOpen.value = false
+  }
+  if (!target.closest('.mcp-panel')) {
+    mcpPanelOpen.value = false
+  }
+  if (!target.closest('.review-panel')) {
+    reviewPanelOpen.value = false
+  }
+}
+
+function onGlobalKeydown(e: KeyboardEvent) {
+  if (pluginMenuOpenProxy.value) {
+    onPluginKeydown(e)
+    if (e.defaultPrevented) return
+  }
+  if (e.key === 'Escape') {
+    if (workDirMenuOpen.value) workDirMenuOpen.value = false
+    if (mcpPanelOpen.value) mcpPanelOpen.value = false
+    if (reviewPanelOpen.value) reviewPanelOpen.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', closeMenus)
+  document.addEventListener('keydown', onGlobalKeydown)
+  // 首次加载技能列表
+  loadSkillItems()
+  // 同步全局批准模式
+  getApprovalMode()
+    .then(({ mode }) => {
+      if (mode) selectedApproval.value = mode
+    })
+    .catch((err) => console.error('获取批准模式失败', err))
+})
+
+// 每次打开插件/技能菜单时刷新一次，确保与设置页同步
+watch(pluginMenuOpenProxy, (open) => {
+  if (open) loadSkillItems()
+})
+
+onUnmounted(() => {
+  document.removeEventListener('mousedown', closeMenus)
+  document.removeEventListener('keydown', onGlobalKeydown)
+})
+
+function openFilePicker() {
+  composerRef.value?.openFilePicker()
+}
+
+function clearImages() {
+  composerRef.value?.clearImages()
+}
+
+function focus() {
+  composerRef.value?.focus?.()
+}
+
+defineExpose({
+  openFilePicker,
+  clearImages,
+  focus,
+})
+</script>
+
+<style scoped>
+.composer {
+  width: 100%;
+  max-width: 900px;
+  position: relative;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  overflow: visible;
+}
+
+.composer-with-slash {
+  position: relative;
+}
+
+.composer-bottom {
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  gap: 12px;
+}
+
+.composer-bottom-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border);
+  background: #f5f5f7;
+  border-bottom-left-radius: var(--radius-lg);
+  border-bottom-right-radius: var(--radius-lg);
+}
+
+.mcp-panel,
+.review-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  max-height: 360px;
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--bg-panel) 90%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  overflow: hidden;
+  z-index: 200;
+}
+
+.review-panel {
+  padding: 6px;
+}
+
+.review-panel-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.review-panel-item:hover {
+  background: var(--accent-hover);
+}
+
+.review-panel-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.review-panel-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.mcp-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+}
+
+.mcp-panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mcp-panel-close {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  transition: color 0.12s;
+}
+
+.mcp-panel-close:hover {
+  color: var(--text);
+}
+
+.mcp-panel-loading,
+.mcp-panel-empty {
+  padding: 16px 12px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.mcp-panel-list {
+  padding: 4px 0;
+}
+
+.mcp-panel-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  gap: 12px;
+}
+
+.mcp-panel-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mcp-panel-item-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.mcp-panel-item-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-panel-item-status {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.mcp-panel-item-status:hover {
+  color: var(--text);
+}
+
+.mcp-panel-item-status:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.mcp-panel-item-status--enabled {
+  color: var(--accent);
+}
+
+.bottom-bar-item {
+  position: relative;
+}
+
+.bottom-bar-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+
+.bottom-bar-btn:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--text);
+}
+
+.bottom-bar-label {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-left,
+.composer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.icon-btn:hover {
+  background: var(--accent-hover);
+}
+
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+
+.model-select {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 28px 6px 12px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6b66' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 8px center;
+  cursor: pointer;
+  max-width: 200px;
+}
+
+.send-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: var(--send-bg);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.send-btn:hover:not(:disabled) {
+  background: var(--send-hover);
+}
+
+.send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Slash command menu */
+.plugin-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  max-height: 360px;
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  z-index: 200;
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+}
+
+.plugin-menu-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plugin-menu-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.plugin-menu-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 8px 10px 4px;
+  user-select: none;
+}
+
+.plugin-menu-item {
+  display: grid;
+  grid-template-columns: 24px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  transition: background 0.12s, color 0.12s;
+  min-height: 36px;
+}
+
+.plugin-menu-item--active,
+.plugin-menu-item:hover {
+  background: var(--accent-hover);
+}
+
+.plugin-menu-item--disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.plugin-menu-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.plugin-menu-icon :deep(svg) {
+  display: block;
+}
+
+.plugin-menu-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.plugin-menu-label {
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.plugin-menu-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plugin-menu-badge {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 1px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.plugin-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 4px;
+}
+
+/* 请求批准下拉（玻璃感） */
+.approval-picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.approval-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+}
+
+.approval-trigger:hover {
+  background: var(--accent-hover);
+}
+
+.approval-trigger-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.approval-trigger-label {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.approval-trigger-caret {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.approval-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: 380px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  z-index: 220;
+}
+
+.approval-menu-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px 6px;
+}
+
+.approval-menu-title {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.approval-menu-link {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+
+.approval-menu-link:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.approval-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.approval-menu-item {
+  display: grid;
+  grid-template-columns: 24px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  transition: background 0.12s;
+}
+
+.approval-menu-item:hover,
+.approval-menu-item--active {
+  background: var(--accent-hover);
+}
+
+.approval-menu-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.approval-menu-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.approval-menu-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.approval-menu-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.approval-menu-check {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.send-btn--streaming {
+  cursor: pointer;
+}
+
+.send-btn--streaming:hover {
+  background: var(--send-hover);
+}
+
+.send-icon-inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.loading-spinner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.spinner-circle {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin-send 0.75s linear infinite;
+}
+
+@keyframes spin-send {
+  to { transform: rotate(360deg); }
+}
+
+.workdir-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  min-width: 280px;
+  max-width: 420px;
+  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  z-index: 200;
+  overflow: visible;
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+}
+
+.workdir-menu-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 10px 4px;
+}
+
+.workdir-menu-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.workdir-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  transition: background 0.12s, color 0.12s;
+}
+
+.workdir-menu-item:hover {
+  background: var(--accent-hover);
+  color: var(--text);
+}
+
+.workdir-menu-item.active {
+  background: var(--accent-active);
+  color: var(--text);
+}
+
+.workdir-menu-item svg {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.workdir-menu-path {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, monospace;
+}
+
+.workdir-menu-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 8px 10px 10px;
+}
+
+.workdir-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 4px;
+}
+
+.workdir-menu-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.workdir-menu-new:hover {
+  background: var(--accent-hover);
+}
+
+/* ---------- 压缩确认弹窗 ---------- */
+.compact-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+.compact-modal {
+  width: 440px;
+  max-width: 92vw;
+  background: var(--bg-primary, #fff);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+  font-size: 14px;
+}
+.compact-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color, #eee);
+}
+.compact-modal-title {
+  font-weight: 600;
+  font-size: 15px;
+}
+.compact-modal-close {
+  background: none;
+  border: none;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--text-secondary, #999);
+  padding: 0 4px;
+}
+.compact-modal-close:hover {
+  color: var(--text-primary, #333);
+}
+.compact-modal-body {
+  padding: 18px 20px;
+}
+.compact-modal-desc {
+  margin: 0 0 16px;
+  color: var(--text-secondary, #666);
+  line-height: 1.6;
+}
+.compact-modal-info {
+  background: var(--bg-secondary, #f7f7f8);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.compact-info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.compact-info-label {
+  color: var(--text-secondary, #888);
+  flex-shrink: 0;
+}
+.compact-info-value {
+  font-weight: 500;
+  text-align: right;
+}
+.compact-info-mono {
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+.compact-info-highlight {
+  color: var(--accent, #4f7cff);
+}
+.context-usage-breakdown {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--bg-secondary, #f7f7f8);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.context-usage-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.context-usage-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #222);
+}
+.context-usage-total {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+}
+.context-usage-bar {
+  display: flex;
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--border-color, #e5e5e5);
+}
+.context-usage-bar-seg {
+  display: block;
+  height: 100%;
+}
+.context-usage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.context-usage-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.context-usage-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.context-usage-label {
+  flex: 1;
+  color: var(--text-secondary, #555);
+}
+.context-usage-value {
+  color: var(--text-primary, #222);
+  font-variant-numeric: tabular-nums;
+}
+.compact-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border-color, #eee);
+}
+.compact-btn {
+  padding: 7px 18px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+.compact-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.compact-btn-cancel {
+  background: var(--bg-secondary, #f0f0f0);
+  color: var(--text-primary, #333);
+}
+.compact-btn-cancel:hover:not(:disabled) {
+  background: var(--bg-tertiary, #e5e5e5);
+}
+.compact-btn-confirm {
+  background: var(--accent, #4f7cff);
+  color: #fff;
+}
+.compact-btn-confirm:hover:not(:disabled) {
+  background: var(--accent-hover, #3a66e0);
+}
+</style>

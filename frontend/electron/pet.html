@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src http: https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: transparent;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #pet-container {
+      width: 100%; height: 100%;
+      position: relative;
+      cursor: grab;
+    }
+    #pet-container:active { cursor: grabbing; }
+
+    /* 单图模式（旧 GIF / 单帧）：直接显示 <img> 占满容器 */
+    #pet-img {
+      width: 100%; height: 100%;
+      object-fit: contain;
+      pointer-events: none;
+      -webkit-user-drag: none;
+      display: none; /* 默认隐藏；sprite 模式不用它 */
+    }
+
+    /* Sprite 模式：用 background-image 显示某帧 */
+    #pet-sprite {
+      width: 100%; height: 100%;
+      background-repeat: no-repeat;
+      background-position: 0 0;
+      background-size: 100% 100%; /* 由 JS 重写为整张 sprite 的真实尺寸 */
+      pointer-events: none;
+      image-rendering: pixelated; /* 像素艺术宠物保持锐利 */
+      display: none;
+    }
+
+    .pet-btn {
+      position: absolute;
+      width: 20px; height: 20px;
+      border: none;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.4);
+      color: #fff;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    #pet-container:hover .pet-btn { opacity: 1; }
+    #close-btn { top: 2px; right: 2px; }
+    #close-btn:hover { background: rgba(239, 68, 68, 0.8); }
+    #resize-btn {
+      bottom: 2px; right: 2px;
+      cursor: pointer;
+    }
+    #resize-btn:hover { background: rgba(59, 130, 246, 0.8); }
+  </style>
+</head>
+<body>
+  <div id="pet-container">
+    <img id="pet-img" src="" alt="pet" />
+    <div id="pet-sprite"></div>
+    <button id="close-btn" class="pet-btn" title="关闭">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M18 6L6 18M6 6l12 12"/>
+      </svg>
+    </button>
+    <div id="resize-btn" class="pet-btn" title="拖拽缩放">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M3 3L21 21"/>
+        <path d="M21 15L21 21L15 21" stroke-width="2"/>
+        <path d="M3 9L3 3L9 3" stroke-width="2"/>
+      </svg>
+    </div>
+  </div>
+  <script>
+    const { ipcRenderer } = require('electron')
+
+    const img = document.getElementById('pet-img')
+    const sprite = document.getElementById('pet-sprite')
+    const container = document.getElementById('pet-container')
+    const closeBtn = document.getElementById('close-btn')
+    const resizeBtn = document.getElementById('resize-btn')
+
+    const BASE_W = 192
+    const BASE_H = 208
+    const MIN_SCALE = 0.4
+    const MAX_SCALE = 3.0
+    let scale = 1.0
+
+    // ---------- Sprite 动画引擎 ----------
+    // 默认 Codex 9 状态映射，兼容只传 url 的旧调用
+    const DEFAULT_STATES = [
+      { name: 'idle', row: 0, frames: 6 },
+      { name: 'running-right', row: 1, frames: 8 },
+      { name: 'running-left', row: 2, frames: 8 },
+      { name: 'waving', row: 3, frames: 4 },
+      { name: 'jumping', row: 4, frames: 5 },
+      { name: 'failed', row: 5, frames: 6 },
+      { name: 'waiting', row: 6, frames: 6 },
+      { name: 'running', row: 7, frames: 8 },
+      { name: 'review', row: 8, frames: 6 },
+    ]
+
+    let mode = 'image' // 'image' | 'sprite'
+    let spriteState = {
+      url: '',
+      frameWidth: BASE_W,
+      frameHeight: BASE_H,
+      columns: 8,
+      rows: 9,
+      states: DEFAULT_STATES,
+      currentState: 'idle',
+      currentFrame: 0,
+      frameIntervalMs: 120, // ~8 fps，符合 Codex 风格
+    }
+    let animTimer = null
+
+    function findState(name) {
+      return spriteState.states.find(s => s.name === name)
+        || spriteState.states[0]
+        || DEFAULT_STATES[0]
+    }
+
+    function applyFrame() {
+      const st = findState(spriteState.currentState)
+      const frames = Math.max(1, st.frames || 1)
+      const frame = spriteState.currentFrame % frames
+      const fw = spriteState.frameWidth
+      const fh = spriteState.frameHeight
+      const cols = spriteState.columns
+      const rows = spriteState.rows
+      // 容器始终按一帧 BASE_W x BASE_H 展示；用 background-size 缩放整图
+      sprite.style.backgroundImage = `url("${spriteState.url}")`
+      sprite.style.backgroundSize = `${cols * 100}% ${rows * 100}%`
+      // background-position 取百分比：0% 表示左/上对齐
+      const xPct = cols > 1 ? (frame / (cols - 1)) * 100 : 0
+      const yPct = rows > 1 ? (st.row / (rows - 1)) * 100 : 0
+      sprite.style.backgroundPosition = `${xPct}% ${yPct}%`
+      void fw; void fh // 保留供未来 canvas 渲染使用
+    }
+
+    function startAnimLoop() {
+      stopAnimLoop()
+      animTimer = setInterval(() => {
+        spriteState.currentFrame += 1
+        applyFrame()
+      }, spriteState.frameIntervalMs)
+    }
+
+    function stopAnimLoop() {
+      if (animTimer) {
+        clearInterval(animTimer)
+        animTimer = null
+      }
+    }
+
+    function setSpriteMode(data) {
+      mode = 'sprite'
+      img.style.display = 'none'
+      sprite.style.display = 'block'
+      spriteState.url = data.url
+      spriteState.frameWidth = data.frameWidth || BASE_W
+      spriteState.frameHeight = data.frameHeight || BASE_H
+      spriteState.columns = data.columns || 8
+      spriteState.rows = data.rows || 9
+      spriteState.states = Array.isArray(data.states) && data.states.length
+        ? data.states
+        : DEFAULT_STATES
+      spriteState.currentState = 'idle'
+      spriteState.currentFrame = 0
+      applyFrame()
+      startAnimLoop()
+    }
+
+    function setImageMode(url) {
+      mode = 'image'
+      stopAnimLoop()
+      sprite.style.display = 'none'
+      img.style.display = 'block'
+      img.src = url
+    }
+
+    // 主进程发送显示数据：判断是 sprite 还是单图
+    ipcRenderer.on('pet:set-url', (event, data) => {
+      console.log('[pet] set-url received:', data)
+      if (!data || !data.url) {
+        console.warn('[pet] missing url in set-url payload')
+        return
+      }
+      const looksLikeSprite =
+        data.frameWidth || data.columns || (Array.isArray(data.states) && data.states.length)
+        || /spritesheet\.(webp|png)(\?|$)/i.test(data.url)
+      if (looksLikeSprite) {
+        setSpriteMode(data)
+      } else {
+        setImageMode(data.url)
+      }
+    })
+
+    // 主进程切换状态
+    ipcRenderer.on('pet:set-state', (event, data) => {
+      if (mode !== 'sprite' || !data || !data.state) return
+      const st = findState(data.state)
+      if (!st) return
+      if (spriteState.currentState !== st.name) {
+        spriteState.currentState = st.name
+        spriteState.currentFrame = 0
+        applyFrame()
+      }
+    })
+
+    // 点击宠物主体 → 进入主界面
+    container.addEventListener('click', (e) => {
+      if (e.target.closest('.pet-btn')) return
+      ipcRenderer.send('pet:focus-main')
+    })
+
+    // 关闭按钮
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      ipcRenderer.send('pet:close')
+    })
+
+    // ---------- 缩放：拖拽右下角按钮，左上缩小 / 右下放大 ----------
+    let resizing = false
+    let resizeStartX = 0, resizeStartY = 0
+    let resizeStartScale = 1.0
+
+    resizeBtn.addEventListener('pointerdown', (e) => {
+      e.stopPropagation()
+      resizeBtn.setPointerCapture(e.pointerId)
+      resizing = true
+      resizeStartX = e.screenX
+      resizeStartY = e.screenY
+      resizeStartScale = scale
+    })
+
+    resizeBtn.addEventListener('pointermove', (e) => {
+      if (!resizing) return
+      const dx = e.screenX - resizeStartX
+      const dy = e.screenY - resizeStartY
+      const sensitivity = 200
+      let newScale = resizeStartScale + (dx + dy) / 2 / sensitivity
+      newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, newScale))
+      scale = newScale
+      const w = Math.round(BASE_W * newScale)
+      const h = Math.round(BASE_H * newScale)
+      ipcRenderer.send('pet:resize', { width: w, height: h })
+    })
+
+    resizeBtn.addEventListener('pointerup', (e) => {
+      if (resizing) {
+        resizeBtn.releasePointerCapture(e.pointerId)
+        resizing = false
+      }
+    })
+
+    // ---------- 拖拽移动 ----------
+    let dragging = false
+    let lastX = 0, lastY = 0
+
+    container.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('.pet-btn')) return
+      container.setPointerCapture(e.pointerId)
+      dragging = true
+      lastX = e.screenX
+      lastY = e.screenY
+    })
+
+    container.addEventListener('pointermove', (e) => {
+      if (!dragging) return
+      const dx = e.screenX - lastX
+      const dy = e.screenY - lastY
+      ipcRenderer.send('pet:drag', { dx, dy })
+      lastX = e.screenX
+      lastY = e.screenY
+    })
+
+    container.addEventListener('pointerup', (e) => {
+      if (dragging) {
+        container.releasePointerCapture(e.pointerId)
+        dragging = false
+      }
+    })
+  </script>
+</body>
+</html>

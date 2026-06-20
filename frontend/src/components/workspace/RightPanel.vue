@@ -1,7 +1,17 @@
 <template>
   <aside v-show="visible" class="right-panel" :style="{ width: panelWidth + 'px' }">
     <!-- 拖动调整宽度的 handle -->
-    <div class="resize-handle" @mousedown="startResize"></div>
+    <div
+      class="resize-handle"
+      :class="{ resizing }"
+      @pointerdown="startResize"
+      @pointermove="onResize"
+      @pointerup="stopResize"
+      @pointercancel="stopResize"
+    ></div>
+
+    <!-- 拖动期间盖一层透明遮罩，防止 webview / iframe 抢走鼠标事件 -->
+    <div v-if="resizing" class="resize-shield"></div>
 
     <!-- Tab 切换栏 -->
     <div class="panel-tabs">
@@ -27,13 +37,24 @@
     <div class="panel-content">
       <ConsolePanel v-show="activeTab === 'console'" :visible="activeTab === 'console'" />
 
-      <BrowserPanel v-show="activeTab === 'browser'" :visible="activeTab === 'browser'" />
+      <BrowserPanel
+        v-show="activeTab === 'browser'"
+        :visible="activeTab === 'browser'"
+        :initial-url="browserPendingUrl"
+      />
 
       <GitPanel v-show="activeTab === 'git'" :visible="activeTab === 'git'" @show-diff="onShowDiff" @show-commit-diff="onShowCommitDiff" />
 
       <DiffPanel v-show="activeTab === 'diff'" :visible="activeTab === 'diff'" :file-path="diffFilePath" :commit-hash="diffCommitHash" />
 
       <ExplorerPanel v-show="activeTab === 'explorer'" :visible="activeTab === 'explorer'" />
+
+      <SideChatPanel
+        v-show="activeTab === 'sidechat'"
+        :visible="activeTab === 'sidechat'"
+        :session-id="sessionId"
+        :work-dir="workDir"
+      />
     </div>
   </aside>
 </template>
@@ -45,11 +66,14 @@ import BrowserPanel from '@/components/workspace/BrowserPanel.vue'
 import GitPanel from '@/components/workspace/GitPanel.vue'
 import DiffPanel from '@/components/workspace/DiffPanel.vue'
 import ExplorerPanel from '@/components/workspace/ExplorerPanel.vue'
+import SideChatPanel from '@/components/workspace/SideChatPanel.vue'
 
-type PanelTabId = 'console' | 'browser' | 'git' | 'diff' | 'explorer'
+type PanelTabId = 'console' | 'browser' | 'git' | 'diff' | 'explorer' | 'sidechat'
 
 const props = defineProps<{
   visible: boolean
+  sessionId?: string
+  workDir?: string
 }>()
 
 const emit = defineEmits<{
@@ -82,41 +106,52 @@ const tabs: { id: PanelTabId; label: string; icon: string }[] = [
     label: '文件',
     icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
   },
+  {
+    id: 'sidechat',
+    label: '临时对话',
+    icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+  },
 ]
 
 const activeTab = ref<PanelTabId>('console')
 const panelWidth = ref(480)
 const diffFilePath = ref<string | null>(null)
 const diffCommitHash = ref<string | null>(null)
+// 由 AssistantMessage 链接点击触发，传给 BrowserPanel 让其加载
+const browserPendingUrl = ref<string>('')
 
-// 拖动调整宽度
-let resizing = false
+// 拖动调整宽度（pointer 事件 + setPointerCapture：跨越 webview 也能稳定跟随）
+const resizing = ref(false)
 let startX = 0
 let startWidth = 0
+let activePointerId: number | null = null
 
-function startResize(e: MouseEvent) {
-  resizing = true
+function startResize(e: PointerEvent) {
+  resizing.value = true
   startX = e.clientX
   startWidth = panelWidth.value
-  document.addEventListener('mousemove', onResize)
-  document.addEventListener('mouseup', stopResize)
+  activePointerId = e.pointerId
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
   document.body.style.cursor = 'col-resize'
   document.body.style.userSelect = 'none'
   e.preventDefault()
 }
 
-function onResize(e: MouseEvent) {
-  if (!resizing) return
+function onResize(e: PointerEvent) {
+  if (!resizing.value || e.pointerId !== activePointerId) return
   // 向左拖动增大宽度
   const delta = startX - e.clientX
-  const newWidth = Math.min(Math.max(startWidth + delta, 320), 800)
+  const newWidth = Math.min(Math.max(startWidth + delta, 320), 1200)
   panelWidth.value = newWidth
 }
 
-function stopResize() {
-  resizing = false
-  document.removeEventListener('mousemove', onResize)
-  document.removeEventListener('mouseup', stopResize)
+function stopResize(e: PointerEvent) {
+  if (!resizing.value) return
+  resizing.value = false
+  if (activePointerId !== null) {
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(activePointerId) } catch { /* 忽略 */ }
+    activePointerId = null
+  }
   document.body.style.cursor = ''
   document.body.style.userSelect = ''
 }
@@ -142,12 +177,24 @@ function onFocusConsole() {
   activeTab.value = 'console'
 }
 
+// 监听 AI 回复中点击链接：切到浏览器面板并加载 URL
+function onOpenUrl(e: Event) {
+  const url = (e as CustomEvent).detail?.url
+  if (typeof url !== 'string' || !url) return
+  // 父级面板若被关闭也尝试请求展开（这里只能切 tab，开/关由上层管理）
+  activeTab.value = 'browser'
+  // 用 timestamp 拼一下确保同一 URL 也能触发 watch
+  browserPendingUrl.value = url
+}
+
 onMounted(() => {
   window.addEventListener('aries:focus-console', onFocusConsole)
+  window.addEventListener('aries:open-url', onOpenUrl as EventListener)
 })
 
 onUnmounted(() => {
   window.removeEventListener('aries:focus-console', onFocusConsole)
+  window.removeEventListener('aries:open-url', onOpenUrl as EventListener)
 })
 </script>
 
@@ -169,16 +216,40 @@ onUnmounted(() => {
 
 .resize-handle {
   position: absolute;
-  left: -3px;
+  left: -4px;
   top: 0;
   bottom: 0;
-  width: 6px;
+  width: 8px;
   cursor: col-resize;
   z-index: 10;
+  /* 命中区域稍宽，但视觉上仍是细线 */
+  touch-action: none;
 }
 
-.resize-handle:hover {
-  background: rgba(0, 120, 212, 0.2);
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+  transition: background 0.12s;
+  transform: translateX(-50%);
+}
+
+.resize-handle:hover::before,
+.resize-handle.resizing::before {
+  background: rgba(59, 130, 246, 0.6);
+}
+
+/* 拖动时全屏遮罩，确保 webview/iframe 不会拦截 pointer 事件 */
+.resize-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  cursor: col-resize;
+  background: transparent;
 }
 
 .panel-tabs {

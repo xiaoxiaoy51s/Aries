@@ -189,6 +189,7 @@ class WeChatRunner:
         self.client: Optional[WeChatBotClient] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     def _load_client(self) -> bool:
         config = _load_wechat_config()
@@ -222,11 +223,20 @@ class WeChatRunner:
         self._running = False
         if self.client:
             self.client.stop()
+        # 通知子线程的事件循环停掉
+        loop = self._loop
+        if loop and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                pass
         thread = self._thread
         if thread and thread.is_alive():
-            thread.join(timeout=15)
-        self.client = None
+            # 不无限等：bott 主循环看到 _running=False 后会自然退出
+            thread.join(timeout=5)
+        self._loop = None
         self._thread = None
+        self.client = None
         _log.info("[微信] 机器人已停止")
 
     def is_running(self) -> bool:
@@ -240,10 +250,17 @@ class WeChatRunner:
         assert self.client is not None
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        self._loop = loop
         try:
             loop.run_until_complete(self._async_run_loop())
+        except RuntimeError:
+            pass  # stop() 调用 loop.stop() 的正常退出路径
         finally:
-            loop.close()
+            self._loop = None
+            try:
+                loop.close()
+            except Exception:
+                pass
             self._running = False
 
     async def _async_run_loop(self):

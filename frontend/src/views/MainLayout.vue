@@ -86,20 +86,9 @@
               :class="{ active: currentSessionId === session.session_id }"
               :title="session.title"
               @click="selectSession(session.session_id)"
+              @contextmenu.prevent="onSessionContextMenu($event, session)"
             >
               <span class="session-title">{{ session.title || '空对话' }}</span>
-              <span class="session-actions">
-                <span class="session-btn" title="重命名" @click.stop="renameSession(session)">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
-                  </svg>
-                </span>
-                <span class="session-btn session-btn-danger" title="删除" @click.stop="deleteSessionItem(session)">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                  </svg>
-                </span>
-              </span>
             </li>
           </ul>
         </div>
@@ -163,6 +152,29 @@
 
     <!-- 搜索弹窗 -->
     <SearchDialog :visible="showSearch" @close="showSearch = false" @select="onSearchSelect" />
+
+    <!-- 会话右键菜单 -->
+    <Teleport to="body">
+      <div
+        v-if="sessionContextMenu.open"
+        class="session-ctx-menu"
+        :style="{ top: sessionContextMenu.y + 'px', left: sessionContextMenu.x + 'px' }"
+      >
+        <button class="session-ctx-item" @click="ctxRename">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+          </svg>
+          <span>重命名</span>
+        </button>
+        <div class="session-ctx-divider"></div>
+        <button class="session-ctx-item session-ctx-danger" @click="ctxDelete">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+          <span>删除</span>
+        </button>
+      </div>
+    </Teleport>
 
     <!-- 重命名弹窗 -->
     <div v-if="showRenameModal" class="modal-overlay" @click="cancelRename">
@@ -249,6 +261,41 @@ const renameInputRef = ref<HTMLInputElement | null>(null)
 const showDeleteModal = ref(false)
 const sessionToDelete = ref<ProjectSession | null>(null)
 
+// 会话右键菜单状态
+const sessionContextMenu = ref<{
+  open: boolean
+  x: number
+  y: number
+  session: ProjectSession | null
+}>({ open: false, x: 0, y: 0, session: null })
+
+function onSessionContextMenu(e: MouseEvent, session: ProjectSession) {
+  // 简单边界处理：菜单宽 ~140，高 ~80，避免溢出窗口
+  const menuWidth = 150
+  const menuHeight = 84
+  const x = Math.min(e.clientX, window.innerWidth - menuWidth - 4)
+  const y = Math.min(e.clientY, window.innerHeight - menuHeight - 4)
+  sessionContextMenu.value = { open: true, x, y, session }
+}
+
+function closeSessionContextMenu() {
+  if (sessionContextMenu.value.open) {
+    sessionContextMenu.value = { open: false, x: 0, y: 0, session: null }
+  }
+}
+
+function ctxRename() {
+  const s = sessionContextMenu.value.session
+  closeSessionContextMenu()
+  if (s) renameSession(s)
+}
+
+function ctxDelete() {
+  const s = sessionContextMenu.value.session
+  closeSessionContextMenu()
+  if (s) deleteSessionItem(s)
+}
+
 // 平台会话列表（根据 chat_messages 表中是否有对应 session_id 动态显示）
 const platformSessions = ref<{ id: string; name: string; platform: string }[]>([])
 
@@ -293,17 +340,32 @@ function onRefreshProjects() {
   void loadActivePlatforms()
 }
 
+function onGlobalCloseCtxMenu(e: MouseEvent | KeyboardEvent) {
+  // 任何点击 / Esc 都关闭菜单（菜单按钮自身的点击会先调到 ctxRename/ctxDelete 然后再触发这里）
+  if (e instanceof KeyboardEvent && e.key !== 'Escape') return
+  closeSessionContextMenu()
+}
+
 onMounted(async () => {
   await Promise.all([loadProjects(), modelStore.loadModels(), loadActivePlatforms()])
   window.addEventListener('aries:refresh-sessions', onRefreshProjects)
   window.addEventListener('aries:workdir-changed', onRefreshProjects)
   window.addEventListener('aries:open-session', onOpenSession)
+  window.addEventListener('click', onGlobalCloseCtxMenu)
+  window.addEventListener('keydown', onGlobalCloseCtxMenu)
+  window.addEventListener('contextmenu', (e) => {
+    // 在非会话项上右键也要关掉旧菜单（会话项 onSessionContextMenu 会重新打开）
+    const target = e.target as HTMLElement | null
+    if (!target?.closest('.session-sub')) closeSessionContextMenu()
+  })
 })
 
 onUnmounted(() => {
   window.removeEventListener('aries:refresh-sessions', onRefreshProjects)
   window.removeEventListener('aries:workdir-changed', onRefreshProjects)
   window.removeEventListener('aries:open-session', onOpenSession)
+  window.removeEventListener('click', onGlobalCloseCtxMenu)
+  window.removeEventListener('keydown', onGlobalCloseCtxMenu)
 })
 
 function createNewChat() {
@@ -634,7 +696,7 @@ function cancelDelete() {
 .session-sub {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   padding: 5px 8px 5px 12px;
   font-size: 12px;
   border-radius: 6px;
@@ -663,36 +725,60 @@ function cancelDelete() {
   text-overflow: ellipsis;
 }
 
-.session-actions {
-  display: none;
-  align-items: center;
-  gap: 2px;
-  flex-shrink: 0;
+/* 会话右键菜单 */
+.session-ctx-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 140px;
+  padding: 4px;
+  background: var(--bg-panel, #fff);
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  user-select: none;
 }
 
-.session-sub:hover .session-actions {
-  display: inline-flex;
-}
-
-.session-btn {
-  display: inline-flex;
+.session-ctx-item {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
-  color: var(--text-muted);
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text, #222);
+  font-size: 13px;
+  text-align: left;
+  border-radius: 5px;
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
 }
 
-.session-btn:hover {
-  background: var(--bg-panel);
-  color: var(--text);
+.session-ctx-item:hover {
+  background: var(--accent-hover, rgba(0, 0, 0, 0.05));
 }
 
-.session-btn-danger:hover {
-  color: #e5484d;
+.session-ctx-item svg {
+  flex-shrink: 0;
+  opacity: 0.75;
+}
+
+.session-ctx-divider {
+  height: 1px;
+  background: var(--border, rgba(0, 0, 0, 0.08));
+  margin: 2px 4px;
+}
+
+.session-ctx-danger {
+  color: #dc2626;
+}
+
+.session-ctx-danger:hover {
+  background: rgba(220, 38, 38, 0.08);
+  color: #b91c1c;
 }
 
 .session-list {

@@ -87,7 +87,15 @@
                 :class="{ active: selectedFile === file.path }"
                 @click="selectFile(file.path)"
               >
-                <span class="git-file-status" :class="file.status">{{ file.status }}</span>
+                <span class="git-file-icon">
+                  <img
+                    :src="getFileIconSrc(file.path)"
+                    width="16"
+                    height="16"
+                    alt=""
+                    @error="(e: Event) => ((e.target as HTMLImageElement).style.display = 'none')"
+                  />
+                </span>
                 <span class="git-file-path" :title="file.path">{{ file.path }}</span>
               </div>
             </div>
@@ -138,7 +146,15 @@
                   class="git-commit-file"
                   @click.stop="selectCommitFile(f.path, c.hash)"
                 >
-                  <span class="git-commit-file-status" :class="f.status">{{ f.status }}</span>
+                  <span class="git-commit-file-icon">
+                    <img
+                      :src="getFileIconSrc(f.path)"
+                      width="16"
+                      height="16"
+                      alt=""
+                      @error="(e: Event) => ((e.target as HTMLImageElement).style.display = 'none')"
+                    />
+                  </span>
                   <span class="git-commit-file-path" :title="f.path">{{ f.path }}</span>
                 </div>
               </div>
@@ -155,6 +171,16 @@ import { ref, watch, onMounted } from 'vue'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useModelStore } from '@/stores/model'
 import { storeToRefs } from 'pinia'
+import { getIconForFile, DEFAULT_FILE } from 'vscode-icons-js'
+
+const ICON_CDN = '/file-icons'
+
+function getFileIconSrc(path: string): string {
+  // 与 ExplorerTreeNode.vue 保持一致：基于文件名匹配 VSCode 图标
+  const name = path.split('/').pop() || path
+  const iconName = getIconForFile(name) || DEFAULT_FILE
+  return `${ICON_CDN}/${iconName}`
+}
 
 const props = defineProps<{
   visible?: boolean
@@ -563,24 +589,14 @@ watch(() => props.visible, (val) => {
   background: var(--accent-active);
 }
 
-.git-file-status {
+.git-file-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 16px;
   height: 16px;
-  font-size: 10px;
-  font-weight: 700;
-  border-radius: 3px;
   flex-shrink: 0;
 }
-
-.git-file-status.M { color: #c19c00; }
-.git-file-status.A { color: #107c10; }
-.git-file-status.D { color: #c50f1f; }
-.git-file-status.R { color: #0037da; }
-.git-file-status.\?  { color: #881798; }
-.git-file-status.U { color: #c50f1f; }
 
 .git-file-path {
   flex: 1;
@@ -683,24 +699,14 @@ watch(() => props.visible, (val) => {
   background: var(--accent-hover);
 }
 
-.git-commit-file-status {
+.git-commit-file-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
-  font-size: 9px;
-  font-weight: 700;
-  border-radius: 2px;
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
 }
-
-.git-commit-file-status.M { color: #c19c00; }
-.git-commit-file-status.A { color: #107c10; }
-.git-commit-file-status.D { color: #c50f1f; }
-.git-commit-file-status.R { color: #0037da; }
-.git-commit-file-status.\? { color: #881798; }
-.git-commit-file-status.U { color: #c50f1f; }
 
 .git-commit-file-path {
   flex: 1;

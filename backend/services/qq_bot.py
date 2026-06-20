@@ -170,6 +170,8 @@ class _QQRunner:
                 client = NonoQQBot(intents)
                 self._client = client
                 client.run(appid=self.app_id, secret=self.app_secret)
+            except RuntimeError:
+                pass  # stop() 正常退出路径
             except Exception as e:
                 _log.error("[QQ] 运行出错: %s", e)
             finally:
@@ -184,7 +186,25 @@ class _QQRunner:
         _log.info("[QQ] 机器人已在后台启动")
 
     def stop(self):
+        client = self._client
+        loop = self._loop
+        # botpy 的 client 暴露了 close / stop 之类的方法；优先用 call_soon_threadsafe
+        if loop and not loop.is_closed() and client is not None:
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    asyncio.run_coroutine_threadsafe(close(), loop)
+                except Exception as e:
+                    _log.debug("[QQ] 提交 close 失败: %s", e)
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                pass
+        thread = self._thread
+        if thread and thread.is_alive():
+            thread.join(timeout=5)
         self._client = None
+        self._loop = None
         self._thread = None
 
     def is_running(self) -> bool:

@@ -12,6 +12,7 @@ SessionLogger: 将 agent 每轮工作过程以 JSONL 格式写入文件（一条
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,10 @@ class SessionLogger:
         self._assistant_all = ""
         self._assistant_flushed_len = 0
         self._reasoning_buffer = ""
+        self._started_perf = time.perf_counter()
+        self._model = ""
+        self._token_usage: dict[str, Any] = {}
+        self._metadata_written = False
 
     def append_reasoning_delta(self, text: str) -> None:
         if not text:
@@ -150,8 +155,47 @@ class SessionLogger:
         })
         self._assistant_flushed_len = len(self._assistant_all)
 
+    def set_model(self, model: str) -> None:
+        self._model = model or ""
+
+    def set_token_usage(self, usage: dict[str, Any] | None) -> None:
+        if usage:
+            self._token_usage = usage
+
+    def add_token_usage(self, usage: dict[str, Any] | None) -> None:
+        if not usage:
+            return
+        api_usage = self._token_usage.setdefault("api_usage", {})
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            api_usage[key] = int(api_usage.get(key, 0) or 0) + int(usage.get(key, 0) or 0)
+
+    def duration_ms(self) -> int:
+        return int((time.perf_counter() - self._started_perf) * 1000)
+
+    def write_run_metadata(self) -> None:
+        if self._metadata_written:
+            return
+        self._metadata_written = True
+        event = {
+            "type": "run_metadata",
+            "model": self._model,
+            "duration_ms": self.duration_ms(),
+            "token_usage": self._token_usage,
+            "timestamp": _utc_now(),
+        }
+        _append_event(self.path, event)
+
+    def get_run_metadata(self) -> dict[str, Any]:
+        """返回当前运行元数据（不写盘），供流式推送使用。"""
+        return {
+            "model": self._model,
+            "duration_ms": self.duration_ms(),
+            "token_usage": self._token_usage,
+        }
+
     def finalize(self) -> None:
         self.flush_reasoning_segment()
+        self.write_run_metadata()
 
     def write_error_event(
         self,

@@ -10,6 +10,7 @@ from db.chat import (
     delete_session,
     get_conversation_history,
     get_recent_messages,
+    compact_session_if_needed,
 )
 from db.database import get_connection
 from db.sessions import (
@@ -156,6 +157,67 @@ def get_history(session_id: str, limit: int = 20, user_only: bool = False):
     return {
         "session_id": session_id,
         "history": history,
+    }
+
+
+@router.get("/{session_id}/context-usage")
+def get_session_context_usage(session_id: str):
+    """获取当前会话的上下文窗口占用情况（基于 token 估算）。
+
+    复用 get_memory_aware_context_messages + build_context_usage_breakdown，
+    供前端按需展示按"功能模块"细分的真实占用百分比。
+    """
+    from db.chat import get_memory_aware_context_messages
+    from utils.token_counter import build_context_usage_breakdown
+    from api.modes.agent_mode import (
+        build_agent_system_prompt_parts,
+        get_agent_skills_and_tools,
+    )
+
+    _, token_info = get_memory_aware_context_messages(session_id, model="")
+
+    # 取该 session 的工作目录，确保 rules.md 能被正确计算
+    meta = get_session_meta(session_id) or {}
+    work_dir = (meta.get("work_dir") or "").strip() or None
+
+    skills_context, tool_definitions, mcp_context = get_agent_skills_and_tools()
+    prompt_parts = build_agent_system_prompt_parts(
+        skills_context, work_dir=work_dir, session_id=session_id, mcp_context=mcp_context
+    )
+    breakdown = build_context_usage_breakdown(
+        system_prompt_base=prompt_parts["base"] + (prompt_parts.get("mcp") or ""),
+        tool_definitions=tool_definitions,
+        rules_text=prompt_parts["rules"],
+        skills_text=prompt_parts["skills"],
+        summarized_messages=token_info.get("summarized_messages") or [],
+        conversation_messages=token_info.get("conversation_messages") or [],
+        model="",
+    )
+    for k in ("recent_message_count", "memory_count", "reasoning_count", "recent_window_tokens"):
+        if token_info.get(k) is not None:
+            breakdown[k] = token_info[k]
+    return breakdown
+
+
+@router.post("/{session_id}/compact")
+def compact_session(session_id: str):
+    """手动触发会话压缩。
+
+    将较早的消息压缩为 session memory，保留近期窗口。
+    返回压缩结果（含压缩前后 token 估算）。
+    """
+    from db.chat import get_memory_aware_context_messages
+
+    before_info = get_memory_aware_context_messages(session_id, model="")[1]
+    memory = compact_session_if_needed(session_id, force=True)
+    after_info = get_memory_aware_context_messages(session_id, model="")[1]
+
+    return {
+        "session_id": session_id,
+        "compacted": memory is not None,
+        "memory": memory,
+        "before": before_info,
+        "after": after_info,
     }
 
 

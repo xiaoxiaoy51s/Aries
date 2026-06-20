@@ -1,6 +1,7 @@
 import json
 import sqlite3
 from .database import get_connection
+from utils.session_logger import resolve_message_log_events
 
 
 def save_message(
@@ -116,6 +117,10 @@ def get_chat_context_messages(
 
 
 def get_recent_messages(session_id: str, limit: int = 20) -> list[dict]:
+    return get_messages_after_id(session_id, after_id=0, limit=limit)
+
+
+def get_messages_after_id(session_id: str, after_id: int = 0, limit: int = 200) -> list[dict]:
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(chat_messages)")
@@ -126,11 +131,11 @@ def get_recent_messages(session_id: str, limit: int = 20) -> list[dict]:
         f"""
         SELECT id, role, content, reasoning_content, image_path, message_snapshot_json{mode_col}
         FROM chat_messages
-        WHERE session_id = ?
+        WHERE session_id = ? AND id > ?
         ORDER BY id DESC
         LIMIT ?
         """,
-        (session_id, limit),
+        (session_id, after_id, limit),
     ).fetchall()
 
     rows = list(rows)
@@ -153,18 +158,71 @@ def get_recent_messages(session_id: str, limit: int = 20) -> list[dict]:
     return result
 
 
+def _truncate_context_text(text: str, limit: int = 6000) -> str:
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...(内容已截断)"
+
+
+def _format_tool_args(args: object, limit: int = 1200) -> str:
+    try:
+        text = json.dumps(args, ensure_ascii=False)
+    except TypeError:
+        text = str(args)
+    return _truncate_context_text(text, limit)
+
+
+def build_work_trace_from_events(events: list[dict]) -> str:
+    """从 JSONL 事件重建一轮完整工作轨迹：reasoning + 工具调用 + 工具结果 + 最终回复。"""
+    lines: list[str] = []
+    for event in events:
+        event_type = event.get("type")
+        if event_type == "reasoning_text":
+            text = (event.get("text") or "").strip()
+            if text:
+                lines.append("【深度思考】\n" + _truncate_context_text(text))
+        elif event_type == "tool_call":
+            tool_name = event.get("tool_name") or "unknown_tool"
+            args = _format_tool_args(event.get("args") or {})
+            lines.append(f"【工具调用】{tool_name}\n参数：{args}")
+        elif event_type == "tool_result":
+            tool_name = event.get("tool_name") or "unknown_tool"
+            status = event.get("status") or "unknown"
+            result = event.get("result") or event.get("error") or ""
+            lines.append(
+                f"【工具结果】{tool_name} ({status})\n"
+                + _truncate_context_text(str(result), 3000)
+            )
+        elif event_type == "assistant_text":
+            text = (event.get("text") or "").strip()
+            if text:
+                lines.append("【阶段/最终回复】\n" + _truncate_context_text(text, 3000))
+    return "\n\n".join(lines).strip()
+
+
 def get_recent_agent_reasoning(session_id: str, rounds: int = 2) -> list[str]:
-    """取最近 N 轮 assistant 的深度思考，供 agent 模式注入上下文。"""
-    db_msgs = get_recent_messages(session_id, limit=50)
-    reasoning_list: list[str] = []
+    """取最近 N 轮 assistant 工作轨迹，包含 reasoning、工具调用、工具结果和最终回复。"""
+    db_msgs = get_recent_messages(session_id, limit=80)
+    trace_list: list[str] = []
     for msg in db_msgs:
         if msg.get("role") != "assistant":
             continue
-        reasoning = (msg.get("reasoning_content") or "").strip()
-        if not reasoning:
-            continue
-        reasoning_list.append(reasoning)
-    return reasoning_list[-rounds:]
+        events = resolve_message_log_events(msg.get("message_snapshot_json"))
+        trace = build_work_trace_from_events(events) if events else ""
+        if not trace:
+            reasoning = (msg.get("reasoning_content") or "").strip()
+            content = (msg.get("content") or "").strip()
+            parts = []
+            if reasoning:
+                parts.append("【深度思考】\n" + _truncate_context_text(reasoning))
+            if content:
+                parts.append("【最终回复】\n" + _truncate_context_text(content, 3000))
+            trace = "\n\n".join(parts)
+        if trace:
+            trace_list.append(trace)
+    return trace_list[-rounds:]
 
 
 def build_agent_reasoning_context(session_id: str, rounds: int = 2) -> dict | None:
@@ -180,6 +238,67 @@ def build_agent_reasoning_context(session_id: str, rounds: int = 2) -> dict | No
             + "\n\n".join(parts)
         ),
     }
+
+
+def compact_session_if_needed(session_id: str, force: bool = False) -> dict | None:
+    from memory.compaction import make_memory_record, should_compact, split_messages_for_compaction
+
+    boundary = get_latest_memory_boundary(session_id)
+    db_messages = get_messages_after_id(session_id, after_id=boundary, limit=200)
+    llm_messages = []
+    max_id = boundary
+    for msg in db_messages:
+        max_id = max(max_id, int(msg.get("id") or 0))
+        role = msg.get("role")
+        content = msg.get("content") or ""
+        if role in ("user", "assistant") and content.strip():
+            llm_messages.append({"role": role, "content": content})
+
+    if not force and not should_compact(llm_messages):
+        return None
+
+    to_compact, _ = split_messages_for_compaction(llm_messages)
+    if not to_compact:
+        return None
+
+    compact_until_count = len(to_compact)
+    compact_until_id = boundary
+    seen = 0
+    for msg in db_messages:
+        role = msg.get("role")
+        content = msg.get("content") or ""
+        if role in ("user", "assistant") and content.strip():
+            seen += 1
+            compact_until_id = int(msg.get("id") or compact_until_id)
+            if seen >= compact_until_count:
+                break
+
+    memory = make_memory_record(session_id, to_compact)
+    memory["source_until_message_id"] = compact_until_id
+    memory_id = save_session_memory(memory)
+    memory["id"] = memory_id
+    return memory
+
+
+def get_memory_aware_context_messages(
+    session_id: str,
+    current_user_text: str = "",
+    model: str = "",
+) -> tuple[list[dict], dict]:
+    from memory.context_loader import build_context_messages
+
+    compact_session_if_needed(session_id)
+    boundary = get_latest_memory_boundary(session_id)
+    db_messages = get_messages_after_id(session_id, after_id=boundary, limit=120)
+    memories = get_session_memories(session_id, limit=3)
+    reasoning_list = get_recent_agent_reasoning(session_id, rounds=2)
+    return build_context_messages(
+        db_messages=db_messages,
+        memories=memories,
+        reasoning_list=reasoning_list,
+        current_user_text=current_user_text,
+        model=model,
+    )
 
 
 def get_conversation_history(
@@ -273,8 +392,82 @@ def get_session_messages(session_id: str, limit: int = 100) -> list[dict]:
     return result
 
 
+def get_latest_memory_boundary(session_id: str) -> int:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT COALESCE(MAX(source_until_message_id), 0)
+            FROM session_memories
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        return int(row[0] or 0) if row else 0
+    finally:
+        conn.close()
+
+
+def get_session_memories(session_id: str, limit: int = 3) -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, session_id, summary, source_message_count, source_token_estimate,
+                   summary_token_estimate, source_until_message_id, created_at
+            FROM session_memories
+            WHERE session_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (session_id, limit),
+        ).fetchall()
+        result = []
+        for row in rows:
+            result.append({
+                "id": row[0],
+                "session_id": row[1],
+                "summary": row[2],
+                "source_message_count": row[3],
+                "source_token_estimate": row[4],
+                "summary_token_estimate": row[5],
+                "source_until_message_id": row[6],
+                "created_at": row[7],
+            })
+        result.reverse()
+        return result
+    finally:
+        conn.close()
+
+
+def save_session_memory(memory: dict) -> int:
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO session_memories (
+                session_id, summary, source_message_count, source_token_estimate,
+                summary_token_estimate, source_until_message_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                memory.get("session_id", ""),
+                memory.get("summary", ""),
+                memory.get("source_message_count", 0),
+                memory.get("source_token_estimate", 0),
+                memory.get("summary_token_estimate", 0),
+                memory.get("source_until_message_id"),
+            ),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+    finally:
+        conn.close()
+
+
 def delete_session(session_id: str) -> None:
     conn = get_connection()
     conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM session_memories WHERE session_id = ?", (session_id,))
     conn.commit()
     conn.close()

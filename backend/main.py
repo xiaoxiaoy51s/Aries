@@ -5,14 +5,23 @@ from pathlib import Path
 import os
 import asyncio
 import logging
+import signal
+import sys
+import threading
 from contextlib import asynccontextmanager
+
+# Windows: 主事件循环使用 SelectorEventLoop，避免 ProactorEventLoop 的 IOCP accept
+# 在 MCP 子进程启动时冲突导致 WinError 64（accept 循环崩溃后服务器无法接收新连接）。
+# MCP 线程会显式创建 ProactorEventLoop 以支持 stdio 子进程。
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-from api import config_router, chat_router, upload_router, skills_router, plugins_router, sessions_router, debug_router, scheduled_tasks_router, platforms_router, system_router, path_permissions_router, terminal_router, git_router, files_router, chat_ws_router
+from api import config_router, chat_router, upload_router, skills_router, plugins_router, sessions_router, debug_router, scheduled_tasks_router, platforms_router, system_router, path_permissions_router, terminal_router, git_router, files_router, chat_ws_router, memory_router, pets_router
 from db.database import init_database
 from utils.scheduler import run_scheduler
 
@@ -51,6 +60,14 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # 先停 bots（它们各自跑在子线程的事件循环里）
+    try:
+        from services.bot_manager import stop_all_bots
+        stop_all_bots()
+        print("[BotManager] 全部 bots 已停止")
+    except Exception as exc:
+        print(f"[Shutdown] 关闭 bots 异常: {exc}")
+
     mcp_pool.shutdown()
     print("[MCP] 连接池已关闭")
 
@@ -59,12 +76,26 @@ async def lifespan(app: FastAPI):
         from utils.cli_executor import CLIExecutor
         closed_terms = TerminalManager.close_all_sessions()
         closed_procs = CLIExecutor.terminate_all_active(action="terminate")
+        cleared = CLIExecutor.clear_runtime_dir()
         if closed_terms:
             print(f"[Terminal] 关闭 {len(closed_terms)} 个终端会话")
         if closed_procs:
             print(f"[CLI] 终止 {len(closed_procs)} 个子进程")
+        if cleared:
+            print(f"[CLI] 清理 {cleared} 个运行时残留文件")
     except Exception as exc:
         print(f"[Shutdown] 清理终端/子进程异常: {exc}")
+
+    # 清理 PTY 临时脚本和捕获文件
+    try:
+        import shutil
+        from pathlib import Path
+        pty_jobs_dir = Path.home() / ".Aries" / "temp" / "cli_runtime"
+        if pty_jobs_dir.exists():
+            shutil.rmtree(pty_jobs_dir, ignore_errors=True)
+            print(f"[Shutdown] 已清理 CLI 运行时目录: {pty_jobs_dir}")
+    except Exception as exc:
+        print(f"[Shutdown] 清理 CLI 运行时文件异常: {exc}")
 
     scheduler_task.cancel()
     try:
@@ -92,6 +123,11 @@ uploads_path = (Path.home() / ".Aries" / "uploads").resolve()
 uploads_path.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(uploads_path)), name="uploads")
 
+# 挂载宠物资源目录：~/.Aries/pets（Codex 兼容格式：spritesheet.webp + pet.json）
+pet_gifs_path = (Path.home() / ".Aries" / "pets").resolve()
+pet_gifs_path.mkdir(parents=True, exist_ok=True)
+app.mount("/pets/static", StaticFiles(directory=str(pet_gifs_path)), name="pets-static")
+
 app.include_router(config_router)
 app.include_router(chat_router)
 app.include_router(upload_router)
@@ -107,6 +143,8 @@ app.include_router(terminal_router)
 app.include_router(git_router)
 app.include_router(files_router)
 app.include_router(chat_ws_router)
+app.include_router(memory_router)
+app.include_router(pets_router)
 
 
 @app.get("/")
@@ -121,5 +159,31 @@ def health_check():
 
 if __name__ == "__main__":
     import uvicorn
+
     port = int(os.environ.get("BACKEND_PORT", 30000))
+
+    # 兜底：lifespan 退出 + bots 关闭后，如果进程还卡在子线程上，
+    # 超过 FORCE_EXIT_TIMEOUT 秒就 os._exit，避免 Ctrl+C 后一直挂着。
+    FORCE_EXIT_TIMEOUT = float(os.environ.get("ARIES_FORCE_EXIT_TIMEOUT", "8"))
+
+    def _force_exit():
+        print(f"[Shutdown] 超时 {FORCE_EXIT_TIMEOUT}s，强制退出")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
+
+    def _install_force_exit_timer():
+        # 只在收到退出信号后才启动计时器
+        def _handler(signum, frame):
+            timer = threading.Timer(FORCE_EXIT_TIMEOUT, _force_exit)
+            timer.daemon = True
+            timer.start()
+            # 默认行为交回：抛 KeyboardInterrupt，让 uvicorn 走优雅退出
+        try:
+            signal.signal(signal.SIGINT, _handler)
+            signal.signal(signal.SIGTERM, _handler)
+        except (ValueError, OSError):
+            pass  # 非主线程调用时可能会失败，忽略
+
+    _install_force_exit_timer()
     uvicorn.run(app, host="127.0.0.1", port=port, reload=False)

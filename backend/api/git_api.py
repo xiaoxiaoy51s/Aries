@@ -190,6 +190,113 @@ async def git_diff(
     return {"original": original, "modified": modified}
 
 
+# --- 二进制 / 图片 文件展示支持 -------------------------------------------------
+
+_IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico"}
+_BINARY_EXTS = {
+    "png", "jpg", "jpeg", "gif", "bmp", "webp", "ico",
+    "pdf", "zip", "tar", "gz", "rar", "7z",
+    "exe", "dll", "so", "dylib", "class", "pyc",
+    "mp3", "mp4", "wav", "flac", "ogg", "mov", "avi", "mkv",
+    "ttf", "otf", "woff", "woff2",
+    "db", "sqlite",
+}
+
+_MIME_BY_EXT = {
+    "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+    "gif": "image/gif", "bmp": "image/bmp", "webp": "image/webp",
+    "svg": "image/svg+xml", "ico": "image/x-icon",
+}
+
+
+def _ext_of(path: str) -> str:
+    return path.rsplit(".", 1)[-1].lower() if "." in path else ""
+
+
+def _run_git_bytes(work_dir: str, args: list[str]) -> tuple[int, bytes, str]:
+    """执行 git 命令并返回原始字节 stdout（用于读取二进制内容）。"""
+    try:
+        result = subprocess.run(
+            ["git"] + args,
+            cwd=work_dir,
+            capture_output=True,
+            timeout=30,
+        )
+        stderr = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+        return result.returncode, result.stdout or b"", stderr
+    except subprocess.TimeoutExpired:
+        return -1, b"", "git command timed out"
+    except FileNotFoundError:
+        return -1, b"", "git not found"
+    except Exception as e:
+        return -1, b"", str(e)
+
+
+@router.get("/show-file")
+async def git_show_file(
+    work_dir: str | None = None,
+    ref: str | None = None,
+    file_path: str | None = None,
+) -> dict[str, Any]:
+    """读取指定 ref（如 HEAD、HEAD^、commit hash）下的文件内容。
+
+    自动判定图片/二进制：
+      - 图片：返回 base64 + mime
+      - 二进制：返回 size + ext，不返回内容
+      - 文本：返回 utf-8 文本
+    特殊 ref="WORKTREE" 表示读取当前工作区文件。
+    """
+    wd = _normalize_work_dir(work_dir)
+    if not file_path:
+        return {"exists": False}
+
+    ext = _ext_of(file_path)
+    is_image = ext in _IMAGE_EXTS
+    is_binary = ext in _BINARY_EXTS
+
+    if ref and ref.upper() == "WORKTREE":
+        full = Path(wd) / file_path
+        if not full.exists() or not full.is_file():
+            return {"exists": False}
+        data = full.read_bytes()
+    else:
+        spec = f"{ref or 'HEAD'}:{file_path}"
+        code, data, _err = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _run_git_bytes(wd, ["show", spec])
+        )
+        if code != 0:
+            return {"exists": False}
+
+    size = len(data)
+    if is_image:
+        import base64
+        return {
+            "exists": True,
+            "is_image": True,
+            "is_binary": True,
+            "mime": _MIME_BY_EXT.get(ext, "application/octet-stream"),
+            "content": base64.b64encode(data).decode("ascii"),
+            "size": size,
+            "ext": ext,
+        }
+    if is_binary:
+        return {
+            "exists": True,
+            "is_image": False,
+            "is_binary": True,
+            "size": size,
+            "ext": ext,
+        }
+    return {
+        "exists": True,
+        "is_image": False,
+        "is_binary": False,
+        "content": data.decode("utf-8", errors="replace"),
+        "size": size,
+        "ext": ext,
+    }
+
+
 def _read_file(work_dir: str, file_path: str) -> str:
     """安全读取文件内容。"""
     try:

@@ -19,109 +19,33 @@
     <!-- 空状态 -->
     <div v-if="!hasActiveChat" class="chat-empty">
       <h1 class="welcome-title">我们要在 Aries 里构建什么？</h1>
-      <div class="composer composer-with-slash">
-        <SlashComposerInput
-          ref="emptyComposerRef"
-          v-model:plain-text="inputMessage"
-          v-model:active-command="activeSlashCommand"
-          v-model:objective="commandObjective"
-          v-model:plugin-menu-open="pluginMenuOpen"
-          v-model:attached-images="attachedImages"
-          :rows="3"
-          :disabled="isSending"
-          @send="sendMessage"
-        />
-        <div class="composer-toolbar">
-          <div class="composer-left">
-            <button type="button" class="icon-btn" title="上传图片" @click="openImagePicker">+</button>
-            <div class="workdir-picker">
-              <button
-                type="button"
-                class="icon-btn workdir-btn"
-                :title="workDirLabel || '选择工作目录'"
-                @click="workDirMenuOpen = !workDirMenuOpen"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-                </svg>
-                <span v-if="workDir" class="workdir-name">{{ workDirLabel }}</span>
-              </button>
-              <div v-if="workDirMenuOpen" class="workdir-menu" @click.stop>
-                <div class="workdir-menu-title">历史工作目录</div>
-                <ul v-if="workDirHistory.length" class="workdir-menu-list">
-                  <li
-                    v-for="dir in workDirHistory"
-                    :key="dir"
-                    class="workdir-menu-item"
-                    :class="{ active: dir === workDir }"
-                    @click="applyWorkDir(dir); workDirMenuOpen = false"
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-                    </svg>
-                    <span class="workdir-menu-path" :title="dir">{{ dir }}</span>
-                  </li>
-                </ul>
-                <div v-else class="workdir-menu-empty">暂无历史工作目录</div>
-                <div class="workdir-menu-divider"></div>
-                <button type="button" class="workdir-menu-new" @click="pickWorkDir">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 5v14M5 12h14"/>
-                  </svg>
-                  <span>新工作目录</span>
-                </button>
-              </div>
-            </div>
-          </div>
-          <div class="composer-right">
-            <button
-              type="button"
-              class="icon-btn plugin-btn"
-              :class="{ 'plugin-btn--active': pluginMenuOpen }"
-              title="插件"
-              :disabled="isSending || !!activeSlashCommand"
-              @click="pluginMenuOpen = !pluginMenuOpen"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="3" y="3" width="7" height="7" rx="1.5"/>
-                <rect x="14" y="3" width="7" height="7" rx="1.5"/>
-                <rect x="14" y="14" width="7" height="7" rx="1.5"/>
-                <rect x="3" y="14" width="7" height="7" rx="1.5"/>
-              </svg>
-            </button>
-            <select v-model="selectedModel" class="model-select">
-              <option v-if="modelStore.modelList.length === 0" value="" disabled>暂无模型</option>
-              <option v-for="model in modelStore.modelList" :key="model.id" :value="model.model">
-                {{ model.name }}
-              </option>
-            </select>
-            <button
-              v-if="!isSending"
-              type="button"
-              class="send-btn"
-              @click="sendMessage"
-              :disabled="!canSend"
-            >
-              <span class="send-icon-inner">
-                <svg class="send-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="m5 12 7-7 7 7M12 19V5"/>
-                </svg>
-              </span>
-            </button>
-            <button
-              v-else
-              type="button"
-              class="send-btn send-btn--streaming"
-              title="停止生成"
-              @click="stopGeneration"
-            >
-              <span class="loading-spinner">
-                <span class="spinner-circle"></span>
-              </span>
-            </button>
-          </div>
-        </div>
-      </div>
+      <ChatComposer
+        ref="emptyComposerRef"
+        v-model="inputMessage"
+        v-model:attached-images="attachedImages"
+        v-model:active-slash-command="activeSlashCommand"
+        v-model:command-objective="commandObjective"
+        v-model:plugin-menu-open="pluginMenuOpen"
+        :is-sending="isSending"
+        v-model:selected-model="selectedModel"
+        :model-list="modelStore.modelList"
+        :can-send="canSend"
+        :show-work-dir="true"
+        :work-dir="workDir"
+        :work-dir-label="workDirLabel"
+        :work-dir-history="workDirHistory"
+        :context-usage-percent="contextUsagePercent"
+        :context-usage-info="contextUsageBreakdown"
+        :session-id="currentSessionId"
+        :rows="3"
+        @send="sendMessage"
+        @stop="stopGeneration"
+        @open-image-picker="openImagePicker"
+        @pick-work-dir="pickWorkDir"
+        @apply-work-dir="applyWorkDir"
+        @toggle-side-chat="rightPanelVisible = !rightPanelVisible"
+        @compact-done="onCompactDone"
+      />
     </div>
 
     <!-- 对话中状态 -->
@@ -160,11 +84,39 @@
               :is-loading="msg.isLoading"
               :text-color="textColor"
               :font-size="fontSize"
+              :meta="msg.meta"
             />
           </div>
         </div>
       </div>
-      <div class="composer composer-bottom composer-with-slash">
+      <ChatComposer
+        ref="activeComposerRef"
+        v-model="inputMessage"
+        v-model:attached-images="attachedImages"
+        v-model:active-slash-command="activeSlashCommand"
+        v-model:command-objective="commandObjective"
+        v-model:plugin-menu-open="pluginMenuOpen"
+        :is-sending="isSending"
+        v-model:selected-model="selectedModel"
+        :model-list="modelStore.modelList"
+        :can-send="canSend"
+        :show-work-dir="false"
+        :work-dir="workDir"
+        :work-dir-label="workDirLabel"
+        :work-dir-history="workDirHistory"
+        :context-usage-percent="contextUsagePercent"
+        :context-usage-info="contextUsageBreakdown"
+        :session-id="currentSessionId"
+        :rows="2"
+        is-bottom
+        @send="sendMessage"
+        @stop="stopGeneration"
+        @open-image-picker="openImagePicker"
+        @pick-work-dir="pickWorkDir"
+        @apply-work-dir="applyWorkDir"
+        @toggle-side-chat="rightPanelVisible = !rightPanelVisible"
+        @compact-done="onCompactDone"
+      >
         <DangerCommandConfirm
           v-if="pendingToolConfirmation"
           :description="confirmDescription"
@@ -173,82 +125,17 @@
           @submit="onDangerConfirmSubmit"
           @skip="onToolCancel(pendingToolConfirmation.toolCallId)"
         />
-        <SlashComposerInput
-          ref="activeComposerRef"
-          v-model:plain-text="inputMessage"
-          v-model:active-command="activeSlashCommand"
-          v-model:objective="commandObjective"
-          v-model:plugin-menu-open="pluginMenuOpen"
-          v-model:attached-images="attachedImages"
-          :rows="2"
-          :disabled="isSending"
-          @send="sendMessage"
-        />
-        <div class="composer-toolbar">
-          <div class="composer-left">
-            <button
-              type="button"
-              class="icon-btn"
-              title="上传图片"
-              :disabled="isSending || !!activeSlashCommand"
-              @click="openImagePicker"
-            >
-              +
-            </button>
-          </div>
-          <div class="composer-right">
-            <button
-              type="button"
-              class="icon-btn plugin-btn"
-              :class="{ 'plugin-btn--active': pluginMenuOpen }"
-              title="插件"
-              :disabled="isSending || !!activeSlashCommand"
-              @click="pluginMenuOpen = !pluginMenuOpen"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="3" y="3" width="7" height="7" rx="1.5"/>
-                <rect x="14" y="3" width="7" height="7" rx="1.5"/>
-                <rect x="14" y="14" width="7" height="7" rx="1.5"/>
-                <rect x="3" y="14" width="7" height="7" rx="1.5"/>
-              </svg>
-            </button>
-            <select v-model="selectedModel" class="model-select">
-              <option v-for="model in modelStore.modelList" :key="model.id" :value="model.model">
-                {{ model.name }}
-              </option>
-            </select>
-            <button
-              v-if="!isSending"
-              type="button"
-              class="send-btn"
-              @click="sendMessage"
-              :disabled="!canSend"
-            >
-              <span class="send-icon-inner">
-                <svg class="send-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="m5 12 7-7 7 7M12 19V5"/>
-                </svg>
-              </span>
-            </button>
-            <button
-              v-else
-              type="button"
-              class="send-btn send-btn--streaming"
-              title="停止生成"
-              @click="stopGeneration"
-            >
-              <span class="loading-spinner">
-                <span class="spinner-circle"></span>
-              </span>
-            </button>
-          </div>
-        </div>
-      </div>
+      </ChatComposer>
     </div>
     </div>
 
-    <!-- 右侧面板：控制台/浏览器/Git/Diff -->
-    <RightPanel :visible="rightPanelVisible" @close="rightPanelVisible = false" />
+    <!-- 右侧面板：控制台/浏览器/Git/Diff/临时对话 -->
+    <RightPanel
+      :visible="rightPanelVisible"
+      :session-id="currentSessionId"
+      :work-dir="workDir"
+      @close="rightPanelVisible = false"
+    />
 
     <!-- 顶部 Toast 通知 -->
     <Transition name="toast">
@@ -262,12 +149,13 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useModelStore } from '@/stores/model'
-import { usePrivacyStore, extractCommandPrefix } from '@/stores/privacy'
+import { usePrivacyStore } from '@/stores/privacy'
 import { streamChat, streamVision, stopChat, jsonToStreamEvent, type StreamEvent } from '@/api/chat'
 import { confirmTool } from '@/api/git'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { getSessionMessages, getSession, updateSessionMeta } from '@/api/sessions'
+import { getSessionMessages, getSession, updateSessionMeta, getSessionContextUsage } from '@/api/sessions'
 import AssistantMessage from '@/components/AssistantMessage.vue'
+import ChatComposer from '@/components/ChatComposer.vue'
 import DangerCommandConfirm from '@/components/DangerCommandConfirm.vue'
 import SlashComposerInput, { type ComposerImage } from '@/components/SlashComposerInput.vue'
 import UserMessageContent from '@/components/UserMessageContent.vue'
@@ -318,9 +206,11 @@ const messagesContainer = ref<HTMLElement>()
 const SCROLL_IDLE_MS = 5000
 let lastPointerActivityAt = 0
 let scrollIdleTimer: ReturnType<typeof setTimeout> | null = null
-const emptyComposerRef = ref<InstanceType<typeof SlashComposerInput>>()
-const activeComposerRef = ref<InstanceType<typeof SlashComposerInput>>()
+const emptyComposerRef = ref<InstanceType<typeof ChatComposer>>()
+const activeComposerRef = ref<InstanceType<typeof ChatComposer>>()
 const currentSessionId = ref<string | undefined>(undefined)
+const contextUsagePercent = ref(0)
+const contextUsageBreakdown = ref<import('@/api/sessions').ContextUsageInfo | null>(null)
 let streamAbortController: AbortController | null = null
 
 // 平台消息 WebSocket：实时接收飞书/QQ/微信等平台的新消息通知
@@ -351,6 +241,7 @@ function startChatWs() {
       } else if (data.type === 'session_update') {
         // AI 回复完成 - 重置流式状态，强制加载最终结果
         platformStreaming = false
+        clearPetStatus()
         await loadNewMessages(true)
       }
     } catch {
@@ -536,6 +427,15 @@ interface MessageBlock {
   danger_types?: string[]
 }
 
+interface MessageMeta {
+  model?: string
+  duration_ms?: number
+  token_usage?: {
+    context?: { usage_percent?: number; estimated_tokens?: number; context_window?: number }
+    api_usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
+  }
+}
+
 interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
@@ -549,6 +449,7 @@ interface ChatMessage {
   isLoading?: boolean
   messageSnapshotJson?: string
   hasSnapshot?: boolean
+  meta?: MessageMeta
 }
 
 function enrichUserMessage(content: string): Pick<ChatMessage, 'content' | 'slashCommand' | 'slashBody'> {
@@ -631,6 +532,18 @@ watch(() => modelStore.activeModel, (model) => {
   }
 }, { immediate: true })
 
+// 压缩完成后刷新上下文占用
+async function onCompactDone() {
+  if (!currentSessionId.value) return
+  try {
+    const usage = await getSessionContextUsage(currentSessionId.value)
+    contextUsagePercent.value = Math.round(usage.usage_percent ?? 0)
+    contextUsageBreakdown.value = usage
+  } catch {
+    // ignore
+  }
+}
+
 // 监听侧边栏新对话事件
 function onNewChat(e?: Event) {
   stopChatWs()
@@ -640,6 +553,8 @@ function onNewChat(e?: Event) {
   inputMessage.value = ''
   clearAttachedImages()
   clearComposerCommand()
+  contextUsagePercent.value = 0
+  contextUsageBreakdown.value = null
   const newWorkDir = (e as CustomEvent | undefined)?.detail?.workDir || DEFAULT_WORK_DIR
   pendingWorkDir.value = newWorkDir
   // 立即更新 UI 显示的工作目录，让用户看到正确的项目路径
@@ -656,7 +571,6 @@ const pendingWorkDir = ref('')
 // 当前工作目录（用于标签显示 + 选择）
 const DEFAULT_WORK_DIR = '~/.Aries/work_dir'
 const workDir = ref(DEFAULT_WORK_DIR)
-const workDirMenuOpen = ref(false)
 const workDirHistory = ref<string[]>([])
 const workDirLabel = computed(() => {
   if (!workDir.value) return 'work_dir'
@@ -764,6 +678,16 @@ async function loadSessionById(id: string) {
     // 会话元数据缺失时仍尝试加载消息
   }
 
+  // 获取当前会话的上下文占用，供压缩菜单 badge 展示
+  try {
+    const usage = await getSessionContextUsage(id)
+    contextUsagePercent.value = Math.round(usage.usage_percent ?? 0)
+    contextUsageBreakdown.value = usage
+  } catch {
+    contextUsagePercent.value = 0
+    contextUsageBreakdown.value = null
+  }
+
   try {
     const data = await getSessionMessages(id, 100)
     const msgs: ChatMessage[] = (data.messages || []).map((m: any) => {
@@ -846,6 +770,7 @@ async function loadMessageSnapshot(
     console.log(`[snapshot] 解析后 ${parsed.length} 个 SnapshotEvent`)
 
     const blocks: MessageBlock[] = []
+    let snapshotMeta: MessageMeta | undefined
 
     for (const event of parsed) {
       switch (event.type) {
@@ -899,6 +824,13 @@ async function loadMessageSnapshot(
             error: event.content,
           })
           break
+
+        case 'run_metadata':
+          // 运行元数据：模型、时长、token 使用
+          if (event.meta) {
+            snapshotMeta = event.meta
+          }
+          break
       }
     }
 
@@ -933,6 +865,7 @@ async function loadMessageSnapshot(
         }, []),
       content: answerText || errorText || prev.content,
       hasSnapshot: true,
+      meta: snapshotMeta || prev.meta,
     }
   } catch (err) {
     console.error('加载快照失败:', err)
@@ -1023,13 +956,12 @@ function applyReasoningContentFallback(
   }
 }
 
-function onGlobalKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && workDirMenuOpen.value) {
-    workDirMenuOpen.value = false
-  }
+function onFocusConsole() {
+  rightPanelVisible.value = true
 }
 
-function onFocusConsole() {
+// AI 回复中点击链接：把右侧面板展开（具体切到浏览器 tab 由 RightPanel 处理）
+function onOpenUrlFromMessage() {
   rightPanelVisible.value = true
 }
 
@@ -1050,16 +982,42 @@ onMounted(() => {
   window.addEventListener('aries:load-session', onLoadSession)
   window.addEventListener('aries:workdir-changed', onWorkDirChanged)
   window.addEventListener('aries:focus-console', onFocusConsole)
+  window.addEventListener('aries:open-url', onOpenUrlFromMessage)
   window.addEventListener('aries:toast', onToast)
   window.addEventListener('aries:add-to-chat', onAddToChat)
-  document.addEventListener('mousedown', closeWorkDirMenu)
-  document.addEventListener('keydown', onGlobalKeydown)
   loadWorkDir()
   // 确保模型列表已加载（避免 MainLayout 加载未完成导致下拉框为空）
   void modelStore.loadModels()
   if (props.sessionIdToLoad) {
     void loadSessionById(props.sessionIdToLoad)
   }
+  // 自动恢复桌面宠物
+  restorePet()
+})
+
+// ---------- 宠物持久化恢复 ----------
+function restorePet() {
+  try {
+    // 用户上次明确关闭过，则不自动恢复
+    if (localStorage.getItem('pet:enabled') === '0') return
+    const saved = localStorage.getItem('pet:active')
+    if (!saved) return
+    const spec = JSON.parse(saved)
+    if (!spec || typeof spec !== 'object' || !spec.url) return
+    // 旧版仅含 { url, name } 不带 sprite metadata：可能指向已迁走的 GIF，丢弃缓存
+    const isNewFormat = spec.frameWidth || spec.columns || Array.isArray(spec.states)
+      || /spritesheet\.(webp|png)(\?|$)/i.test(spec.url)
+    if (!isNewFormat) {
+      localStorage.removeItem('pet:active')
+      return
+    }
+    window.electronAPI?.showPet(spec)
+  } catch { /* 忽略 */ }
+}
+
+// 监听宠物窗口被用户从右上角关闭按钮关闭：同步持久化"已关闭"
+window.electronAPI?.onPetClose?.(() => {
+  try { localStorage.setItem('pet:enabled', '0') } catch { /* 忽略 */ }
 })
 
 watch(() => props.sessionIdToLoad, (id) => {
@@ -1077,20 +1035,53 @@ onUnmounted(() => {
   window.removeEventListener('aries:load-session', onLoadSession)
   window.removeEventListener('aries:workdir-changed', onWorkDirChanged)
   window.removeEventListener('aries:focus-console', onFocusConsole)
+  window.removeEventListener('aries:open-url', onOpenUrlFromMessage)
   window.removeEventListener('aries:toast', onToast)
   window.removeEventListener('aries:add-to-chat', onAddToChat)
-  document.removeEventListener('mousedown', closeWorkDirMenu)
-  document.removeEventListener('keydown', onGlobalKeydown)
 })
 
-function closeWorkDirMenu(e: MouseEvent) {
-  const target = e.target as HTMLElement | null
-  if (target && target.closest('.workdir-picker')) return
-  workDirMenuOpen.value = false
+// ---------- 宠物窗口状态推送 ----------
+let petStatusPhase = ''
+let petReasoningBuf = '' // 累积思考内容
+let petContentBuf = ''   // 累积回复内容
+
+function sendPetStatus(text: string) {
+  try {
+    window.electronAPI?.sendPetStatus(text)
+  } catch { /* 非 Electron 环境忽略 */ }
+}
+
+function clearPetStatus() {
+  petStatusPhase = ''
+  petReasoningBuf = ''
+  petContentBuf = ''
+  try {
+    window.electronAPI?.clearPetStatus()
+    window.electronAPI?.setPetState?.('idle')
+  } catch { /* 非 Electron 环境忽略 */ }
+}
+
+/** 阶段切换时，把上一阶段的文字内容推送到宠物窗口 */
+function flushPetStatus(oldPhase: string) {
+  if (oldPhase === 'reasoning' && petReasoningBuf.trim()) {
+    const text = petReasoningBuf.trim()
+    sendPetStatus(text.length > 200 ? text.slice(0, 200) + '…' : text)
+    petReasoningBuf = ''
+  } else if (oldPhase === 'content' && petContentBuf.trim()) {
+    const text = petContentBuf.trim()
+    sendPetStatus(text.length > 200 ? text.slice(0, 200) + '…' : text)
+    petContentBuf = ''
+  }
 }
 
 function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
   if (evt.type === 'content' && evt.data) {
+    if (petStatusPhase !== 'content') {
+      flushPetStatus(petStatusPhase)
+      petStatusPhase = 'content'
+      window.electronAPI?.setPetState?.('waving')
+    }
+    petContentBuf += evt.data
     assistantMsg.content += evt.data
     const blocks = (assistantMsg.blocks || []).slice()
     const lastBlock = blocks[blocks.length - 1]
@@ -1101,6 +1092,12 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
     }
     assistantMsg.blocks = blocks
   } else if (evt.type === 'reasoning') {
+    if (petStatusPhase !== 'reasoning') {
+      flushPetStatus(petStatusPhase)
+      petStatusPhase = 'reasoning'
+      window.electronAPI?.setPetState?.('waiting')
+    }
+    petReasoningBuf += evt.data
     if (!assistantMsg.reasoning) assistantMsg.reasoning = []
     const blocks = (assistantMsg.blocks || []).slice()
 
@@ -1119,6 +1116,9 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
   } else if (evt.type === 'tool_call') {
     if (!assistantMsg.tools) assistantMsg.tools = []
     if (!assistantMsg.blocks) assistantMsg.blocks = []
+    flushPetStatus(petStatusPhase)
+    petStatusPhase = 'tool'
+    window.electronAPI?.setPetState?.('review')
     const toolCallId = String(evt.data.tool_call_id || '').trim()
     // 查找已有的同 tool_call_id 的 tool block（避免危险命令确认重发时重复创建）
     let existingBlockIdx = -1
@@ -1165,6 +1165,14 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
     }
   } else if (evt.type === 'tool_result') {
     if (!assistantMsg.tools) assistantMsg.tools = []
+    const _toolName = evt.data.tool_name || 'tool'
+    const _ok = evt.data.status !== 'error'
+    const _output = (evt.data.output || '').trim()
+    let _msg = `${_ok ? '✅' : '❌'} ${_toolName}`
+    if (_output) {
+      _msg += ': ' + (_output.length > 150 ? _output.slice(0, 150) + '…' : _output)
+    }
+    sendPetStatus(_msg)
     const lastTool = assistantMsg.tools[assistantMsg.tools.length - 1]
     if (lastTool && lastTool.name === evt.data.tool_name) {
       lastTool.status = evt.data.status || 'completed'
@@ -1343,23 +1351,14 @@ async function onToolCancel(toolCallId: string) {
   }
 }
 
-async function onDangerConfirmSubmit(mode: 'yes' | 'yes_remember' | 'no') {
+async function onDangerConfirmSubmit(mode: 'yes' | 'no') {
   const pending = pendingToolConfirmation.value
   if (!pending) return
-  if (mode === 'yes_remember') {
-    const prefix = extractCommandPrefix(pending.command)
-    if (prefix) privacyStore.addCommandPrefix(prefix)
-    await onToolConfirm(pending.toolCallId)
-    return
-  }
   if (mode === 'yes') {
     await onToolConfirm(pending.toolCallId)
     return
   }
   await onToolCancel(pending.toolCallId)
-  inputMessage.value = '请不要执行上述命令，'
-  await nextTick()
-  activeComposerRef.value?.focus?.()
 }
 
 watch(pendingToolConfirmation, (pending) => {
@@ -1385,6 +1384,7 @@ async function stopGeneration() {
   }
   streamAbortController?.abort()
   isSending.value = false
+  clearPetStatus()
   const lastAssistant = [...messages.value].reverse().find((m) => m.role === 'assistant')
   if (lastAssistant) {
     lastAssistant.isLoading = false
@@ -1417,6 +1417,23 @@ async function runAssistantStream(
     for await (const event of stream) {
       if (event.meta?.session_id) {
         onMeta?.(event.meta.session_id)
+      }
+      if (event.type === 'context_usage') {
+        const pct = event.data?.usage_percent
+        if (typeof pct === 'number') contextUsagePercent.value = Math.round(pct)
+        continue
+      }
+      if (event.type === 'meta') {
+        assistantMsg.meta = event.data
+        const ctx = event.data?.token_usage?.context
+        if (ctx && ctx.breakdown) {
+          contextUsageBreakdown.value = ctx
+          if (typeof ctx.usage_percent === 'number') {
+            contextUsagePercent.value = Math.round(ctx.usage_percent)
+          }
+        }
+        messages.value[assistantIdx] = { ...assistantMsg }
+        continue
       }
       if (event.type === 'reasoning' && !event.data) continue
       if (event.type === 'content' && !event.data) continue
@@ -1540,6 +1557,8 @@ async function sendMessage() {
     assistantMsg.isLoading = false
     messages.value[assistantIdx] = { ...assistantMsg }
     isSending.value = false
+    flushPetStatus(petStatusPhase)
+    clearPetStatus()
     await nextTick()
     scheduleScrollToBottom()
     if (currentSessionId.value) {
@@ -1668,269 +1687,6 @@ function scheduleScrollToBottom(force = false) {
   max-width: 640px;
 }
 
-.composer {
-  width: 100%;
-  max-width: 900px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  background: var(--bg-panel);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
-  overflow: visible;
-}
-
-.composer-with-slash {
-  position: relative;
-}
-
-.stop-btn {
-  border: 1px solid #e74c3c;
-  color: #e74c3c;
-  background: transparent;
-  border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.stop-btn:hover {
-  background: rgba(231, 76, 60, 0.08);
-}
-
-.composer-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px 12px;
-  gap: 12px;
-}
-
-.composer-left,
-.composer-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.icon-btn {
-  width: 32px;
-  height: 32px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-panel);
-  color: var(--text-secondary);
-  font-size: 18px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-}
-
-.workdir-btn {
-  width: auto;
-  max-width: 320px;
-  gap: 6px;
-  padding: 0 10px;
-}
-
-.workdir-name {
-  font-size: 12px;
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.icon-btn:hover {
-  background: var(--accent-hover);
-}
-
-.plugin-btn--active {
-  border-color: rgba(52, 152, 219, 0.45);
-  background: rgba(52, 152, 219, 0.1);
-  color: #1565c0;
-}
-
-.plugin-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.model-select {
-  appearance: none;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 28px 6px 12px;
-  font-size: 13px;
-  color: var(--text);
-  background: var(--bg-panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6b66' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 8px center;
-  cursor: pointer;
-  max-width: 200px;
-}
-
-.send-btn {
-  width: 36px;
-  height: 36px;
-  border: none;
-  border-radius: 50%;
-  background: var(--send-bg);
-  color: #fff;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.15s;
-  flex-shrink: 0;
-  position: relative;
-}
-
-.send-btn:hover:not(:disabled) {
-  background: var(--send-hover);
-}
-
-.send-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.send-btn--streaming {
-  cursor: pointer;
-}
-
-.send-btn--streaming:hover {
-  background: var(--send-hover);
-}
-
-.send-icon-inner {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.loading-spinner {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 100%;
-}
-
-.spinner-circle {
-  width: 18px;
-  height: 18px;
-  border: 2px solid rgba(255, 255, 255, 0.35);
-  border-top-color: #fff;
-  border-radius: 50%;
-  animation: spin-send 0.75s linear infinite;
-}
-
-@keyframes spin-send {
-  to { transform: rotate(360deg); }
-}
-
-.workdir-picker {
-  position: relative;
-}
-
-.workdir-menu {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + 6px);
-  min-width: 280px;
-  max-width: 420px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
-  padding: 6px;
-  z-index: 200;
-  overflow: visible;
-}
-
-.workdir-menu-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 6px 10px 4px;
-}
-
-.workdir-menu-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  max-height: 200px;
-  overflow-y: auto;
-}
-
-.workdir-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--text-secondary);
-  transition: background 0.12s, color 0.12s;
-}
-
-.workdir-menu-item:hover {
-  background: var(--accent-hover);
-  color: var(--text);
-}
-
-.workdir-menu-item.active {
-  background: var(--accent-active);
-  color: var(--text);
-}
-
-.workdir-menu-item svg {
-  flex-shrink: 0;
-  color: var(--text-muted);
-}
-
-.workdir-menu-path {
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-family: ui-monospace, monospace;
-}
-
-.workdir-menu-empty {
-  font-size: 12px;
-  color: var(--text-muted);
-  padding: 8px 10px 10px;
-}
-
-.workdir-menu-divider {
-  height: 1px;
-  background: var(--border);
-  margin: 4px 4px;
-}
-
-.workdir-menu-new {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 7px 10px;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  font-size: 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  text-align: left;
-  transition: background 0.12s;
-}
-
-.workdir-menu-new:hover {
-  background: var(--accent-hover);
-}
-
 /* —— 对话：进行中 —— */
 .chat-active {
   flex: 1;
@@ -1999,17 +1755,7 @@ function scheduleScrollToBottom(force = false) {
   color: var(--text);
 }
 
-.composer-bottom {
-  max-width: 900px;
-  width: 100%;
-  flex-shrink: 0;
-  margin-top: 8px;
-}
 
-.composer-bottom textarea {
-  padding: 12px 16px 6px;
-  font-size: 14px;
-}
 
 /* 顶部 Toast 通知 */
 .page-toast {

@@ -11,7 +11,7 @@ export interface ChatMessage {
 }
 
 export interface StreamEvent {
-  type: 'content' | 'reasoning' | 'tool_call' | 'tool_result' | 'confirmation_required' | 'error'
+  type: 'content' | 'reasoning' | 'tool_call' | 'tool_result' | 'confirmation_required' | 'error' | 'context_usage' | 'meta'
   data: any
   meta?: { session_id?: string }
 }
@@ -20,6 +20,12 @@ export function jsonToStreamEvent(json: Record<string, unknown>): StreamEvent | 
   // 处理错误事件
   if (json.error) {
     return { type: 'error', data: json.error }
+  }
+  if (json.context_token_usage) {
+    return { type: 'context_usage', data: json.context_token_usage }
+  }
+  if (json.meta) {
+    return { type: 'meta', data: json.meta }
   }
   if (json.tool_call) {
     return { type: 'tool_call', data: json.tool_call }
@@ -129,4 +135,21 @@ export async function stopChat(sessionId: string): Promise<void> {
   } catch (e) {
     console.error('stopChat error', e)
   }
+}
+
+export async function* streamTempChat(
+  messages: { role: string; content: string }[],
+  sessionId?: string,
+  workDir?: string
+): AsyncGenerator<StreamEvent> {
+  const res = await fetch(`${getBaseUrl()}/chat/temp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages,
+      session_id: sessionId,
+      work_dir: workDir || undefined,
+    }),
+  })
+  yield* parseSseResponse(res)
 }

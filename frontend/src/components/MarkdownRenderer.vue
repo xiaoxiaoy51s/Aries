@@ -429,24 +429,44 @@ function renderMarkdown(text: string) {
     inlineFormulas.push(formula.trim())
     return `__INLINE_FORMULA_${index}__`
   })
-  
+
+  // 链接占位符化：在 escape `<>&` 之前提取，避免 url 中的字符被破坏
+  // 1) markdown 显式链接 [text](url)
+  // 2) 裸 URL（http/https 开头）
+  const linkTokens: { text: string; url: string }[] = []
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_m, text: string, url: string) => {
+    const i = linkTokens.length
+    linkTokens.push({ text, url })
+    return `__LINK_TOKEN_${i}__`
+  })
+  html = html.replace(/(^|[\s(<])((?:https?:\/\/)[^\s<>()]+)/g, (_m, prefix: string, url: string) => {
+    const i = linkTokens.length
+    linkTokens.push({ text: url, url })
+    return `${prefix}__LINK_TOKEN_${i}__`
+  })
+
   html = html
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
   
   const tc = textColor.value
-  const fs = fontSize.value * 2
-  
-  html = html.replace(/^####\s+(.+)$/gm, `<h4 style="font-size:${fs - 4}px;font-weight:bold;margin:8px 0 4px;color:${tc};">$1</h4>`)
-  html = html.replace(/^###\s+(.+)$/gm, `<h3 style="font-size:${fs - 2}px;font-weight:bold;margin:8px 0 4px;color:${tc};">$1</h3>`)
-  html = html.replace(/^##\s+(.+)$/gm, `<h2 style="font-size:${fs}px;font-weight:bold;margin:8px 0 4px;color:${tc};">$1</h2>`)
-  html = html.replace(/^#\s+(.+)$/gm, `<h1 style="font-size:${fs + 2}px;font-weight:bold;margin:8px 0 4px;color:${tc};">$1</h1>`)
+  const fs = fontSize.value
+
+  // Codex 风格标题层级：相对正文 1em / 1.125em / 1.25em / 1.5em
+  html = html.replace(/^####\s+(.+)$/gm, `<h4 style="font-size:${fs}px;font-weight:600;margin:14px 0 6px;color:${tc};line-height:1.4;">$1</h4>`)
+  html = html.replace(/^###\s+(.+)$/gm, `<h3 style="font-size:${Math.round(fs * 1.125)}px;font-weight:600;margin:16px 0 6px;color:${tc};line-height:1.4;">$1</h3>`)
+  html = html.replace(/^##\s+(.+)$/gm, `<h2 style="font-size:${Math.round(fs * 1.25)}px;font-weight:600;margin:20px 0 8px;color:${tc};line-height:1.35;">$1</h2>`)
+  html = html.replace(/^#\s+(.+)$/gm, `<h1 style="font-size:${Math.round(fs * 1.5)}px;font-weight:600;margin:24px 0 10px;color:${tc};line-height:1.3;letter-spacing:-0.01em;">$1</h1>`)
   
   html = html.replace(/\*\*(.*?)\*\*/g, `<strong style="color:${tc};">$1</strong>`)
   html = html.replace(/\*(.*?)\*/g, `<em style="color:${tc};">$1</em>`)
-  html = html.replace(/`([^`]+)`/g, '<code style="background:#f0f0f0;padding:2px 4px;border-radius:4px;font-family:monospace;font-size:13px;color:#333;">$1</code>')
+  html = html.replace(/`([^`]+)`/g, '<code style="background:rgba(110,118,129,0.10);padding:2px 6px;border-radius:5px;font-family:ui-monospace,SFMono-Regular,SF Mono,Menlo,Monaco,Consolas,Liberation Mono,Courier New,monospace;font-size:0.875em;color:#1f2328;font-weight:500;">$1</code>')
+  // 段落处理：连续两个以上换行 → 段落分隔（轻微间距），单换行 → 段内换行（无空行）
+  html = html.replace(/\n{2,}/g, '</p><p style="margin:6px 0;">')
   html = html.replace(/\n/g, '<br>')
+  html = `<p style="margin:6px 0;">${html}</p>`
+  html = html.replace(/<p[^>]*>\s*<\/p>/g, '') // 移除空段落
   html = html.replace(/^(\d+)\.\s+(.+)$/gm, `<div style="margin:4px 0;padding-left:12px;"><span style="color:${tc};margin-right:4px;">$1.</span><span style="color:${tc};">$2</span></div>`)
   html = html.replace(/^[-*]\s+(.+)$/gm, `<div style="margin:4px 0;padding-left:12px;"><span style="color:${tc};margin-right:4px;">•</span><span style="color:${tc};">$1</span></div>`)
   
@@ -459,7 +479,18 @@ function renderMarkdown(text: string) {
     const rendered = renderLatex(formula, true)
     html = html.replace(`__BLOCK_FORMULA_${i}__`, rendered)
   })
-  
+
+  // 还原链接占位符为 <a>（浅蓝色 + 下划线 + 鼠标手型；点击由父级事件委托接管）
+  linkTokens.forEach((tk, i) => {
+    const safeUrl = tk.url.replace(/"/g, '&quot;')
+    const safeText = tk.text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+    const anchor = `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" style="color:#3b82f6;text-decoration:underline;cursor:pointer;word-break:break-all;">${safeText}</a>`
+    html = html.split(`__LINK_TOKEN_${i}__`).join(anchor)
+  })
+
   return html
 }
 
@@ -528,8 +559,36 @@ const parsedBlocks = computed(() => {
 
 .rich-text-content {
   font-size: v-bind('fontSize + "px"');
-  line-height: 1.6;
+  line-height: 1.65;
+  letter-spacing: -0.003em;
   color: v-bind('textColor');
+  font-family: 'Inter', 'Noto Sans SC', ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.rich-text-content :deep(p) {
+  margin: 6px 0;
+}
+
+.rich-text-content :deep(p:first-child) {
+  margin-top: 0;
+}
+
+.rich-text-content :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+.rich-text-content :deep(a) {
+  color: #3b82f6 !important;
+  text-decoration: underline;
+  cursor: pointer;
+  word-break: break-all;
+}
+
+.rich-text-content :deep(a:hover) {
+  color: #2563eb !important;
 }
 
 .rich-text-content :deep(.katex-display) {
@@ -583,9 +642,10 @@ const parsedBlocks = computed(() => {
 
 .code-text {
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--text);
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-feature-settings: 'liga' 0;
   white-space: pre-wrap;
   word-break: break-all;
   margin: 0;

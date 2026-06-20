@@ -20,10 +20,8 @@ def request_cancel(session_id: str) -> bool:
     cancel_event = _streams.get(session_id)
     if cancel_event:
         cancel_event.set()
-        try:
-            from api.modes.agent_mode import _cancel_cli_invocations
-            _cancel_cli_invocations()
-        except Exception:
-            pass
+        # 注意：用户点 Stop 时不再调用 _cancel_cli_invocations()。
+        # 控制台会话（PTY / ps1 调度进程）保持运行，方便回放。
+        # 软件关闭时的兜底清理由 backend/main.py 的 lifespan 处理。
         return True
     return False

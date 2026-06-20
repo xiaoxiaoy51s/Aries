@@ -17,7 +17,14 @@ from utils.skills_manager import execute_tool
 from utils.session_logger import SessionLogger
 from models.model_manager import resolve_active_model_config
 from db.sessions import upsert_session, get_session
-from db.chat import save_message, update_message, build_agent_reasoning_context, get_chat_context_messages
+from db.chat import save_message, update_message, get_memory_aware_context_messages
+from utils.token_counter import build_token_usage_info, extract_usage_from_response
+from prompt.code_review_prompts import (
+    CODE_REVIEW_SYSTEM_PROMPT,
+    CODE_REVIEW_USER_PROMPTS,
+    CODE_REVIEW_MODES,
+    DEPENDENCY_EXCLUDE_PATTERNS,
+)
 
 from api.modes import (
     build_agent_system_prompt,
@@ -144,6 +151,138 @@ def save_base64_image(base64_str: str, upload_dir: str = None) -> str:
     return f"{url_prefix}/{filename}"
 
 
+CODE_REVIEW_MARKER_RE = re.compile(
+    r"^@code_review(?:\s+(unstaged|staged|branch|commit|full))?(?:\s+|\n|$)",
+    re.IGNORECASE,
+)
+
+
+def _extract_code_review_marker(text: str) -> tuple[Optional[str], str]:
+    match = CODE_REVIEW_MARKER_RE.match(text or "")
+    if not match:
+        return None, text
+    mode = (match.group(1) or "branch").lower()
+    return mode, (text[match.end():] or "").lstrip()
+
+
+def _detect_base_branch(work_dir: str) -> str:
+    """自动检测默认基础分支名称。"""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+            capture_output=True, text=True, cwd=work_dir, timeout=5,
+        )
+        if result.returncode == 0:
+            ref = result.stdout.strip()
+            return ref.replace("refs/remotes/origin/", "") or "main"
+    except Exception:
+        pass
+    # 兜底：检查 main / master 是否存在
+    for branch in ("main", "master"):
+        try:
+            r = subprocess.run(
+                ["git", "rev-parse", "--verify", f"origin/{branch}"],
+                capture_output=True, text=True, cwd=work_dir, timeout=5,
+            )
+            if r.returncode == 0:
+                return branch
+        except Exception:
+            pass
+    return "main"
+
+
+def _fetch_review_diff(mode: str, work_dir: str) -> str:
+    """根据审查模式预取 git diff，自动排除依赖文件。"""
+    import subprocess
+
+    if not work_dir:
+        return "(无法获取工作目录，跳过 diff 预取)"
+
+    if mode == "full":
+        # 全面审查：返回项目结构概览而非 diff
+        try:
+            r = subprocess.run(
+                ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                capture_output=True, text=True, cwd=work_dir, timeout=10,
+            )
+            files = r.stdout.strip().split("\n") if r.stdout.strip() else []
+            # 排除依赖文件
+            exclude_suffixes = (".lock", "-lock.json", ".min.js", ".min.css", ".map", ".pyc")
+            exclude_dirs = ("node_modules", "__pycache__", "dist", "build", ".next", "vendor", "target")
+            filtered = []
+            for f in files:
+                if not f:
+                    continue
+                if any(f.endswith(s) for s in exclude_suffixes):
+                    continue
+                if any(d in f for d in exclude_dirs):
+                    continue
+                filtered.append(f)
+            return "\n".join(filtered[:200]) or "(未找到源代码文件)"
+        except Exception as exc:
+            return f"(获取项目结构失败: {exc})"
+
+    # 构建 git diff 命令
+    if mode == "unstaged":
+        cmd = ["git", "diff"]
+    elif mode == "staged":
+        cmd = ["git", "diff", "--cached"]
+    elif mode == "branch":
+        base = _detect_base_branch(work_dir)
+        cmd = ["git", "diff", f"origin/{base}...HEAD"]
+    elif mode == "commit":
+        cmd = ["git", "diff", "HEAD~1..HEAD"]
+    else:
+        cmd = ["git", "diff"]
+
+    # 追加依赖排除 pathspec
+    cmd.append("--")
+    cmd.extend(DEPENDENCY_EXCLUDE_PATTERNS)
+
+    try:
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, cwd=work_dir, timeout=30,
+        )
+        diff = r.stdout.strip()
+        if not diff:
+            return "(未检测到代码变更)"
+        # 截断超长 diff
+        if len(diff) > 50000:
+            diff = diff[:50000] + "\n\n...(diff 过长已截断，请聚焦已展示部分)..."
+        return diff
+    except subprocess.TimeoutExpired:
+        return "(获取 diff 超时，请缩小审查范围)"
+    except Exception as exc:
+        return f"(获取 diff 失败: {exc})"
+
+
+def _build_code_review_context(mode: str, work_dir: str | None = None) -> str:
+    """构建代码审查的 system prompt 上下文。"""
+    # 预取 diff
+    diff_content = _fetch_review_diff(mode, work_dir or "")
+
+    # 获取对应模式的 user prompt 模板
+    user_prompt_template = CODE_REVIEW_USER_PROMPTS.get(mode, CODE_REVIEW_USER_PROMPTS["branch"])
+    user_prompt = user_prompt_template.replace("{diff_content}", diff_content)
+
+    mode_info = CODE_REVIEW_MODES.get(mode, {})
+    mode_label = mode_info.get("label", mode)
+
+    return (
+        "\n# 代码审查模式\n"
+        f"用户消息以 `@code_review {mode}` 开头，本轮必须按以下代码审查规则执行。\n"
+        f"当前审查模式：{mode_label}\n\n"
+        f"{CODE_REVIEW_SYSTEM_PROMPT}\n\n"
+        f"{user_prompt}\n"
+    )
+
+
+def _replace_text_content(user_message: dict, text: str) -> None:
+    if isinstance(user_message.get("content"), str):
+        user_message["content"] = text
+
+
 def extract_and_save_images(user_content) -> tuple:
     text_content = ""
     saved_paths = []
@@ -233,26 +372,28 @@ async def stream_chat(request: ChatRequest, http_request: Request) -> AsyncGener
     prepared = prepare_messages(request.messages)
     user_message = prepared[-1] if prepared else {}
     user_content = user_message.get("content", "") if isinstance(user_message, dict) else ""
-    text_content, saved_paths = extract_and_save_images(user_content)
+    raw_text_content, saved_paths = extract_and_save_images(user_content)
+    code_review_mode, cleaned_text = _extract_code_review_marker(raw_text_content)
+    if code_review_mode:
+        _replace_text_content(user_message, cleaned_text or "请开始代码审查。")
     images_json = json.dumps(saved_paths, ensure_ascii=False) if saved_paths else None
-    if text_content or images_json:
-        save_message(session_id, "user", text_content or "", image_path=images_json, mode="agent")
+    if raw_text_content or images_json or code_review_mode:
+        save_message(session_id, "user", raw_text_content or "", image_path=images_json, mode="agent")
         # 新会话的第一条用户消息作为标题（18字+省略号）
-        if is_new_session and text_content.strip():
-            raw = text_content.strip().replace("\n", " ")[:18]
-            title = raw + ("…" if len(text_content.strip()) > 18 else "")
-            upsert_session(session_id=session_id, title=title or "新对话")
+        if is_new_session:
+            if code_review_mode:
+                upsert_session(session_id=session_id, title="代码审查")
+            elif raw_text_content.strip():
+                raw = raw_text_content.strip().replace("\n", " ")[:18]
+                title = raw + ("…" if len(raw_text_content.strip()) > 18 else "")
+                upsert_session(session_id=session_id, title=title or "新对话")
 
-    # 从数据库加载历史上下文：最近 14 轮完整对话（28 条消息）+ 最近 2 轮深度思考
-    history_messages = get_chat_context_messages(
+    # 从数据库加载 memory-aware 上下文：长期压缩记忆 + 最近 token 窗口 + 最近工作记录
+    history_messages, context_token_info = get_memory_aware_context_messages(
         session_id=session_id,
-        message_limit=28,
-        reasoning_rounds=2,
-        max_assistant_len=2000,
+        current_user_text=raw_text_content,
+        model=request.model,
     )
-    # history_messages 已包含 system(reasoning) + user/assistant；剔除最后一条（刚保存的当前用户消息）后，再加上当前消息
-    if history_messages and history_messages[-1].get("role") == "user" and history_messages[-1].get("content") == text_content:
-        history_messages = history_messages[:-1]
     # 当前用户消息可能带图片，这里以原始 prepared 形式追加（含 images 字段）
     current_user_msg = prepared[-1] if prepared else None
 
@@ -263,6 +404,8 @@ async def stream_chat(request: ChatRequest, http_request: Request) -> AsyncGener
     system_prompt = build_agent_system_prompt(
         skills_context, work_dir=effective_work_dir, session_id=session_id, mcp_context=mcp_context
     )
+    if code_review_mode:
+        system_prompt += _build_code_review_context(code_review_mode, effective_work_dir)
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history_messages)
@@ -285,12 +428,33 @@ async def stream_chat(request: ChatRequest, http_request: Request) -> AsyncGener
     if request.max_tokens is not None:
         payload["max_tokens"] = request.max_tokens
 
+    payload["context_token_info"] = build_token_usage_info(messages, model=request.model)
+    payload["context_token_info"].update({
+        "memory_context": context_token_info,
+    })
+    # 透传 memory-aware 上下文消息分组，供 stream_agent_mode 组装功能模块化 breakdown
+    payload["context_breakdown_inputs"] = {
+        "summarized_messages": context_token_info.get("summarized_messages") or [],
+        "conversation_messages": context_token_info.get("conversation_messages") or [],
+        "recent_message_count": context_token_info.get("recent_message_count"),
+        "memory_count": context_token_info.get("memory_count"),
+        "reasoning_count": context_token_info.get("reasoning_count"),
+    }
+
     cancel_event = register_chat_stream(session_id)
 
     async def disconnect_check():
         return await http_request.is_disconnected()
 
     try:
+        # 仅下发轻量摘要，避免把消息分组泄露到前端 SSE
+        _ctx_info = payload.get("context_token_info") or {}
+        _ctx_summary = {
+            "estimated_tokens": _ctx_info.get("estimated_tokens"),
+            "context_window": _ctx_info.get("context_window"),
+            "usage_percent": _ctx_info.get("usage_percent"),
+        }
+        yield f"data: {json.dumps({'context_token_usage': _ctx_summary}, ensure_ascii=False)}\n\n"
         async for event in stream_agent_mode(
             request,
             messages,
@@ -341,20 +505,20 @@ async def chat_completions(request: ChatRequest, http_request: Request):
     prepared = prepare_messages(request.messages)
     user_message = prepared[-1] if prepared else {}
     user_content = user_message.get("content", "") if isinstance(user_message, dict) else ""
-    text_content, saved_paths = extract_and_save_images(user_content)
+    raw_text_content, saved_paths = extract_and_save_images(user_content)
+    code_review_mode, cleaned_text = _extract_code_review_marker(raw_text_content)
+    if code_review_mode:
+        _replace_text_content(user_message, cleaned_text or "请开始代码审查。")
     images_json = json.dumps(saved_paths, ensure_ascii=False) if saved_paths else None
-    if text_content or images_json:
-        save_message(session_id, "user", text_content or "", image_path=images_json, mode="agent")
+    if raw_text_content or images_json or code_review_mode:
+        save_message(session_id, "user", raw_text_content or "", image_path=images_json, mode="agent")
 
-    # 从数据库加载历史上下文：最近 14 轮完整对话（28 条消息）+ 最近 2 轮深度思考
-    history_messages = get_chat_context_messages(
+    # 从数据库加载 memory-aware 上下文：长期压缩记忆 + 最近 token 窗口 + 最近工作记录
+    history_messages, context_token_info = get_memory_aware_context_messages(
         session_id=session_id,
-        message_limit=28,
-        reasoning_rounds=2,
-        max_assistant_len=2000,
+        current_user_text=raw_text_content,
+        model=request.model,
     )
-    if history_messages and history_messages[-1].get("role") == "user" and history_messages[-1].get("content") == text_content:
-        history_messages = history_messages[:-1]
     current_user_msg = prepared[-1] if prepared else None
 
     skills_context, tool_definitions, mcp_context = get_agent_skills_and_tools()
@@ -364,6 +528,8 @@ async def chat_completions(request: ChatRequest, http_request: Request):
     system_prompt = build_agent_system_prompt(
         skills_context, work_dir=effective_work_dir, session_id=session_id, mcp_context=mcp_context
     )
+    if code_review_mode:
+        system_prompt += _build_code_review_context(code_review_mode, effective_work_dir)
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history_messages)
@@ -398,6 +564,11 @@ async def chat_completions(request: ChatRequest, http_request: Request):
         session_id, "assistant", "", message_snapshot_json="", mode="agent"
     )
     logger = SessionLogger(session_id=session_id, message_id=assistant_message_id)
+    logger.set_model(request.model)
+    logger.set_token_usage({
+        "context": build_token_usage_info(messages, model=request.model),
+        "memory_context": context_token_info,
+    })
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         response = await client.post(
@@ -409,6 +580,7 @@ async def chat_completions(request: ChatRequest, http_request: Request):
             raise HTTPException(status_code=response.status_code, detail=response.text)
 
         result = response.json()
+        logger.add_token_usage(extract_usage_from_response(result))
 
         message = result.get("choices", [{}])[0].get("message", {})
         assistant_content = message.get("content", "") or ""
@@ -473,6 +645,7 @@ async def chat_completions(request: ChatRequest, http_request: Request):
                 raise HTTPException(status_code=follow_up_response.status_code, detail=follow_up_response.text)
 
             final_result = follow_up_response.json()
+            logger.add_token_usage(extract_usage_from_response(final_result))
             final_message = final_result.get("choices", [{}])[0].get("message", {})
             assistant_content = final_message.get("content", "") or ""
             raw_reasoning = final_message.get("reasoning_content", "") or ""
@@ -488,6 +661,11 @@ async def chat_completions(request: ChatRequest, http_request: Request):
 
         if assistant_content:
             logger.write_assistant_segment(assistant_content)
+
+        result["context_token_usage"] = {
+            "context": build_token_usage_info(messages, model=request.model),
+            "memory_context": context_token_info,
+        }
 
         update_message(
             assistant_message_id,
@@ -564,3 +742,100 @@ async def confirm_tool(req: ConfirmToolRequest):
     if not ok:
         raise HTTPException(status_code=404, detail="未找到待确认的工具调用")
     return {"status": "ok", "confirmed": req.confirmed}
+
+
+class TempChatRequest(BaseModel):
+    messages: list[Message]  # 临时对话的全部消息（含本轮 user）
+    session_id: Optional[str] = None  # 用于加载上下文记忆
+    work_dir: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+
+
+@router.post("/temp")
+async def temp_chat(req: TempChatRequest, http_request: Request):
+    """临时对话：加载 session 上下文 + 临时消息，流式返回，不存 DB。"""
+    base_url, api_key, model = resolve_active_model_config()
+    if not base_url or not api_key:
+        raise HTTPException(status_code=400, detail="未配置模型 API")
+
+    # 构建 system prompt
+    skills_context, _, mcp_context = get_agent_skills_and_tools()
+    _meta = get_session(req.session_id) if req.session_id else {}
+    effective_work_dir = (_meta.get("work_dir") or req.work_dir or "").strip() or None
+    system_prompt = build_agent_system_prompt(
+        skills_context, work_dir=effective_work_dir,
+        session_id=req.session_id, mcp_context=mcp_context,
+    )
+
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # 加载 session 的记忆上下文（如果有 session_id）
+    if req.session_id:
+        user_text = ""
+        for m in reversed(req.messages):
+            if m.role == "user":
+                user_text = m.content if isinstance(m.content, str) else ""
+                break
+        history_messages, _ = get_memory_aware_context_messages(
+            session_id=req.session_id,
+            current_user_text=user_text,
+            model=model,
+        )
+        messages.extend(history_messages)
+
+    # 追加临时消息（前端传入的全部临时对话消息）
+    for m in req.messages:
+        msg_dict = {"role": m.role}
+        if isinstance(m.content, str):
+            msg_dict["content"] = m.content
+        elif isinstance(m.content, list):
+            msg_dict["content"] = [p.model_dump() if not isinstance(p, dict) else p for p in m.content]
+        else:
+            msg_dict["content"] = m.content
+        messages.append(msg_dict)
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+    }
+    if req.temperature is not None:
+        payload["temperature"] = req.temperature
+    if req.max_tokens is not None:
+        payload["max_tokens"] = req.max_tokens
+
+    async def stream_temp():
+        timeout = httpx.Timeout(connect=30.0, read=900.0, write=120.0, pool=30.0)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+            async with client.stream(
+                "POST",
+                f"{normalize_base_url(base_url)}/chat/completions",
+                headers=headers,
+                json=payload,
+            ) as response:
+                if response.status_code != 200:
+                    error_text = await response.aread()
+                    yield f"data: {json.dumps({'error': error_text.decode()})}\n\n"
+                    return
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data == "[DONE]":
+                            yield "data: [DONE]\n\n"
+                            return
+                        try:
+                            chunk = json.loads(data)
+                            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                        except json.JSONDecodeError:
+                            continue
+
+    return StreamingResponse(
+        stream_temp(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )

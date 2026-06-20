@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: transparent;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #status-bar {
+      width: 100%; height: 100%;
+      padding: 8px 14px;
+      border-radius: 12px;
+      background: rgba(0, 0, 0, 0.78);
+      color: #fff;
+      font-size: 13px;
+      line-height: 1.6;
+      font-family: -apple-system, "Microsoft YaHei", sans-serif;
+      word-break: break-word;
+      overflow: hidden;
+      opacity: 0;
+      transform: translateY(6px);
+      transition: opacity 0.25s, transform 0.25s;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    #status-bar.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .status-line {
+      display: block;
+      margin-bottom: 3px;
+    }
+    .status-line:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+  <div id="status-bar"></div>
+  <script>
+    const { ipcRenderer } = require('electron')
+
+    const statusBar = document.getElementById('status-bar')
+    let statusLines = []
+    const MAX_STATUS_LINES = 3
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
+    }
+
+    function renderStatus() {
+      statusBar.innerHTML = statusLines
+        .map(l => `<span class="status-line">${escapeHtml(l)}</span>`)
+        .join('')
+      statusBar.classList.add('visible')
+    }
+
+    ipcRenderer.on('pet:status', (event, data) => {
+      if (data.clear) {
+        statusBar.classList.remove('visible')
+        statusLines = []
+      } else if (data.text) {
+        const last = statusLines[statusLines.length - 1]
+        if (last && last === data.text) return
+        statusLines.push(data.text)
+        if (statusLines.length > MAX_STATUS_LINES) {
+          statusLines = statusLines.slice(-MAX_STATUS_LINES)
+        }
+        renderStatus()
+      }
+    })
+  </script>
+</body>
+</html>

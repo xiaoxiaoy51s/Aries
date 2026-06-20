@@ -39,6 +39,22 @@ def init_database():
     """)
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS session_memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            source_message_count INTEGER NOT NULL DEFAULT 0,
+            source_token_estimate INTEGER NOT NULL DEFAULT 0,
+            summary_token_estimate INTEGER NOT NULL DEFAULT 0,
+            source_until_message_id INTEGER,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_session_memories_session_id ON session_memories(session_id)
+    """)
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS skills (
             folder_name TEXT PRIMARY KEY,
             enabled INTEGER NOT NULL DEFAULT 1,

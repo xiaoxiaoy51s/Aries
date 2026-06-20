@@ -44,9 +44,35 @@ def get_tool_definitions() -> list[dict]:
     except Exception:
         pass
 
+    definitions.append(_build_write_agent_memory_definition())
     definitions.append(_build_create_scheduled_task_definition())
 
     return definitions
+
+
+def _build_write_agent_memory_definition() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "write_agent_memory",
+            "description": (
+                "写入当前 work_dir 的 Agent 记忆。"
+                "用于保存对当前代码库结构、开发命令、编码约定、测试方式等内容的总结，"
+                "文件实际存放在 ~/.Aries/memory/{work_dir}/agent.md，不写入项目根目录。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "完整的 Markdown 记忆内容，建议标题为 Repository Guidelines。",
+                    },
+                },
+                "required": ["content"],
+                "additionalProperties": False,
+            },
+        },
+    }
 
 
 def _build_read_skill_file_definition() -> dict[str, Any]:
@@ -294,6 +320,10 @@ def execute(tool: str = "", work_dir: str = "", session_id: str | None = None, i
 
         if tool == "create_scheduled_task":
             return _handle_create_scheduled_task(kwargs, session_id=session_id)
+
+        if tool == "write_agent_memory":
+            from memory.agent_memory import write_agent_memory
+            return write_agent_memory(work_dir, str(kwargs.get("content") or ""))
 
         fm = _get_file_manager(work_dir)
 

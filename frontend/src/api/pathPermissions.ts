@@ -35,3 +35,21 @@ export async function removePathPermission(path: string) {
   if (!res.ok) throw new Error('删除路径权限失败')
   return res.json()
 }
+
+export type ApprovalMode = 'request' | 'review' | 'full'
+
+export async function getApprovalMode() {
+  const res = await fetch(`${getBaseUrl()}/path-permissions/approval-mode`)
+  if (!res.ok) throw new Error('获取批准模式失败')
+  return res.json() as Promise<{ mode: ApprovalMode; available: ApprovalMode[] }>
+}
+
+export async function setApprovalMode(mode: ApprovalMode) {
+  const res = await fetch(`${getBaseUrl()}/path-permissions/approval-mode`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode }),
+  })
+  if (!res.ok) throw new Error('设置批准模式失败')
+  return res.json() as Promise<{ success: boolean; approval_mode?: ApprovalMode; error?: string }>
+}

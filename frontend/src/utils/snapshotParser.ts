@@ -3,7 +3,7 @@
  */
 
 export interface SnapshotEvent {
-  type: 'reasoning' | 'tool_call' | 'tool_result' | 'assistant_text' | 'error'
+  type: 'reasoning' | 'tool_call' | 'tool_result' | 'assistant_text' | 'error' | 'run_metadata'
   content: string
   toolName?: string
   toolCallId?: string
@@ -12,6 +12,11 @@ export interface SnapshotEvent {
   status?: string
   timestamp?: string
   errorType?: string
+  meta?: {
+    model: string
+    duration_ms: number
+    token_usage: Record<string, any>
+  }
 }
 
 /**
@@ -100,6 +105,18 @@ function convertEvent(json: any): SnapshotEvent | null {
         content: json.error_msg || json.error || '',
         errorType: json.error_type,
         timestamp: json.timestamp
+      }
+
+    case 'run_metadata':
+      return {
+        type: 'run_metadata',
+        content: '',
+        meta: {
+          model: json.model || '',
+          duration_ms: json.duration_ms || 0,
+          token_usage: json.token_usage || {},
+        },
+        timestamp: json.timestamp,
       }
 
     default:

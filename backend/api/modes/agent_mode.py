@@ -22,9 +22,12 @@ from utils.message_snapshot import (
     finalize_snapshot,
 )
 from utils.session_logger import SessionLogger
+from utils.token_counter import extract_usage_from_stream_chunk
+from memory.agent_memory import build_agent_memory_system_section
 from db.chat import save_message, update_message
 
-MAX_TOOL_ROUNDS = 30
+# 参考 OpenCode 的 MAX_STEPS=25：每轮最多一次模型响应 + 一批工具调用 + 续跑。
+MAX_TOOL_ROUNDS = 25
 CONFIRMATION_TIMEOUT_SECONDS = 120.0
 LLM_CONNECT_TIMEOUT_SECONDS = 30.0
 LLM_READ_TIMEOUT_SECONDS = 900.0
@@ -116,10 +119,11 @@ async def _should_stop_stream(
 
 
 def _cancel_cli_invocations() -> None:
-    """用户停止/取消时调用：终止所有正在运行的 CLI 进程并清理临时日志。
+    """[已弃用] 保留为 no-op 兼容旧引用，不再在用户停止 / AI 完成时强制清理控制台。
 
-    防止上一次未结束的 ps1/cmd 调度文件或 done 文件被下一轮误读，
-    也避免后台进程占用 PTY 句柄导致后续命令死锁。
+    改造原因：用户希望 IDE 风格的控制台回放，PTY / ps1 调度进程在用户主动关闭
+    对应 ConsolePanel 之前都不应被强制终止。软件关闭时的兜底清理由
+    `backend/main.py` 的 lifespan 统一处理。
     """
     try:
         from utils.cli_executor import CLIExecutor
@@ -164,23 +168,26 @@ def _session_context_note(session_id: str | None) -> str:
     )
 
 
-def build_agent_system_prompt(
+def build_agent_system_prompt_parts(
     skills_context: str,
     work_dir: str | None = None,
     session_id: str | None = None,
     mcp_context: str = "",
-) -> str:
-    """构建 Agent 模式的系统提示词（精简版）
+) -> dict[str, str]:
+    """构建 Agent 模式的系统提示词，并按"功能模块"分块返回。
 
-    work_dir: 当前 session 的工作目录；为空时回退到默认 ~/.Aries/work_dir
-    session_id: 当前会话 ID；每次用户发消息时传入，供 AI 识别来源与默认推送目标
+    返回 dict:
+        base: 身份/会话/工作目录/输出规范/Skill 使用规范（不含 skills 详情、rules、mcp）
+        rules: 用户 rules.md + AI 项目记忆（agent.md）
+        skills: 已安装本地 Skills 详情
+        mcp: MCP 插件描述
+        full: 拼接完整 system prompt（与旧版一致）
     """
     from pathlib import Path
     today_str = datetime.now().strftime("%Y-%m-%d")
 
     if work_dir and work_dir.strip():
         wd = str(Path(work_dir).expanduser().resolve())
-        # 临时脚本目录与工作目录并列
         tmp_dir = str(Path(wd) / ".Aries_tmp")
         target_note = wd
     else:
@@ -190,7 +197,7 @@ def build_agent_system_prompt(
         tmp_dir = str(Path.home() / ".Aries" / "tmp")
         target_note = wd
 
-    prompt = (
+    base = (
         "# 身份\n"
         "你是一个强大的多用途 AI 助手，擅长任务规划、文档创建、网络研究和代码执行。"
         f"今天的日期是 {today_str}，当前操作系统：{platform.system()}。\n"
@@ -213,16 +220,44 @@ def build_agent_system_prompt(
         "在使用skill前，必须阅读SKILL.md文件，了解技能的用途和使用方法。不要直接上来就调用工具，有些工具虽然可以通过描述知道对应的使用方法，但是md文件中会有更加详细的使用说明。"
     )
 
+    rules = build_agent_memory_system_section(wd) or ""
+
+    skills_section = ""
     if skills_context:
-        prompt += (
-            "\n# 已安装的本地 Skills\n"
-            f"{skills_context}"
-        )
+        skills_section = "\n# 已安装的本地 Skills\n" + skills_context
 
+    mcp_section = ""
     if mcp_context:
-        prompt += f"\n# MCP 插件\n{mcp_context}"
+        mcp_section = f"\n# MCP 插件\n{mcp_context}"
 
-    return prompt
+    full = base + rules + skills_section + mcp_section
+
+    return {
+        "base": base,
+        "rules": rules,
+        "skills": skills_section,
+        "mcp": mcp_section,
+        "full": full,
+    }
+
+
+def build_agent_system_prompt(
+    skills_context: str,
+    work_dir: str | None = None,
+    session_id: str | None = None,
+    mcp_context: str = "",
+) -> str:
+    """构建 Agent 模式的系统提示词（精简版）
+
+    work_dir: 当前 session 的工作目录；为空时回退到默认 ~/.Aries/work_dir
+    session_id: 当前会话 ID；每次用户发消息时传入，供 AI 识别来源与默认推送目标
+    """
+    return build_agent_system_prompt_parts(
+        skills_context=skills_context,
+        work_dir=work_dir,
+        session_id=session_id,
+        mcp_context=mcp_context,
+    )["full"]
 
 
 def get_agent_skills_and_tools():
@@ -263,13 +298,38 @@ async def stream_agent_mode(
     try:
         assistant_message_id = save_message(session_id, "assistant", "", message_snapshot_json="", mode="agent")
         logger = SessionLogger(session_id=session_id, message_id=assistant_message_id)
+        logger.set_model(getattr(request, "model", "") or "")
+        context_token_info = base_payload.pop("context_token_info", None)  # 旧字段，仅消费占位
+        breakdown_inputs = base_payload.pop("context_breakdown_inputs", None) or {}
         snapshot = create_assistant_snapshot(session_id, logger)
 
         skills_context, tool_definitions, mcp_context = get_agent_skills_and_tools()
 
-        system_prompt = build_agent_system_prompt(
+        prompt_parts = build_agent_system_prompt_parts(
             skills_context, work_dir=work_dir, session_id=session_id, mcp_context=mcp_context
         )
+        system_prompt = prompt_parts["full"]
+
+        # 组装功能模块化的 context usage breakdown，替代旧的按 role 分项
+        from utils.token_counter import build_context_usage_breakdown
+        model_name = getattr(request, "model", "") or ""
+        context_breakdown = build_context_usage_breakdown(
+            system_prompt_base=prompt_parts["base"] + (prompt_parts.get("mcp") or ""),
+            tool_definitions=tool_definitions,
+            rules_text=prompt_parts["rules"],
+            skills_text=prompt_parts["skills"],
+            summarized_messages=breakdown_inputs.get("summarized_messages") or [],
+            conversation_messages=breakdown_inputs.get("conversation_messages") or [],
+            model=model_name,
+        )
+        # 兼容字段：保留计数信息，便于前端展示
+        for k in ("recent_message_count", "memory_count", "reasoning_count"):
+            if breakdown_inputs.get(k) is not None:
+                context_breakdown[k] = breakdown_inputs[k]
+        logger.set_token_usage({"context": context_breakdown})
+
+        # 推送初始 meta 事件（模型名 + 上下文占用），前端立即展示
+        yield f"data: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
 
         current_messages = [{"role": "system", "content": system_prompt}]
         current_messages.extend(messages)
@@ -286,7 +346,7 @@ async def stream_agent_mode(
             for round_no in range(1, MAX_TOOL_ROUNDS + 1):
                 if await _should_stop_stream(cancel_event, disconnect_check):
                     cancelled = True
-                    _cancel_cli_invocations()
+                    # 不再终止 PTY / ps1 调度进程：保留控制台会话供回放
                     break
                 reasoning_emitted_before_content = False
                 current_payload = {
@@ -327,7 +387,7 @@ async def stream_agent_mode(
                             if await _should_stop_stream(cancel_event, disconnect_check):
                                 final_content = full_content
                                 cancelled = True
-                                _cancel_cli_invocations()
+                                # 不再终止 PTY / ps1 调度进程：保留控制台会话供回放
                                 break
                             if line.startswith("data: "):
                                 data = line[6:]
@@ -335,6 +395,9 @@ async def stream_agent_mode(
                                     break
                                 try:
                                     chunk = json.loads(data)
+                                    usage = extract_usage_from_stream_chunk(chunk)
+                                    if usage:
+                                        logger.add_token_usage(usage)
                                     choices = chunk.get("choices", [])
                                     if not choices:
                                         continue
@@ -443,7 +506,7 @@ async def stream_agent_mode(
                     if await _should_stop_stream(cancel_event, disconnect_check):
                         cancelled = True
                         final_content = full_content
-                        _cancel_cli_invocations()
+                        # 不再终止 PTY / ps1 调度进程：保留控制台会话供回放
                         break
                     tool_name = tc.get("function", {}).get("name", "")
                     args_str = tc.get("function", {}).get("arguments", "{}")
@@ -455,13 +518,21 @@ async def stream_agent_mode(
                         args = {}
 
                     terminal_session_id = ""
-                    if tool_name == "cli_executor" and args.get("open_in_terminal"):
-                        terminal_session_id = f"ai-{uuid.uuid4().hex[:8]}"
+                    if tool_name == "cli_executor":
+                        want_new_terminal = bool(args.get("new_terminal"))
                         try:
                             from services.terminal_manager import TerminalManager
-                            TerminalManager.register_invocation_session(f"{session_id}:{tool_id}", terminal_session_id)
+                            tm = TerminalManager.get_instance()
+                            invocation_key = f"{session_id}:{tool_id}"
+                            if want_new_terminal:
+                                # AI 明确要求新开终端
+                                terminal_session_id = f"ai-{uuid.uuid4().hex[:8]}"
+                            else:
+                                # 复用同一工作目录的 agent session
+                                terminal_session_id = tm.resolve_agent_session_id(work_dir)
+                            TerminalManager.register_invocation_session(invocation_key, terminal_session_id)
                         except Exception:
-                            pass
+                            terminal_session_id = f"ai-{uuid.uuid4().hex[:8]}"
 
                     # 发送工具调用开始事件
                     tool_call_payload = {'tool_call_id': tool_id, 'tool_name': tool_name, 'status': 'running', 'args': args, 'round': round_no}
@@ -491,7 +562,7 @@ async def stream_agent_mode(
                             timeout=TOOL_EXECUTION_TIMEOUT_SECONDS,
                         )
                     except asyncio.TimeoutError:
-                        _cancel_cli_invocations()
+                        # 单次工具执行超时：只打断当前工具返回错误，不强制清理其它控制台会话
                         result = {
                             "success": False,
                             "error": "Tool execution timed out",
@@ -576,6 +647,10 @@ async def stream_agent_mode(
                     result_session_id = result.get("session_id") if isinstance(result, dict) else None
                     if result_session_id:
                         result_event["session_id"] = result_session_id
+                    # 终端 PID（PTY 进程 PID，前端可用于显示和调试）
+                    result_pid = result.get("pid") if isinstance(result, dict) else None
+                    if result_pid:
+                        result_event["pid"] = result_pid
                     if isinstance(result, dict) and result.get("auto_detached"):
                         result_event["auto_detached"] = True
                     yield f"data: {json.dumps({'tool_result': result_event}, ensure_ascii=False)}\n\n"
@@ -602,10 +677,15 @@ async def stream_agent_mode(
                         "tool_call_id": tr["tool_call_id"],
                         "content": tr["content"]
                     })
+            else:
+                error_msg = f"工具/模型续跑达到上限（{MAX_TOOL_ROUNDS} 轮），已停止以避免无限循环。"
+                if logger:
+                    logger.write_error_event("step_limit_exceeded", error_msg)
+                yield f"data: {json.dumps({'error': error_msg}, ensure_ascii=False)}\n\n"
     finally:
-        # 收尾：取消/异常时主动终止所有 ps1/cmd 调度进程 + 清空 temp/cli_runtime 残留
-        if cancelled:
-            _cancel_cli_invocations()
+        # 用户主动中断时不再终止 PTY / ps1 调度进程：
+        # 控制台会话（包括正在运行的开发服务器、长任务）保留可见、可回放。
+        # 兜底清理只在软件关闭时由 main.py 的 lifespan 统一处理。
         if assistant_message_id is not None and logger is not None:
             # 保存到数据库（即使中途暂停/异常也要保存已有内容）
             reasoning_text, assistant_text = logger.flush_assistant_round()
@@ -630,5 +710,8 @@ async def stream_agent_mode(
                 message_snapshot_json=logger.jsonl_path_str(),
                 reasoning_content=logger.build_db_reasoning()
             )
+
+            # 推送最终 meta 事件（含处理时长 + token 使用），前端更新展示
+            yield f"data: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
 
             logger.finalize()

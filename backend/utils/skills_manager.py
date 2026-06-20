@@ -379,6 +379,7 @@ CORE_TOOL_NAMES = {
     "read_file", "write_file", "edit_file", "list_files", "search_file",
     "cli_executor",
     "read_skill_file",
+    "write_agent_memory",
     "create_scheduled_task",
 }
 

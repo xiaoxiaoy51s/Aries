@@ -52,16 +52,24 @@ class _FeishuRunner:
 
     def stop(self):
         self._running = False
-        if self._channel:
+        # 复用子线程里已经在运行的事件循环，避免再开一个去 disconnect（开新 loop 经常被 SDK 内部状态机卡住）
+        loop = self._loop
+        channel = self._channel
+        if loop and not loop.is_closed() and channel is not None:
             try:
-                import asyncio
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(self._channel.disconnect())
-                loop.close()
+                asyncio.run_coroutine_threadsafe(channel.disconnect(), loop)
             except Exception as e:
-                _log.debug("[飞书] 停止 Channel: %s", e)
+                _log.debug("[飞书] 提交 disconnect 失败: %s", e)
+        thread = self._thread
+        if thread and thread.is_alive():
+            if loop and not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(loop.stop)
+                except RuntimeError:
+                    pass
+            thread.join(timeout=5)
         self._channel = None
+        self._loop = None
         self._thread = None
 
     def is_running(self) -> bool:
@@ -159,6 +167,8 @@ class _FeishuRunner:
         self._loop = loop
         try:
             loop.run_until_complete(self._connect())
+        except RuntimeError:
+            pass  # stop() 调用 loop.stop() 的正常退出路径
         except Exception as e:
             _log.error("[飞书] 运行事件循环失败: %s", e)
         finally:
