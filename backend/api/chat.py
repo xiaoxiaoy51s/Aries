@@ -397,12 +397,16 @@ async def stream_chat(request: ChatRequest, http_request: Request) -> AsyncGener
     # 当前用户消息可能带图片，这里以原始 prepared 形式追加（含 images 字段）
     current_user_msg = prepared[-1] if prepared else None
 
-    skills_context, tool_definitions, mcp_context = get_agent_skills_and_tools()
+    skills_context, tool_definitions, mcp_context, subagents_context = get_agent_skills_and_tools()
     # 取该 session 的工作目录（DB 优先，request 兜底）
     _meta = get_session(session_id) or {}
     effective_work_dir = (_meta.get("work_dir") or request.work_dir or "").strip() or None
     system_prompt = build_agent_system_prompt(
-        skills_context, work_dir=effective_work_dir, session_id=session_id, mcp_context=mcp_context
+        skills_context,
+        work_dir=effective_work_dir,
+        session_id=session_id,
+        mcp_context=mcp_context,
+        subagents_context=subagents_context,
     )
     if code_review_mode:
         system_prompt += _build_code_review_context(code_review_mode, effective_work_dir)
@@ -521,12 +525,16 @@ async def chat_completions(request: ChatRequest, http_request: Request):
     )
     current_user_msg = prepared[-1] if prepared else None
 
-    skills_context, tool_definitions, mcp_context = get_agent_skills_and_tools()
+    skills_context, tool_definitions, mcp_context, subagents_context = get_agent_skills_and_tools()
     # 取该 session 的工作目录（DB 优先，request 兜底）
     _meta = get_session(session_id) or {}
     effective_work_dir = (_meta.get("work_dir") or request.work_dir or "").strip() or None
     system_prompt = build_agent_system_prompt(
-        skills_context, work_dir=effective_work_dir, session_id=session_id, mcp_context=mcp_context
+        skills_context,
+        work_dir=effective_work_dir,
+        session_id=session_id,
+        mcp_context=mcp_context,
+        subagents_context=subagents_context,
     )
     if code_review_mode:
         system_prompt += _build_code_review_context(code_review_mode, effective_work_dir)
@@ -760,12 +768,13 @@ async def temp_chat(req: TempChatRequest, http_request: Request):
         raise HTTPException(status_code=400, detail="未配置模型 API")
 
     # 构建 system prompt
-    skills_context, _, mcp_context = get_agent_skills_and_tools()
+    skills_context, _, mcp_context, subagents_context = get_agent_skills_and_tools()
     _meta = get_session(req.session_id) if req.session_id else {}
     effective_work_dir = (_meta.get("work_dir") or req.work_dir or "").strip() or None
     system_prompt = build_agent_system_prompt(
         skills_context, work_dir=effective_work_dir,
         session_id=req.session_id, mcp_context=mcp_context,
+        subagents_context=subagents_context,
     )
 
     messages = [{"role": "system", "content": system_prompt}]

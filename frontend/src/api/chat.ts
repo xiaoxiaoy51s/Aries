@@ -11,7 +11,7 @@ export interface ChatMessage {
 }
 
 export interface StreamEvent {
-  type: 'content' | 'reasoning' | 'tool_call' | 'tool_result' | 'confirmation_required' | 'error' | 'context_usage' | 'meta'
+  type: 'content' | 'reasoning' | 'tool_call' | 'tool_result' | 'confirmation_required' | 'error' | 'context_usage' | 'meta' | 'subagent_event' | 'subagent_reasoning' | 'subagent_content' | 'subagent_tool_call' | 'subagent_tool_result'
   data: any
   meta?: { session_id?: string }
 }
@@ -35,6 +35,21 @@ export function jsonToStreamEvent(json: Record<string, unknown>): StreamEvent | 
   }
   if (json.confirmation_required) {
     return { type: 'confirmation_required', data: json.confirmation_required }
+  }
+  if (json.subagent_event) {
+    return { type: 'subagent_event', data: json.subagent_event }
+  }
+  if (json.subagent_reasoning) {
+    return { type: 'subagent_reasoning', data: json.subagent_reasoning }
+  }
+  if (json.subagent_content) {
+    return { type: 'subagent_content', data: json.subagent_content }
+  }
+  if (json.subagent_tool_call) {
+    return { type: 'subagent_tool_call', data: json.subagent_tool_call }
+  }
+  if (json.subagent_tool_result) {
+    return { type: 'subagent_tool_result', data: json.subagent_tool_result }
   }
 
   const delta = (json.choices as Array<{ delta?: Record<string, unknown> }> | undefined)?.[0]?.delta

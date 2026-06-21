@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 SESSION_LOG_ROOT = Path.home() / ".Aries" / "session"
+SUBAGENT_LOG_ROOT = SESSION_LOG_ROOT / "sub_agent"
 
 
 def _utc_now() -> str:
@@ -29,6 +30,14 @@ def _get_jsonl_path(session_id: str, message_id: int | str) -> Path:
     base = SESSION_LOG_ROOT / today
     base.mkdir(parents=True, exist_ok=True)
     return base / f"{session_id}_{message_id}.jsonl"
+
+
+def get_subagent_jsonl_path(task_id: str) -> Path:
+    """子 Agent 独立日志路径：~/.Aries/session/sub_agent/<YYYY-MM-DD>/<task_id>.jsonl"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    base = SUBAGENT_LOG_ROOT / today
+    base.mkdir(parents=True, exist_ok=True)
+    return base / f"{task_id}.jsonl"
 
 
 def _append_event(path: Path, event: dict[str, Any]) -> None:
@@ -196,6 +205,38 @@ class SessionLogger:
     def finalize(self) -> None:
         self.flush_reasoning_segment()
         self.write_run_metadata()
+
+    def write_subagent_block(
+        self,
+        tool_call_id: str,
+        subagent_name: str,
+        task: str,
+        status: str,
+        log_path: str = "",
+        final_output: str = "",
+        error: str = "",
+        rounds: int = 0,
+        duration_ms: int = 0,
+    ) -> None:
+        """记录主 Agent 委派子 Agent 的事件块。
+
+        status: running / success / failed / timeout / cancelled / stalled
+        log_path: 子 Agent 独立 JSONL 文件路径（前端可点击跳转）
+        """
+        self.flush_reasoning_segment()
+        _append_event(self.path, {
+            "type": "sub_agent",
+            "tool_call_id": tool_call_id,
+            "subagent": subagent_name,
+            "task": task,
+            "status": status,
+            "log_path": log_path,
+            "final_output": final_output,
+            "error": error,
+            "rounds": rounds,
+            "duration_ms": duration_ms,
+            "timestamp": _utc_now(),
+        })
 
     def write_error_event(
         self,

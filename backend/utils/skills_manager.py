@@ -438,6 +438,17 @@ def get_all_tool_definitions() -> list[dict]:
     except Exception as e:
         print(f"Failed to load MCP tool definitions: {e}")
 
+    # 4. 注入 capability_search 工具，供主 Agent 检索 skill/mcp/subagent 全集
+    try:
+        from utils.capability_registry import (
+            get_capability_search_tool_definition,
+            get_delegate_to_subagent_tool_definition,
+        )
+        tools.append(get_capability_search_tool_definition())
+        tools.append(get_delegate_to_subagent_tool_definition())
+    except Exception as e:
+        print(f"Failed to load capability_search tool definition: {e}")
+
     return tools
 
 
@@ -450,6 +461,28 @@ def execute_tool(
 ) -> dict[str, Any]:
     if arguments is None:
         arguments = {}
+
+    # 0a. capability_search：检索 skill / mcp / subagent 全集
+    try:
+        from utils.capability_registry import (
+            CAPABILITY_SEARCH_TOOL_NAME,
+            DELEGATE_TO_SUBAGENT_TOOL_NAME,
+            execute_capability_search,
+        )
+        if tool_name == CAPABILITY_SEARCH_TOOL_NAME:
+            return execute_capability_search(arguments)
+        if tool_name == DELEGATE_TO_SUBAGENT_TOOL_NAME:
+            return {
+                "success": False,
+                "error": "delegate_to_subagent 必须由主 Agent 的 async 执行路径处理",
+                "output": "内部错误：delegate_to_subagent 不应进入同步执行通道",
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "output": f"执行 {tool_name} 失败: {str(e)}",
+        }
 
     # 0. MCP 插件工具（来自 ~/.Aries/mcp.json 中已启用的服务）
     try:

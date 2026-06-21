@@ -46,6 +46,7 @@
                 :danger-info="block.danger_info || ''"
                 :session-id="block.session_id || ''"
                 :tool-call-id="block.tool_call_id || ''"
+                :subagent="block.subagent"
               />
               <div v-else class="reasoning-text">
                 <MarkdownRenderer
@@ -175,6 +176,18 @@ interface MessageBlock {
   pending_confirmation?: boolean
   danger_info?: string
   danger_types?: string[]
+  subagent?: {
+    task_id?: string
+    subagent?: string
+    task?: string
+    status?: string
+    round?: number
+    last_event?: string
+    elapsed_ms?: number
+    log_path?: string
+    inner_blocks?: MessageBlock[]
+    final_message?: string
+  }
 }
 
 interface MessageMeta {

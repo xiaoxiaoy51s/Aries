@@ -3,7 +3,7 @@
  */
 
 export interface SnapshotEvent {
-  type: 'reasoning' | 'tool_call' | 'tool_result' | 'assistant_text' | 'error' | 'run_metadata'
+  type: 'reasoning' | 'tool_call' | 'tool_result' | 'assistant_text' | 'error' | 'run_metadata' | 'sub_agent'
   content: string
   toolName?: string
   toolCallId?: string
@@ -17,6 +17,13 @@ export interface SnapshotEvent {
     duration_ms: number
     token_usage: Record<string, any>
   }
+  // sub_agent 块特有字段
+  subagent?: string
+  task?: string
+  logPath?: string
+  finalOutput?: string
+  rounds?: number
+  durationMs?: number
 }
 
 /**
@@ -116,6 +123,22 @@ function convertEvent(json: any): SnapshotEvent | null {
           duration_ms: json.duration_ms || 0,
           token_usage: json.token_usage || {},
         },
+        timestamp: json.timestamp,
+      }
+
+    case 'sub_agent':
+      return {
+        type: 'sub_agent',
+        content: json.final_output || json.error || '',
+        toolCallId: json.tool_call_id,
+        toolName: 'delegate_to_subagent',
+        status: json.status,
+        subagent: json.subagent,
+        task: json.task,
+        logPath: json.log_path,
+        finalOutput: json.final_output,
+        rounds: json.rounds,
+        durationMs: json.duration_ms,
         timestamp: json.timestamp,
       }
 

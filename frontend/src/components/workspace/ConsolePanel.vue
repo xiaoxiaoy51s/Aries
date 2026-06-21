@@ -95,6 +95,16 @@ let resizeObserver: ResizeObserver | null = null
 let resizeTimer: ReturnType<typeof setTimeout> | null = null
 const URL_RE = /https?:\/\/[^\s\]\)>'\"]+/g
 
+// 通配匹配两类 PTY 噪声行，整段替换为空：
+// 1. `& 'C:\...\cli_runtime\cmd_xxxxxxxx.ps1'` 调度行
+// 2. 紧跟其后的 `>>` 多行提示符（PowerShell 在执行调度命令时偶发触发）
+// g 标志确保一段输出里多条都被清除。
+const DISPATCH_LINE_RE = /&\s*'[^']*cli_runtime[^']*\.ps1'\s*\r?\n?(?:>>\s*\r?\n?)?/g
+
+function stripDispatch(data: string): string {
+  return data.replace(DISPATCH_LINE_RE, '')
+}
+
 const activeTab = computed(() => tabs.value.find(t => t.id === activeTabId.value) || null)
 
 function newTabId() {
@@ -274,12 +284,12 @@ function connectTab(tab: TerminalTab, reset = true) {
         return
       }
       if (msg.type === 'output' && msg.data) {
-        tab.term?.write(msg.data)
+        tab.term?.write(stripDispatch(msg.data))
         return
       }
     } catch {
       // plain text
-      tab.term?.write(ev.data)
+      tab.term?.write(stripDispatch(ev.data))
     }
   }
 

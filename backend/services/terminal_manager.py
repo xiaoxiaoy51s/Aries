@@ -742,11 +742,16 @@ class TerminalManager:
 
         # 将命令 + 捕获逻辑 + 退出码全部写入 ps1 文件
         # 避免：1) PTY 行长度限制导致命令被截断  2) PowerShell 命令行解析破坏引号
+        # 开头 Write-Host 回显原始命令，让前端控制台显示真实命令而非 .ps1 路径
+        # （前端 ConsolePanel 会过滤掉 & 'xxx.ps1' 调度行）
+        # PowerShell 单引号字符串中，单引号本身用 '' 转义
+        echo_command_ps = command.replace("'", "''")
         script = (
             f"$ErrorActionPreference = 'Continue'\r\n"
             f"chcp 65001 > $null\r\n"
             f"$OutputEncoding = [System.Text.Encoding]::UTF8\r\n"
             f"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\r\n"
+            f"Write-Host -ForegroundColor DarkGray '$ {echo_command_ps}'\r\n"
             f"$capFile = '{cap_path}'\r\n"
             f"$doneFile = '{done_path}'\r\n"
             f"$code = 0\r\n"
@@ -768,8 +773,8 @@ class TerminalManager:
         # 记录执行前的 buffer 位置，捕获时只取新内容（不清空 buffer，前端保留历史）
         buffer_start = session.buffer_length()
 
-        # 执行 ps1 文件
-        session.write(f"\r\n& '{cmd_path}'\r\n")
+        # 执行 ps1 文件（前端 ConsolePanel 会过滤掉这行调度路径，只看到 ps1 内 Write-Host 的原始命令）
+        session.write(f"& '{cmd_path}'\r\n")
 
         captured = ""
         return_code = 0

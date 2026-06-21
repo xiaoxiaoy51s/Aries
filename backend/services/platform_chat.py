@@ -105,9 +105,13 @@ async def run_agent_in_session(
     if not skip_save_user:
         save_message(session_id, "user", text, mode="agent")
 
-    skills_context, _, mcp_context = get_agent_skills_and_tools()
+    skills_context, _, mcp_context, subagents_context = get_agent_skills_and_tools()
     system_prompt = build_agent_system_prompt(
-        skills_context, work_dir=work_dir, session_id=session_id, mcp_context=mcp_context
+        skills_context,
+        work_dir=work_dir,
+        session_id=session_id,
+        mcp_context=mcp_context,
+        subagents_context=subagents_context,
     )
 
     # 平台会话追加额外提示

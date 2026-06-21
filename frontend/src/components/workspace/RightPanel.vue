@@ -55,6 +55,20 @@
         :session-id="sessionId"
         :work-dir="workDir"
       />
+
+      <SubagentChatPanel
+        v-if="activeTab === 'subagent' && currentSubagentTaskId"
+        :key="currentSubagentTaskId"
+        :task-id="currentSubagentTaskId"
+        :initial="currentSubagentInitial"
+        @close="onCloseSubagent"
+      />
+      <div
+        v-else-if="activeTab === 'subagent' && !currentSubagentTaskId"
+        class="subagent-empty"
+      >
+        <p>暂无智能体在工作</p>
+      </div>
     </div>
   </aside>
 </template>
@@ -67,8 +81,9 @@ import GitPanel from '@/components/workspace/GitPanel.vue'
 import DiffPanel from '@/components/workspace/DiffPanel.vue'
 import ExplorerPanel from '@/components/workspace/ExplorerPanel.vue'
 import SideChatPanel from '@/components/workspace/SideChatPanel.vue'
+import SubagentChatPanel from '@/components/workspace/SubagentChatPanel.vue'
 
-type PanelTabId = 'console' | 'browser' | 'git' | 'diff' | 'explorer' | 'sidechat'
+type PanelTabId = 'console' | 'browser' | 'git' | 'diff' | 'explorer' | 'sidechat' | 'subagent'
 
 const props = defineProps<{
   visible: boolean
@@ -110,6 +125,11 @@ const tabs: { id: PanelTabId; label: string; icon: string }[] = [
     id: 'sidechat',
     label: '临时对话',
     icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+  },
+  {
+    id: 'subagent',
+    label: '查看智能体',
+    icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="9" cy="10" r="1"/><circle cx="15" cy="10" r="1"/><path d="M9 16h6"/></svg>',
   },
 ]
 
@@ -187,14 +207,45 @@ function onOpenUrl(e: Event) {
   browserPendingUrl.value = url
 }
 
+// —— 查看智能体 ——
+const currentSubagentTaskId = ref<string>('')
+const currentSubagentInitial = ref<any>(null)
+
+function onViewSubagent(e: Event) {
+  const detail = (e as CustomEvent).detail || {}
+  if (!detail.taskId) return
+  currentSubagentTaskId.value = detail.taskId
+  currentSubagentInitial.value = {
+    subagent: detail.subagent,
+    task: detail.task,
+    status: detail.status,
+    round: detail.round,
+    last_event: detail.lastEvent,
+    elapsed_ms: detail.elapsedMs,
+    log_path: detail.logPath,
+    inner_blocks: detail.innerBlocks,
+    final_message: detail.finalMessage,
+  }
+  activeTab.value = 'subagent'
+}
+
+function onCloseSubagent() {
+  currentSubagentTaskId.value = ''
+  currentSubagentInitial.value = null
+  // 切回控制台
+  activeTab.value = 'console'
+}
+
 onMounted(() => {
   window.addEventListener('aries:focus-console', onFocusConsole)
   window.addEventListener('aries:open-url', onOpenUrl as EventListener)
+  window.addEventListener('aries:view-subagent', onViewSubagent as EventListener)
 })
 
 onUnmounted(() => {
   window.removeEventListener('aries:focus-console', onFocusConsole)
   window.removeEventListener('aries:open-url', onOpenUrl as EventListener)
+  window.removeEventListener('aries:view-subagent', onViewSubagent as EventListener)
 })
 </script>
 
@@ -320,5 +371,14 @@ onUnmounted(() => {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+}
+
+.subagent-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 </style>

@@ -25,6 +25,7 @@ from utils.session_logger import SessionLogger
 from utils.token_counter import extract_usage_from_stream_chunk
 from memory.agent_memory import build_agent_memory_system_section
 from db.chat import save_message, update_message
+from prompt import CODING_BEHAVIOR_RULES
 
 # 参考 OpenCode 的 MAX_STEPS=25：每轮最多一次模型响应 + 一批工具调用 + 续跑。
 MAX_TOOL_ROUNDS = 25
@@ -173,6 +174,7 @@ def build_agent_system_prompt_parts(
     work_dir: str | None = None,
     session_id: str | None = None,
     mcp_context: str = "",
+    subagents_context: str = "",
 ) -> dict[str, str]:
     """构建 Agent 模式的系统提示词，并按"功能模块"分块返回。
 
@@ -181,6 +183,7 @@ def build_agent_system_prompt_parts(
         rules: 用户 rules.md + AI 项目记忆（agent.md）
         skills: 已安装本地 Skills 详情
         mcp: MCP 插件描述
+        subagents: 可委派的子 Agent 精简路由表
         full: 拼接完整 system prompt（与旧版一致）
     """
     from pathlib import Path
@@ -217,7 +220,25 @@ def build_agent_system_prompt_parts(
         "- 所有工具失败时：2次尝试内停止，告知障碍，禁止伪造结果\n"
         "\n"
         "# Skill 使用规范\n"
-        "在使用skill前，必须阅读SKILL.md文件，了解技能的用途和使用方法。不要直接上来就调用工具，有些工具虽然可以通过描述知道对应的使用方法，但是md文件中会有更加详细的使用说明。"
+        "在使用skill前，必须阅读SKILL.md文件，了解技能的用途和使用方法。不要直接上来就调用工具，有些工具虽然可以通过描述知道对应的使用方法，但是md文件中会有更加详细的使用说明。\n"
+        "\n"
+        + CODING_BEHAVIOR_RULES
+    )
+
+    # Subagent 使用规范仅在确有可用 subagent 时注入，避免浪费上下文
+    SUBAGENT_USAGE_RULES = (
+        "\n"
+        "# Subagent 使用规范\n"
+        "下方「Available Subagents」列出了系统中可委派的子 Agent。每个 Subagent 拥有独立上下文与能力组合，适合复杂、多步、可被打包成角色的任务。\n"
+        "- 选择 Subagent 前若需要了解可组合的 skill / mcp 全集，请调用 capability_search 工具检索（它会返回包括 disabled / unavailable 状态在内的所有能力）。\n"
+        "- 你也可以基于检索结果生成新的 Subagent 配置文件（写到 ~/.Aries/agent/<name>.json）。\n"
+        "\n"
+        "# Subagent 调用约束\n"
+        "- 通过 `delegate_to_subagent` 工具委派任务。委派时 task 必须详尽，子 Agent 看不到当前对话历史。\n"
+        "- 子 Agent 一次性返回最终结果（result 或 error），不能交互式追问；它会通过自己的 `report_to_main` 工具提交结论。\n"
+        "- 何时委派：复杂多步任务、需要保护主上下文不被淹没、独立可并行的子查询。\n"
+        "- 何时不要委派：简单任务、答案已知、必须串行依赖前序结果、能用一两个工具直接搞定。\n"
+        "- 同一轮 tool_calls 中可以并发委派多个不同 Subagent；返回后用一段简洁文字向用户汇报整合结论。\n"
     )
 
     rules = build_agent_memory_system_section(wd) or ""
@@ -230,13 +251,18 @@ def build_agent_system_prompt_parts(
     if mcp_context:
         mcp_section = f"\n# MCP 插件\n{mcp_context}"
 
-    full = base + rules + skills_section + mcp_section
+    subagents_section = ""
+    if subagents_context:
+        subagents_section = SUBAGENT_USAGE_RULES + "\n" + subagents_context
+
+    full = base + rules + subagents_section + skills_section + mcp_section
 
     return {
         "base": base,
         "rules": rules,
         "skills": skills_section,
         "mcp": mcp_section,
+        "subagents": subagents_section,
         "full": full,
     }
 
@@ -246,6 +272,7 @@ def build_agent_system_prompt(
     work_dir: str | None = None,
     session_id: str | None = None,
     mcp_context: str = "",
+    subagents_context: str = "",
 ) -> str:
     """构建 Agent 模式的系统提示词（精简版）
 
@@ -257,18 +284,21 @@ def build_agent_system_prompt(
         work_dir=work_dir,
         session_id=session_id,
         mcp_context=mcp_context,
+        subagents_context=subagents_context,
     )["full"]
 
 
 def get_agent_skills_and_tools():
     from utils.mcp_runtime import build_mcp_prompt_context
+    from utils.subagent_manager import build_subagent_router_section
 
     skills = discover_skills()
     enabled_skills = [s for s in skills if s.enabled]
     skills_context = build_skills_context_from_entries(enabled_skills)
     tool_definitions = get_all_tool_definitions()
     mcp_context = build_mcp_prompt_context()
-    return skills_context, tool_definitions, mcp_context
+    subagents_context = build_subagent_router_section()
+    return skills_context, tool_definitions, mcp_context, subagents_context
 
 
 async def stream_agent_mode(
@@ -303,10 +333,14 @@ async def stream_agent_mode(
         breakdown_inputs = base_payload.pop("context_breakdown_inputs", None) or {}
         snapshot = create_assistant_snapshot(session_id, logger)
 
-        skills_context, tool_definitions, mcp_context = get_agent_skills_and_tools()
+        skills_context, tool_definitions, mcp_context, subagents_context = get_agent_skills_and_tools()
 
         prompt_parts = build_agent_system_prompt_parts(
-            skills_context, work_dir=work_dir, session_id=session_id, mcp_context=mcp_context
+            skills_context,
+            work_dir=work_dir,
+            session_id=session_id,
+            mcp_context=mcp_context,
+            subagents_context=subagents_context,
         )
         system_prompt = prompt_parts["full"]
 
@@ -314,7 +348,9 @@ async def stream_agent_mode(
         from utils.token_counter import build_context_usage_breakdown
         model_name = getattr(request, "model", "") or ""
         context_breakdown = build_context_usage_breakdown(
-            system_prompt_base=prompt_parts["base"] + (prompt_parts.get("mcp") or ""),
+            system_prompt_base=prompt_parts["base"]
+                + (prompt_parts.get("mcp") or "")
+                + (prompt_parts.get("subagents") or ""),
             tool_definitions=tool_definitions,
             rules_text=prompt_parts["rules"],
             skills_text=prompt_parts["skills"],
@@ -501,6 +537,23 @@ async def stream_agent_mode(
 
                 # 执行工具调用
                 tool_results = []
+                # 用于收集子 Agent 在执行过程中的 SSE 事件
+                subagent_event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+                async def _on_subagent_event(payload: dict[str, Any]) -> None:
+                    await subagent_event_queue.put(payload)
+
+                async def _drain_subagent_events():
+                    """非阻塞地把队列里的事件全部弹出，作为字符串列表返回。"""
+                    out: list[str] = []
+                    while True:
+                        try:
+                            ev = subagent_event_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        out.append(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n")
+                    return out
+
                 for tc in tool_calls_buffer:
                     stream_stopped = False
                     if await _should_stop_stream(cancel_event, disconnect_check):
@@ -516,6 +569,103 @@ async def stream_agent_mode(
                         args = json.loads(args_str) if args_str else {}
                     except:
                         args = {}
+
+                    # ===== 委派子 Agent 分支：走 async 执行，期间持续推送 subagent_event =====
+                    if tool_name == "delegate_to_subagent":
+                        from utils.subagent_runtime import run_subagent
+
+                        sub_name = str(args.get("subagent_name") or "").strip()
+                        sub_task = str(args.get("task") or "").strip()
+                        sub_desc = str(args.get("description") or "").strip()
+                        sub_context = str(args.get("context") or "")
+
+                        # 1. 主对话流先推一个 tool_call 事件，让前端展示"工具开始"
+                        tool_call_payload = {
+                            'tool_call_id': tool_id,
+                            'tool_name': tool_name,
+                            'status': 'running',
+                            'args': args,
+                            'round': round_no,
+                        }
+                        yield f"data: {json.dumps({'tool_call': tool_call_payload}, ensure_ascii=False)}\n\n"
+                        reasoning_text = logger.write_tool_call(tool_id, tool_name, args)
+                        if segment_sink and reasoning_text:
+                            await segment_sink.on_reasoning(reasoning_text)
+
+                        # 2. 主 Agent JSONL 写一条 sub_agent 块（status=running）
+                        logger.write_subagent_block(
+                            tool_call_id=tool_id,
+                            subagent_name=sub_name,
+                            task=sub_desc or sub_task,
+                            status="running",
+                        )
+
+                        # 3. 启动子 Agent 任务，并在等待期间持续 drain 事件队列
+                        sub_task_obj = asyncio.create_task(run_subagent(
+                            subagent_name=sub_name,
+                            task=sub_task,
+                            context=sub_context,
+                            work_dir=work_dir,
+                            cancel_event=cancel_event,
+                            on_event=_on_subagent_event,
+                        ))
+                        while not sub_task_obj.done():
+                            try:
+                                await asyncio.wait_for(asyncio.shield(sub_task_obj), timeout=0.5)
+                            except asyncio.TimeoutError:
+                                pass
+                            for ev_str in await _drain_subagent_events():
+                                yield ev_str
+                            if await _should_stop_stream(cancel_event, disconnect_check):
+                                sub_task_obj.cancel()
+                                break
+                        # 兜底再 drain 一次
+                        for ev_str in await _drain_subagent_events():
+                            yield ev_str
+
+                        try:
+                            sub_result = await sub_task_obj
+                        except asyncio.CancelledError:
+                            sub_result = {
+                                "error": "用户取消了子 Agent 任务",
+                                "status": "cancelled",
+                                "log_path": "",
+                            }
+                        except Exception as exc:
+                            sub_result = {
+                                "error": f"子 Agent 异常：{exc}",
+                                "status": "failed",
+                                "log_path": "",
+                            }
+
+                        # 4. 收尾：把结果写回 JSONL 的 sub_agent 块（最终状态）
+                        final_status = "success" if "result" in sub_result else sub_result.get("status", "failed")
+                        logger.write_subagent_block(
+                            tool_call_id=tool_id,
+                            subagent_name=sub_name,
+                            task=sub_desc or sub_task,
+                            status=final_status,
+                            log_path=str(sub_result.get("log_path") or ""),
+                            final_output=str(sub_result.get("result") or ""),
+                            error=str(sub_result.get("error") or ""),
+                        )
+
+                        # 5. 给主 Agent 的 tool 返回：极简（result/error + log_path）
+                        tool_results.append({
+                            "tool_call_id": tool_id,
+                            "role": "tool",
+                            "content": json.dumps(sub_result, ensure_ascii=False),
+                        })
+                        logger.write_tool_result(
+                            tool_id, tool_name,
+                            "completed" if final_status == "success" else "error",
+                            result=json.dumps(sub_result, ensure_ascii=False),
+                            error=str(sub_result.get("error") or ""),
+                        )
+                        # 推 tool_result 事件给前端
+                        yield f"data: {json.dumps({'tool_result': {'tool_name': tool_name, 'tool_call_id': tool_id, 'status': 'completed' if final_status == 'success' else 'error', 'output': sub_result.get('result') or sub_result.get('error') or '', 'round': round_no}}, ensure_ascii=False)}\n\n"
+                        continue
+                    # ===== 委派子 Agent 分支结束 =====
 
                     terminal_session_id = ""
                     if tool_name == "cli_executor":

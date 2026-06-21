@@ -180,12 +180,18 @@ def get_session_context_usage(session_id: str):
     meta = get_session_meta(session_id) or {}
     work_dir = (meta.get("work_dir") or "").strip() or None
 
-    skills_context, tool_definitions, mcp_context = get_agent_skills_and_tools()
+    skills_context, tool_definitions, mcp_context, subagents_context = get_agent_skills_and_tools()
     prompt_parts = build_agent_system_prompt_parts(
-        skills_context, work_dir=work_dir, session_id=session_id, mcp_context=mcp_context
+        skills_context,
+        work_dir=work_dir,
+        session_id=session_id,
+        mcp_context=mcp_context,
+        subagents_context=subagents_context,
     )
     breakdown = build_context_usage_breakdown(
-        system_prompt_base=prompt_parts["base"] + (prompt_parts.get("mcp") or ""),
+        system_prompt_base=prompt_parts["base"]
+            + (prompt_parts.get("mcp") or "")
+            + (prompt_parts.get("subagents") or ""),
         tool_definitions=tool_definitions,
         rules_text=prompt_parts["rules"],
         skills_text=prompt_parts["skills"],

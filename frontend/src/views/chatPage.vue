@@ -425,6 +425,20 @@ interface MessageBlock {
   pending_confirmation?: boolean
   danger_info?: string
   danger_types?: string[]
+  // 子 Agent 委派的实时状态（仅 tool_name === 'delegate_to_subagent' 时使用）
+  subagent?: {
+    task_id?: string
+    subagent?: string
+    task?: string
+    status?: string         // running | stalled | success | failed | timeout | cancelled
+    round?: number
+    last_event?: string
+    elapsed_ms?: number
+    log_path?: string
+    // 子 Agent 的完整流式内容（展开工具块时显示）
+    inner_blocks?: MessageBlock[]
+    final_message?: string
+  }
 }
 
 interface MessageMeta {
@@ -465,6 +479,42 @@ function enrichUserMessage(content: string): Pick<ChatMessage, 'content' | 'slas
 }
 
 const messages = ref<ChatMessage[]>([])
+
+// 本会话所有子 Agent 委派记录（按 task_id 去重 upsert）
+// 供 SubagentChatPanel 展示用，涵盖所有 assistant 消息里的 delegate_to_subagent 调用
+interface SubagentRecord {
+  task_id: string
+  subagent?: string
+  task?: string
+  status?: string
+  round?: number
+  last_event?: string
+  elapsed_ms?: number
+  log_path?: string
+  inner_blocks?: MessageBlock[]
+  final_message?: string
+  message_id?: number  // 来源 assistant 消息的 DB id，便于历史重建
+}
+const sessionSubagents = ref<SubagentRecord[]>([])
+
+function upsertSubagent(record: SubagentRecord) {
+  const idx = sessionSubagents.value.findIndex((s) => s.task_id === record.task_id)
+  if (idx >= 0) {
+    // 合并字段（保留已有 inner_blocks，仅追加新内容由调用方处理）
+    sessionSubagents.value[idx] = { ...sessionSubagents.value[idx], ...record }
+  } else {
+    sessionSubagents.value.push(record)
+  }
+}
+
+function findSubagentByTaskId(taskId: string): SubagentRecord | undefined {
+  return sessionSubagents.value.find((s) => s.task_id === taskId)
+}
+
+// 暴露给父组件
+defineExpose({
+  sessionSubagents,
+})
 
 // 已自动确认的 tool call ID 集合，用于跳过后续 pending_confirmation 事件
 const autoConfirmedToolIds = new Set<string>()
@@ -549,6 +599,7 @@ function onNewChat(e?: Event) {
   stopChatWs()
   currentSessionId.value = undefined
   messages.value = []
+  sessionSubagents.value = []
   hasActiveChat.value = false
   inputMessage.value = ''
   clearAttachedImages()
@@ -666,6 +717,8 @@ async function loadSessionById(id: string) {
   inputMessage.value = ''
   clearAttachedImages()
   clearComposerCommand()
+  // 切换会话时清空子 Agent 列表；历史 sub_agent 块会在快照重建时重新填入
+  sessionSubagents.value = []
 
   try {
     const meta = await getSession(id)
@@ -726,6 +779,7 @@ async function loadSessionById(id: string) {
   } catch (err) {
     console.error('加载历史消息失败', err)
     messages.value = []
+    sessionSubagents.value = []
     hasActiveChat.value = false
   } finally {
     startChatWs()
@@ -791,6 +845,80 @@ async function loadMessageSnapshot(
             ended_at: ''
           })
           break
+
+        case 'sub_agent': {
+          // 历史快照里的 sub_agent 块：合并到已有的 delegate_to_subagent tool block 上
+          // 避免一个委派被 tool_call + sub_agent(running) + sub_agent(success) 渲染三遍
+          const tcId = event.toolCallId || ''
+          let existing: MessageBlock | undefined
+          if (tcId) {
+            for (let i = blocks.length - 1; i >= 0; i--) {
+              const b = blocks[i]
+              if (b.type === 'tool' && b.tool_call_id === tcId) {
+                existing = b
+                break
+              }
+            }
+          }
+          const subagentField = {
+            task_id: tcId,
+            subagent: event.subagent,
+            task: event.task,
+            status: event.status,
+            log_path: event.logPath,
+            elapsed_ms: event.durationMs,
+            final_message: event.finalOutput,
+          }
+          if (existing) {
+            // 合并：状态、结果、subagent 字段（保留更"终态"的信息）
+            existing.tool_name = 'delegate_to_subagent'
+            existing.status = event.status === 'success' ? 'completed' : (event.status || existing.status || 'running')
+            if (event.finalOutput) existing.result = event.finalOutput
+            if (event.status && event.status !== 'success') {
+              existing.error = event.content || existing.error || ''
+            }
+            existing.ended_at = event.timestamp || existing.ended_at || ''
+            // args 兜底（如果之前 tool_call 没记录到 description / task 等）
+            existing.args = {
+              ...(existing.args || {}),
+              subagent_name: event.subagent || existing.args?.subagent_name || '',
+              task: event.task || existing.args?.task || '',
+            }
+            existing.subagent = { ...(existing.subagent || {}), ...subagentField }
+          } else {
+            // 没有匹配的 tool_call（旧版日志或异常情况）→ 新建一个
+            blocks.push({
+              type: 'tool',
+              tool_name: 'delegate_to_subagent',
+              tool_call_id: tcId,
+              status: event.status === 'success' ? 'completed' : (event.status || 'running'),
+              args: {
+                subagent_name: event.subagent || '',
+                task: event.task || '',
+                description: '',
+              },
+              result: event.finalOutput || '',
+              error: event.status && event.status !== 'success' ? (event.content || '') : '',
+              started_at: event.timestamp || '',
+              ended_at: event.timestamp || '',
+              subagent: subagentField,
+            })
+          }
+          // 同步到 sessionSubagents（历史重建）
+          if (tcId) {
+            upsertSubagent({
+              task_id: tcId,
+              subagent: event.subagent,
+              task: event.task,
+              status: event.status,
+              log_path: event.logPath,
+              elapsed_ms: event.durationMs,
+              final_message: event.finalOutput,
+              message_id: messageId,
+            })
+          }
+          break
+        }
 
         case 'tool_result':
           for (let i = blocks.length - 1; i >= 0; i--) {
@@ -1240,6 +1368,178 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
         }
       }
       assistantMsg.blocks = blocks
+    }
+  } else if (evt.type === 'subagent_event') {
+    // 转发给 SubagentChatPanel
+    window.dispatchEvent(new CustomEvent('aries:subagent-stream', { detail: { eventType: evt.type, data: evt.data || {} } }))
+    // 子 Agent 实时进度：合并到匹配的 delegate_to_subagent 工具块上
+    if (!assistantMsg.blocks) assistantMsg.blocks = []
+    const subData = evt.data || {}
+    const subName = String(subData.subagent || '')
+    const taskId = String(subData.task_id || '')
+    // 找到最后一个还在 running 状态的 delegate_to_subagent 块（按 subagent 名匹配）
+    const blocks = assistantMsg.blocks
+    let target: MessageBlock | undefined
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const b = blocks[i]
+      if (b.type !== 'tool' || b.tool_name !== 'delegate_to_subagent') continue
+      // 优先用 task_id 精确匹配
+      if (taskId && b.subagent?.task_id === taskId) { target = b; break }
+      // fallback：subagent 名匹配且尚未绑定 task_id
+      if (!taskId && (!subName || !b.args || !b.args.subagent_name || b.args.subagent_name === subName)) {
+        target = b
+        break
+      }
+    }
+    if (target) {
+      target.subagent = {
+        task_id: taskId || target.subagent?.task_id,
+        subagent: subData.subagent,
+        task: subData.task,
+        status: subData.status,
+        round: subData.round,
+        last_event: subData.last_event,
+        elapsed_ms: subData.elapsed_ms,
+        log_path: subData.log_path,
+        inner_blocks: target.subagent?.inner_blocks,
+        final_message: target.subagent?.final_message,
+      }
+    }
+    // 同步到 sessionSubagents
+    if (taskId) {
+      upsertSubagent({
+        task_id: taskId,
+        subagent: subData.subagent,
+        task: subData.task,
+        status: subData.status,
+        round: subData.round,
+        last_event: subData.last_event,
+        elapsed_ms: subData.elapsed_ms,
+        log_path: subData.log_path,
+      })
+    }
+  } else if (
+    evt.type === 'subagent_reasoning' ||
+    evt.type === 'subagent_content' ||
+    evt.type === 'subagent_tool_call' ||
+    evt.type === 'subagent_tool_result'
+  ) {
+    // 转发给 SubagentChatPanel
+    window.dispatchEvent(new CustomEvent('aries:subagent-stream', { detail: { eventType: evt.type, data: evt.data || {} } }))
+    // 子 Agent 的细粒度流式事件：追加到匹配 tool block 的 subagent.inner_blocks
+    if (!assistantMsg.blocks) assistantMsg.blocks = []
+    const d = evt.data || {}
+    const taskId = String(d.task_id || '')
+    const blocks = assistantMsg.blocks
+    let target: MessageBlock | undefined
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const b = blocks[i]
+      if (b.type !== 'tool' || b.tool_name !== 'delegate_to_subagent') continue
+      // 用 task_id 精确匹配（更稳），fallback 到 subagent 名
+      const sa = b.subagent
+      if (!sa) continue
+      if (taskId && sa.task_id === taskId) { target = b; break }
+      if (!taskId && d.subagent && b.args?.subagent_name === d.subagent) { target = b; break }
+    }
+    if (!target) return
+    if (!target.subagent) target.subagent = {}
+    if (!target.subagent.inner_blocks) target.subagent.inner_blocks = []
+    const inner: MessageBlock[] = target.subagent.inner_blocks
+
+    // 同时同步到 sessionSubagents
+    let sessRecord = taskId ? findSubagentByTaskId(taskId) : undefined
+    if (taskId && !sessRecord) {
+      // 第一次细粒度事件先于 subagent_event 到达的兜底
+      upsertSubagent({
+        task_id: taskId,
+        subagent: d.subagent,
+        status: 'running',
+      })
+      sessRecord = findSubagentByTaskId(taskId)
+    }
+    if (sessRecord) {
+      if (!sessRecord.inner_blocks) sessRecord.inner_blocks = []
+    }
+
+    if (evt.type === 'subagent_reasoning') {
+      const delta = String(d.delta || '')
+      if (!delta) return
+      const last = inner[inner.length - 1]
+      if (last && last.type === 'text' && last.phase === 'work') {
+        last.text = (last.text || '') + delta
+      } else {
+        inner.push({ type: 'text', text: delta, phase: 'work' })
+      }
+      if (sessRecord) {
+        const sLast = sessRecord.inner_blocks![sessRecord.inner_blocks!.length - 1]
+        if (sLast && sLast.type === 'text' && sLast.phase === 'work') {
+          sLast.text = (sLast.text || '') + delta
+        } else {
+          sessRecord.inner_blocks!.push({ type: 'text', text: delta, phase: 'work' })
+        }
+      }
+    } else if (evt.type === 'subagent_content') {
+      const delta = String(d.delta || '')
+      if (!delta) return
+      const last = inner[inner.length - 1]
+      if (last && last.type === 'text' && last.phase === 'answer') {
+        last.text = (last.text || '') + delta
+      } else {
+        inner.push({ type: 'text', text: delta, phase: 'answer' })
+      }
+      if (sessRecord) {
+        const sLast = sessRecord.inner_blocks![sessRecord.inner_blocks!.length - 1]
+        if (sLast && sLast.type === 'text' && sLast.phase === 'answer') {
+          sLast.text = (sLast.text || '') + delta
+        } else {
+          sessRecord.inner_blocks!.push({ type: 'text', text: delta, phase: 'answer' })
+        }
+      }
+    } else if (evt.type === 'subagent_tool_call') {
+      const newBlock: MessageBlock = {
+        type: 'tool',
+        tool_name: d.tool_name || 'unknown',
+        tool_call_id: d.tool_call_id || '',
+        status: d.status || 'running',
+        args: d.args,
+        result: '',
+        error: '',
+        started_at: '',
+        ended_at: '',
+      }
+      inner.push(newBlock)
+      if (sessRecord) {
+        sessRecord.inner_blocks!.push({ ...newBlock })
+      }
+    } else if (evt.type === 'subagent_tool_result') {
+      const tcId = String(d.tool_call_id || '')
+      for (let i = inner.length - 1; i >= 0; i--) {
+        const b = inner[i]
+        if (b.type === 'tool' && b.tool_call_id === tcId) {
+          b.status = d.status || 'completed'
+          b.result = typeof d.output === 'string' ? d.output : JSON.stringify(d.output || '')
+          b.error = d.error || ''
+          b.ended_at = ''
+          break
+        }
+      }
+      if (sessRecord) {
+        for (let i = sessRecord.inner_blocks!.length - 1; i >= 0; i--) {
+          const b = sessRecord.inner_blocks![i]
+          if (b.type === 'tool' && b.tool_call_id === tcId) {
+            b.status = d.status || 'completed'
+            b.result = typeof d.output === 'string' ? d.output : JSON.stringify(d.output || '')
+            b.error = d.error || ''
+            break
+          }
+        }
+      }
+      // 如果是 report_to_main 的结果，把 message 存为 final_message
+      if (d.tool_name === 'report_to_main' && d.status === 'completed') {
+        const finalMsg = typeof d.output === 'string' ? d.output : ''
+        target.subagent.final_message = finalMsg
+        if (sessRecord) sessRecord.final_message = finalMsg
+      }
     }
   } else if (evt.type === 'error') {
     // 处理错误事件（如 API 错误、黑名单拦截等）
