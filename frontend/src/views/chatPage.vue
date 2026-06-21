@@ -1674,17 +1674,19 @@ function scheduleScrollToBottom(force = false) {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 40px 48px 32px;
-  gap: 24px;
+  padding: 64px 48px 80px;
+  gap: 56px;
 }
 
 .welcome-title {
   font-size: 28px;
-  font-weight: 600;
+  font-weight: 400;
   color: var(--text);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
   text-align: center;
   max-width: 640px;
+  line-height: 0.75;
+  margin: 0;
 }
 
 /* —— 对话：进行中 —— */

@@ -21,6 +21,24 @@ class GitActionRequest(BaseModel):
     work_dir: str
 
 
+class CheckoutRequest(BaseModel):
+    work_dir: str
+    branch: str
+    force: bool = False
+
+
+class CreateBranchRequest(BaseModel):
+    work_dir: str
+    name: str
+    checkout: bool = True
+
+
+class MergeBranchRequest(BaseModel):
+    work_dir: str
+    branch: str
+    no_ff: bool = False
+
+
 def _run_git(work_dir: str, args: list[str]) -> tuple[int, str, str]:
     """执行 git 命令，返回 (returncode, stdout, stderr)。"""
     try:
@@ -188,6 +206,132 @@ async def git_diff(
         modified = _read_file(wd, file_path)
 
     return {"original": original, "modified": modified}
+
+
+def _is_dirty(work_dir: str) -> bool:
+    """判断工作区是否有未提交改动（含未跟踪文件）。"""
+    code, stdout, _ = _run_git(work_dir, ["status", "--porcelain"])
+    if code != 0:
+        return False
+    return bool(stdout.strip())
+
+
+@router.get("/branches")
+async def git_branches(work_dir: str | None = None) -> dict[str, Any]:
+    """列出本地分支，并返回当前分支和工作区 dirty 状态。"""
+    wd = _normalize_work_dir(work_dir)
+
+    # 仓库检查
+    code, _, _ = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _run_git(wd, ["rev-parse", "--git-dir"])
+    )
+    if code != 0:
+        return {"is_repo": False, "current": "", "dirty": False, "branches": []}
+
+    # 当前分支
+    code_b, stdout_b, _ = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _run_git(wd, ["symbolic-ref", "--quiet", "--short", "HEAD"])
+    )
+    current = stdout_b.strip() if code_b == 0 else ""
+
+    # 本地分支列表（按最近提交时间倒序）
+    code_l, stdout_l, _ = await asyncio.get_event_loop().run_in_executor(
+        None,
+        lambda: _run_git(
+            wd,
+            ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads/"],
+        ),
+    )
+    branches: list[str] = []
+    if code_l == 0:
+        for line in stdout_l.splitlines():
+            name = line.strip()
+            if name:
+                branches.append(name)
+
+    dirty = await asyncio.get_event_loop().run_in_executor(None, lambda: _is_dirty(wd))
+
+    return {
+        "is_repo": True,
+        "current": current,
+        "dirty": dirty,
+        "branches": branches,
+    }
+
+
+@router.post("/checkout")
+async def git_checkout(req: CheckoutRequest) -> dict[str, Any]:
+    """切换到已有分支。
+
+    若工作区有未提交改动且 force=False，则返回 dirty=True 让前端二次确认。
+    """
+    wd = _normalize_work_dir(req.work_dir)
+    branch = (req.branch or "").strip()
+    if not branch:
+        return {"success": False, "message": "branch is required"}
+
+    if not req.force:
+        dirty = await asyncio.get_event_loop().run_in_executor(None, lambda: _is_dirty(wd))
+        if dirty:
+            return {
+                "success": False,
+                "dirty": True,
+                "message": "工作区存在未提交改动，请先提交或确认强制切换。",
+            }
+
+    code, stdout, stderr = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _run_git(wd, ["checkout", branch])
+    )
+    if code != 0:
+        return {
+            "success": False,
+            "message": stderr.strip() or stdout.strip() or "checkout failed",
+        }
+    return {"success": True, "message": stdout.strip() or stderr.strip()}
+
+
+@router.post("/create-branch")
+async def git_create_branch(req: CreateBranchRequest) -> dict[str, Any]:
+    """基于当前 HEAD 创建新分支，默认创建后立即切换过去。"""
+    wd = _normalize_work_dir(req.work_dir)
+    name = (req.name or "").strip()
+    if not name:
+        return {"success": False, "message": "branch name is required"}
+
+    args = ["checkout", "-b", name] if req.checkout else ["branch", name]
+    code, stdout, stderr = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _run_git(wd, args)
+    )
+    if code != 0:
+        return {
+            "success": False,
+            "message": stderr.strip() or stdout.strip() or "create branch failed",
+        }
+    return {"success": True, "message": stdout.strip() or stderr.strip()}
+
+
+@router.post("/merge-branch")
+async def git_merge_branch(req: MergeBranchRequest) -> dict[str, Any]:
+    """将指定分支合并到当前分支（不自动解决冲突）。"""
+    wd = _normalize_work_dir(req.work_dir)
+    branch = (req.branch or "").strip()
+    if not branch:
+        return {"success": False, "message": "branch is required"}
+
+    args = ["merge"]
+    if req.no_ff:
+        args.append("--no-ff")
+    args.append(branch)
+
+    code, stdout, stderr = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _run_git(wd, args)
+    )
+    if code != 0:
+        return {
+            "success": False,
+            "message": stderr.strip() or stdout.strip() or "merge failed",
+        }
+    return {"success": True, "message": stdout.strip()}
 
 
 # --- 二进制 / 图片 文件展示支持 -------------------------------------------------

@@ -554,9 +554,9 @@ defineExpose({ openFilePicker, clearImages, focus })
 
 .composer-editor {
   width: 100%;
-  min-height: calc(1.5em * v-bind(minRows));
-  max-height: calc(1.5em * v-bind(maxRows));
-  padding: 10px 12px;
+  min-height: calc(1.25em * v-bind(minRows));
+  max-height: calc(1.25em * v-bind(maxRows));
+  padding: 8px 10px;
   box-sizing: border-box;
   outline: none;
   border: none;

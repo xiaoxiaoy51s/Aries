@@ -1,4 +1,5 @@
 <template>
+  <div class="composer-shell" :class="{ 'composer-shell-bottom': isBottom }">
   <div class="composer" :class="{ 'composer-with-slash': true, 'composer-bottom': isBottom }">
     <!-- MCP 状态面板（覆盖在输入框上方，绝对定位） -->
     <div v-if="mcpPanelOpen" class="mcp-panel">
@@ -63,6 +64,7 @@
       :rows="rows"
       :max-rows="5"
       :disabled="isSending"
+      placeholder="随心输入"
       :plugin-items="pluginItems"
       :skill-items="skillItems"
       @send="$emit('send')"
@@ -212,6 +214,8 @@
         </button>
       </div>
     </div>
+    </div>
+    <!-- /composer 容器：边框仅包裹文本区与工具栏，底部标签栏脱离边框 -->
     <!-- 底部工具栏：仅在欢迎界面显示 -->
     <div v-if="!isBottom && showWorkDir" class="composer-bottom-bar">
       <div class="bottom-bar-item workdir-picker-bottom">
@@ -252,26 +256,93 @@
           </button>
         </div>
       </div>
-      <div class="bottom-bar-item">
-        <button type="button" class="bottom-bar-btn">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-            <line x1="8" y1="21" x2="16" y2="21"/>
-            <line x1="12" y1="17" x2="12" y2="21"/>
-          </svg>
-          <span class="bottom-bar-label">本地模式</span>
+      <div class="bottom-bar-item branch-picker-bottom">
+        <button
+          type="button"
+          class="bottom-bar-btn"
+          :title="branchInfo.current ? `当前分支：${branchInfo.current}${branchInfo.dirty ? '（有未提交改动）' : ''}` : '未检测到 Git 仓库'"
+          @click="toggleBranchMenu"
+        >
+          <svg t="1782020391719" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="9260" width="14" height="14"><path d="M303.146667 648.96A128.042667 128.042667 0 1 1 213.333333 647.253333V376.746667a128.042667 128.042667 0 1 1 85.333334 0V512c35.669333-26.794667 79.957333-42.666667 128-42.666667h170.666666a128.042667 128.042667 0 0 0 123.52-94.293333 128.042667 128.042667 0 1 1 86.698667 2.730667A213.418667 213.418667 0 0 1 597.333333 554.666667h-170.666666a128.042667 128.042667 0 0 0-123.52 94.293333zM256 725.333333a42.666667 42.666667 0 1 0 0 85.333334 42.666667 42.666667 0 0 0 0-85.333334zM256 213.333333a42.666667 42.666667 0 1 0 0 85.333334 42.666667 42.666667 0 0 0 0-85.333334z m512 0a42.666667 42.666667 0 1 0 0 85.333334 42.666667 42.666667 0 0 0 0-85.333334z" fill="#000000" p-id="9261"></path></svg>
+          <span class="bottom-bar-label">{{ branchInfo.current || '无分支' }}</span>
+          <span v-if="branchInfo.dirty" class="branch-dirty-dot" title="工作区有未提交改动"></span>
         </button>
-      </div>
-      <div class="bottom-bar-item">
-        <button type="button" class="bottom-bar-btn">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="6" y1="3" x2="6" y2="15"/>
-            <circle cx="18" cy="6" r="3"/>
-            <circle cx="6" cy="18" r="3"/>
-            <path d="M18 9a9 9 0 0 1-9 9"/>
-          </svg>
-          <span class="bottom-bar-label">master</span>
-        </button>
+        <div v-if="branchMenuOpen" class="branch-menu" @click.stop>
+          <div class="branch-menu-title">
+            <span>分支</span>
+            <span v-if="branchInfo.dirty" class="branch-menu-dirty">未提交改动</span>
+          </div>
+          <input
+            v-if="branchInfo.is_repo && branchInfo.branches.length > 5"
+            v-model="branchFilter"
+            class="branch-menu-search"
+            type="text"
+            placeholder="搜索分支..."
+          />
+          <ul v-if="branchInfo.is_repo && filteredBranches.length" class="branch-menu-list">
+            <li
+              v-for="b in filteredBranches"
+              :key="b"
+              class="branch-menu-item"
+              :class="{ active: b === branchInfo.current }"
+            >
+              <span class="branch-menu-name" :title="b" @click="onCheckoutBranch(b)">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="6" y1="3" x2="6" y2="15"/>
+                  <circle cx="18" cy="6" r="3"/>
+                  <circle cx="6" cy="18" r="3"/>
+                  <path d="M18 9a9 9 0 0 1-9 9"/>
+                </svg>
+                <span class="branch-menu-text">{{ b }}</span>
+              </span>
+              <button
+                v-if="b !== branchInfo.current"
+                type="button"
+                class="branch-menu-action"
+                :title="`将 ${b} 合并到当前分支 ${branchInfo.current}`"
+                @click.stop="onMergeBranch(b)"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="6" cy="6" r="3"/>
+                  <circle cx="6" cy="18" r="3"/>
+                  <circle cx="18" cy="12" r="3"/>
+                  <path d="M6 9v6"/>
+                  <path d="M6 18a12 12 0 0 0 12-6"/>
+                </svg>
+              </button>
+            </li>
+          </ul>
+          <div v-else-if="!branchInfo.is_repo" class="branch-menu-empty">当前目录不是 Git 仓库</div>
+          <div v-else class="branch-menu-empty">无匹配分支</div>
+          <div v-if="branchInfo.is_repo" class="branch-menu-divider"></div>
+          <div v-if="branchInfo.is_repo && !creatingBranch" class="branch-menu-footer">
+            <button type="button" class="branch-menu-new" @click="creatingBranch = true">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 5v14M5 12h14"/>
+              </svg>
+              <span>基于当前分支新建</span>
+            </button>
+          </div>
+          <form
+            v-if="branchInfo.is_repo && creatingBranch"
+            class="branch-menu-create"
+            @submit.prevent="onCreateBranch"
+          >
+            <input
+              ref="newBranchInputRef"
+              v-model="newBranchName"
+              class="branch-menu-input"
+              type="text"
+              placeholder="新分支名"
+              @keydown.esc.prevent="cancelCreateBranch"
+            />
+            <button type="submit" class="branch-menu-confirm" :disabled="!newBranchName.trim()">创建</button>
+            <button type="button" class="branch-menu-cancel" @click="cancelCreateBranch">取消</button>
+          </form>
+          <div v-if="branchActionMessage" class="branch-menu-message" :class="{ error: branchActionError }">
+            {{ branchActionMessage }}
+          </div>
+        </div>
       </div>
     </div>
     <RoleEditorModal
@@ -280,6 +351,33 @@
       @close="roleModalVisible = false"
       @saved="() => {}"
     />
+    <!-- 通用确认弹窗（分支切换/合并等） -->
+    <Teleport to="body">
+      <div
+        v-if="confirmState.visible"
+        class="branch-confirm-overlay"
+        @mousedown.self="resolveConfirm(false)"
+      >
+        <div class="branch-confirm-dialog" @click.stop>
+          <div class="branch-confirm-header">{{ confirmState.title }}</div>
+          <div class="branch-confirm-body">
+            <p>{{ confirmState.message }}</p>
+          </div>
+          <div class="branch-confirm-footer">
+            <button class="branch-confirm-btn branch-confirm-btn-cancel" @click="resolveConfirm(false)">
+              {{ confirmState.cancelText }}
+            </button>
+            <button
+              class="branch-confirm-btn"
+              :class="confirmState.kind === 'danger' ? 'branch-confirm-btn-danger' : 'branch-confirm-btn-primary'"
+              @click="resolveConfirm(true)"
+            >
+              {{ confirmState.confirmText }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
     <!-- 压缩确认弹窗 -->
     <Teleport to="body">
       <div v-if="compactModalOpen" class="compact-overlay" @mousedown.self="compactModalOpen = false">
@@ -433,6 +531,242 @@ const mcpStatusBusy = ref<string | null>(null)
 const compactModalOpen = ref(false)
 const compactLoading = ref(false)
 
+// --- Git 分支选择器 -------------------------------------------------------
+type BranchInfo = {
+  is_repo: boolean
+  current: string
+  dirty: boolean
+  branches: string[]
+}
+const branchMenuOpen = ref(false)
+const branchInfo = ref<BranchInfo>({ is_repo: false, current: '', dirty: false, branches: [] })
+const branchFilter = ref('')
+const creatingBranch = ref(false)
+const newBranchName = ref('')
+const newBranchInputRef = ref<HTMLInputElement | null>(null)
+const branchActionMessage = ref('')
+const branchActionError = ref(false)
+let branchMessageTimer: ReturnType<typeof setTimeout> | null = null
+
+// 应用内确认弹窗（替代 window.confirm，与 SettingsPanel 删除/解绑弹窗风格一致）
+type ConfirmKind = 'default' | 'danger'
+type ConfirmState = {
+  visible: boolean
+  title: string
+  message: string
+  confirmText: string
+  cancelText: string
+  kind: ConfirmKind
+  resolve: ((v: boolean) => void) | null
+}
+const confirmState = ref<ConfirmState>({
+  visible: false,
+  title: '',
+  message: '',
+  confirmText: '确定',
+  cancelText: '取消',
+  kind: 'default',
+  resolve: null,
+})
+
+function openConfirm(opts: {
+  title: string
+  message: string
+  confirmText?: string
+  cancelText?: string
+  kind?: ConfirmKind
+}): Promise<boolean> {
+  return new Promise((resolve) => {
+    confirmState.value = {
+      visible: true,
+      title: opts.title,
+      message: opts.message,
+      confirmText: opts.confirmText || '确定',
+      cancelText: opts.cancelText || '取消',
+      kind: opts.kind || 'default',
+      resolve,
+    }
+  })
+}
+
+function resolveConfirm(value: boolean) {
+  const fn = confirmState.value.resolve
+  confirmState.value.visible = false
+  confirmState.value.resolve = null
+  if (fn) fn(value)
+}
+
+const filteredBranches = computed(() => {
+  const q = branchFilter.value.trim().toLowerCase()
+  const list = branchInfo.value.branches || []
+  if (!q) return list
+  return list.filter((b) => b.toLowerCase().includes(q))
+})
+
+function setBranchMessage(msg: string, isError = false) {
+  branchActionMessage.value = msg
+  branchActionError.value = isError
+  if (branchMessageTimer) clearTimeout(branchMessageTimer)
+  if (msg) {
+    branchMessageTimer = setTimeout(() => {
+      branchActionMessage.value = ''
+      branchActionError.value = false
+    }, 4000)
+  }
+}
+
+async function refreshBranches() {
+  try {
+    const baseUrl = useModelStore().getBaseUrl()
+    const url = `${baseUrl}/git/branches${props.workDir ? `?work_dir=${encodeURIComponent(props.workDir)}` : ''}`
+    const res = await fetch(url)
+    if (!res.ok) return
+    const data = await res.json()
+    branchInfo.value = {
+      is_repo: !!data.is_repo,
+      current: data.current || '',
+      dirty: !!data.dirty,
+      branches: Array.isArray(data.branches) ? data.branches : [],
+    }
+  } catch (e) {
+    console.error('加载分支列表失败', e)
+  }
+}
+
+async function toggleBranchMenu() {
+  branchMenuOpen.value = !branchMenuOpen.value
+  if (branchMenuOpen.value) {
+    branchFilter.value = ''
+    creatingBranch.value = false
+    newBranchName.value = ''
+    branchActionMessage.value = ''
+    await refreshBranches()
+  }
+}
+
+async function onCheckoutBranch(branch: string) {
+  if (!branch || branch === branchInfo.value.current) return
+  const baseUrl = useModelStore().getBaseUrl()
+  let force = false
+  if (branchInfo.value.dirty) {
+    const ok = await openConfirm({
+      title: '切换分支',
+      message: `工作区存在未提交改动，切换到 "${branch}" 可能会让 Git 阻止操作或丢失改动。是否仍然尝试切换？`,
+      confirmText: '仍要切换',
+      cancelText: '取消',
+      kind: 'danger',
+    })
+    if (!ok) return
+    force = true
+  }
+  try {
+    const res = await fetch(`${baseUrl}/git/checkout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ work_dir: props.workDir || '', branch, force }),
+    })
+    const data = await res.json()
+    if (!data.success) {
+      if (data.dirty) {
+        const ok = await openConfirm({
+          title: '切换分支',
+          message: `${data.message || '工作区有未提交改动'}\n\n是否强制切换？`,
+          confirmText: '强制切换',
+          cancelText: '取消',
+          kind: 'danger',
+        })
+        if (ok) {
+          await fetch(`${baseUrl}/git/checkout`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ work_dir: props.workDir || '', branch, force: true }),
+          })
+        } else {
+          return
+        }
+      } else {
+        setBranchMessage(data.message || '切换失败', true)
+        return
+      }
+    }
+    setBranchMessage(`已切换到 ${branch}`)
+    await refreshBranches()
+  } catch (e) {
+    console.error('切换分支失败', e)
+    setBranchMessage('切换分支失败', true)
+  }
+}
+
+async function onCreateBranch() {
+  const name = newBranchName.value.trim()
+  if (!name) return
+  try {
+    const baseUrl = useModelStore().getBaseUrl()
+    const res = await fetch(`${baseUrl}/git/create-branch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ work_dir: props.workDir || '', name, checkout: true }),
+    })
+    const data = await res.json()
+    if (!data.success) {
+      setBranchMessage(data.message || '创建分支失败', true)
+      return
+    }
+    setBranchMessage(`已创建并切换到 ${name}`)
+    creatingBranch.value = false
+    newBranchName.value = ''
+    await refreshBranches()
+  } catch (e) {
+    console.error('创建分支失败', e)
+    setBranchMessage('创建分支失败', true)
+  }
+}
+
+function cancelCreateBranch() {
+  creatingBranch.value = false
+  newBranchName.value = ''
+}
+
+async function onMergeBranch(branch: string) {
+  if (!branch || branch === branchInfo.value.current) return
+  const ok = await openConfirm({
+    title: '合并分支',
+    message: `将分支 "${branch}" 合并到当前分支 "${branchInfo.value.current}"？\n\n如发生冲突，请到 Git 面板手动解决。`,
+    confirmText: '合并',
+    cancelText: '取消',
+  })
+  if (!ok) return
+  try {
+    const baseUrl = useModelStore().getBaseUrl()
+    const res = await fetch(`${baseUrl}/git/merge-branch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ work_dir: props.workDir || '', branch }),
+    })
+    const data = await res.json()
+    if (!data.success) {
+      setBranchMessage(data.message || '合并失败', true)
+      return
+    }
+    setBranchMessage(`已合并 ${branch}`)
+    await refreshBranches()
+  } catch (e) {
+    console.error('合并分支失败', e)
+    setBranchMessage('合并分支失败', true)
+  }
+}
+
+watch(creatingBranch, async (val) => {
+  if (val) {
+    await nextTick()
+    newBranchInputRef.value?.focus()
+  }
+})
+
+watch(() => props.workDir, () => {
+  if (branchMenuOpen.value) refreshBranches()
+})
+
 // 请求批准（Approval）下拉菜单状态
 type ApprovalOption = {
   id: ApprovalMode
@@ -521,7 +855,6 @@ const pluginItems = computed<PluginItem[]>(() => {
     { id: 'sidechat', icon: 'sidebar', label: '侧边聊天', description: '在临时分支中发起对话' },
     { id: 'compact', icon: 'zap', label: '压缩', description: '压缩此会话的上下文', badge: compactBadge },
     { id: 'pet', icon: 'brain', label: '宠物', description: '唤醒或收起桌面宠物' },
-    { id: 'fork', icon: 'git-branch', label: '派生', description: '创建分支至本地或全新工作树' },
   ]
 })
 
@@ -653,8 +986,6 @@ function pluginIconFor(name: string): string {
       '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/>',
     cpu:
       '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 15h3M1 9h3M1 15h3"/>',
-    'git-branch':
-      '<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
     zap:
       '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
     code:
@@ -857,6 +1188,9 @@ function closeMenus(e: MouseEvent) {
   if (!target.closest('.workdir-picker-bottom')) {
     workDirMenuOpen.value = false
   }
+  if (!target.closest('.branch-picker-bottom')) {
+    branchMenuOpen.value = false
+  }
   if (!target.closest('.mcp-panel')) {
     mcpPanelOpen.value = false
   }
@@ -872,6 +1206,7 @@ function onGlobalKeydown(e: KeyboardEvent) {
   }
   if (e.key === 'Escape') {
     if (workDirMenuOpen.value) workDirMenuOpen.value = false
+    if (branchMenuOpen.value) branchMenuOpen.value = false
     if (mcpPanelOpen.value) mcpPanelOpen.value = false
     if (reviewPanelOpen.value) reviewPanelOpen.value = false
   }
@@ -920,15 +1255,42 @@ defineExpose({
 </script>
 
 <style scoped>
+.composer-shell {
+  width: 100%;
+  max-width: 760px;
+  display: flex;
+  flex-direction: column;
+  background: #f3f3f1;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: var(--radius-lg);
+  padding: 0px 0px 0;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.025);
+}
+
+.composer-shell-bottom {
+  max-width: 900px;
+}
+
 .composer {
   width: 100%;
-  max-width: 900px;
   position: relative;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: calc(var(--radius-lg) - 4px);
   background: var(--bg-panel);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  box-shadow: none;
   overflow: visible;
+}
+
+.composer-bottom-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .composer-with-slash {
@@ -944,19 +1306,8 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  padding: 16px 12px 6px;
   gap: 12px;
-}
-
-.composer-bottom-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px 10px;
-  border-top: 1px solid var(--border);
-  background: #f5f5f7;
-  border-bottom-left-radius: var(--radius-lg);
-  border-bottom-right-radius: var(--radius-lg);
 }
 
 .mcp-panel,
@@ -1110,20 +1461,24 @@ defineExpose({
 .bottom-bar-btn {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   padding: 4px 10px;
   border: none;
   border-radius: 6px;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 11.5px;
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
   white-space: nowrap;
 }
 
+.bottom-bar-btn svg {
+  opacity: 0.75;
+}
+
 .bottom-bar-btn:hover {
-  background: rgba(0, 0, 0, 0.04);
+  background: rgba(0, 0, 0, 0.05);
   color: var(--text);
 }
 
@@ -1142,23 +1497,24 @@ defineExpose({
 }
 
 .icon-btn {
-  width: 32px;
-  height: 32px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-panel);
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
   color: var(--text-secondary);
-  font-size: 18px;
+  font-size: 16px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   line-height: 1;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
 
 .icon-btn:hover {
-  background: var(--accent-hover);
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--text);
 }
 
 .icon-btn:disabled {
@@ -1169,39 +1525,61 @@ defineExpose({
 
 .model-select {
   appearance: none;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 28px 6px 12px;
-  font-size: 13px;
-  color: var(--text);
-  background: var(--bg-panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6b66' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 8px center;
+  border: none;
+  border-radius: 7px;
+  padding: 4px 24px 4px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239a9a94' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 6px center;
   cursor: pointer;
   max-width: 200px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.model-select:hover {
+  background-color: rgba(0, 0, 0, 0.04);
+  color: var(--text);
 }
 
 .send-btn {
-  width: 36px;
-  height: 36px;
+  width: 28px;
+  height: 28px;
   border: none;
   border-radius: 50%;
-  background: var(--send-bg);
-  color: #fff;
+  background: #ececea;
+  color: #4a4a46;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.15s;
+  transition: background 0.15s, color 0.15s;
   flex-shrink: 0;
   position: relative;
 }
 
 .send-btn:hover:not(:disabled) {
-  background: var(--send-hover);
+  background: #dededb;
+  color: #1a1a18;
 }
 
 .send-btn:disabled {
-  opacity: 0.4;
+  opacity: 0.45;
   cursor: not-allowed;
+}
+
+.send-icon {
+  stroke-width: 1.8;
+}
+
+/* 发送中保留深色实心圆作为可见的视觉锚点（spinner 需要） */
+.send-btn--streaming {
+  background: var(--send-bg);
+  color: #fff;
+}
+
+.send-btn--streaming:hover:not(:disabled) {
+  background: var(--send-hover);
+  color: #fff;
 }
 
 /* Slash command menu */
@@ -1329,21 +1707,19 @@ defineExpose({
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 32px;
+  height: 28px;
   padding: 0 10px;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  background: transparent;
   color: var(--text);
   font-size: 12px;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
-  backdrop-filter: blur(12px) saturate(1.2);
-  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  transition: background 0.15s, color 0.15s;
 }
 
 .approval-trigger:hover {
-  background: var(--accent-hover);
+  background: rgba(0, 0, 0, 0.04);
 }
 
 .approval-trigger-icon {
@@ -1601,6 +1977,327 @@ defineExpose({
 
 .workdir-menu-new:hover {
   background: var(--accent-hover);
+}
+
+/* ---------- 分支选择菜单 ---------- */
+.branch-picker-bottom {
+  position: relative;
+}
+
+.branch-dirty-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+  margin-left: 2px;
+  flex-shrink: 0;
+}
+
+.branch-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  min-width: 260px;
+  max-width: 360px;
+  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  z-index: 200;
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+}
+
+.branch-menu-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 10px 4px;
+}
+
+.branch-menu-dirty {
+  font-size: 10px;
+  font-weight: 500;
+  color: #f59e0b;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.branch-menu-search {
+  width: calc(100% - 12px);
+  margin: 2px 6px 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input, #fff);
+  color: var(--text);
+  outline: none;
+}
+
+.branch-menu-search:focus {
+  border-color: var(--accent, #4f8cff);
+}
+
+.branch-menu-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.branch-menu-item {
+  display: flex;
+  align-items: center;
+  padding: 0 4px 0 0;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  transition: background 0.12s, color 0.12s;
+}
+
+.branch-menu-item:hover {
+  background: var(--accent-hover);
+  color: var(--text);
+}
+
+.branch-menu-item.active {
+  background: var(--accent-active);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.branch-menu-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+
+.branch-menu-name svg {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.branch-menu-text {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, monospace;
+}
+
+.branch-menu-action {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+
+.branch-menu-item:hover .branch-menu-action {
+  opacity: 1;
+}
+
+.branch-menu-action:hover {
+  background: var(--accent-active);
+  color: var(--text);
+}
+
+.branch-menu-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 8px 10px 10px;
+}
+
+.branch-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 4px;
+}
+
+.branch-menu-footer {
+  padding: 0;
+}
+
+.branch-menu-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.branch-menu-new:hover {
+  background: var(--accent-hover);
+}
+
+.branch-menu-create {
+  display: flex;
+  gap: 4px;
+  padding: 4px 4px 2px;
+}
+
+.branch-menu-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input, #fff);
+  color: var(--text);
+  outline: none;
+  font-family: ui-monospace, monospace;
+}
+
+.branch-menu-input:focus {
+  border-color: var(--accent, #4f8cff);
+}
+
+.branch-menu-confirm,
+.branch-menu-cancel {
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.branch-menu-confirm {
+  background: var(--accent, #4f8cff);
+  border-color: var(--accent, #4f8cff);
+  color: #fff;
+}
+
+.branch-menu-confirm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.branch-menu-cancel:hover {
+  background: var(--accent-hover);
+  color: var(--text);
+}
+
+.branch-menu-message {
+  margin: 4px 6px 2px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--accent-hover);
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.branch-menu-message.error {
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* ---------- 分支操作确认弹窗（与 SettingsPanel 删除/解绑弹窗风格保持一致） ---------- */
+.branch-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10001;
+}
+
+.branch-confirm-dialog {
+  background: var(--bg-panel, #fff);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 360px;
+  max-width: 480px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.branch-confirm-header {
+  padding: 16px 20px;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+
+.branch-confirm-body {
+  padding: 20px;
+  color: var(--text);
+}
+
+.branch-confirm-body p {
+  margin: 0;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.branch-confirm-footer {
+  padding: 12px 20px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.branch-confirm-btn {
+  padding: 6px 16px;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  border: none;
+  transition: opacity 0.2s;
+}
+
+.branch-confirm-btn:hover {
+  opacity: 0.85;
+}
+
+.branch-confirm-btn-cancel {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.branch-confirm-btn-primary {
+  background: #1f2937;
+  color: #ffffff;
+}
+
+.branch-confirm-btn-danger {
+  background: #1f2937;
+  color: #ffffff;
 }
 
 /* ---------- 压缩确认弹窗 ---------- */
