@@ -9,7 +9,6 @@ export interface SubagentItem {
   name: string
   description: string
   model: string
-  fallback_model: string
   enabled: boolean
   allowed_skills: string[]
   allowed_mcps: string[]
@@ -23,7 +22,6 @@ export interface SubagentPayload {
   name: string
   description?: string
   model?: string
-  fallback_model?: string
   enabled?: boolean
   allowed_skills?: string[]
   allowed_mcps?: string[]

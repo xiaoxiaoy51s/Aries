@@ -297,6 +297,15 @@ def get_delegate_to_subagent_tool_definition() -> dict[str, Any]:
                         "type": "string",
                         "description": "（可选）追加给子 Agent 的背景信息",
                     },
+                    "isolation": {
+                        "type": "string",
+                        "enum": ["", "worktree"],
+                        "description": (
+                            "（可选）工作空间隔离模式。"
+                            "默认空字符串=共享工作目录；"
+                            "'worktree'=创建 git worktree 隔离工作空间（适合并行修改文件的场景，避免写入冲突）"
+                        ),
+                    },
                 },
                 "required": ["subagent_name", "description", "task"],
             },

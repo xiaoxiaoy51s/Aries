@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import traceback
 from typing import Any
 
@@ -30,6 +31,14 @@ def get_tool_definitions() -> list[dict]:
         definitions.extend(fm.get_tool_definitions())
     except Exception as exc:
         print(f"Failed to load file_manager tool definitions: {exc}")
+
+    # 多策略编辑工具（#4）：replace_string / multi_replace_string / apply_patch
+    try:
+        from utils.edit_tools import EditTools
+        et = EditTools()
+        definitions.extend(et.get_tool_definitions())
+    except Exception as exc:
+        print(f"Failed to load edit_tools definitions: {exc}")
 
     try:
         from utils.cli_executor import CLIExecutor
@@ -303,7 +312,7 @@ def _handle_read_skill_file(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def execute(tool: str = "", work_dir: str = "", session_id: str | None = None, invocation_id: str | None = None, **kwargs) -> dict:
-    """执行核心基础工具。"""
+    """执行核心基础工具（同步入口，保持兼容）。"""
     try:
         if tool == "cli_executor":
             from utils.cli_executor import CLIExecutor
@@ -315,6 +324,59 @@ def execute(tool: str = "", work_dir: str = "", session_id: str | None = None, i
                 cli_kwargs["invocation_id"] = invocation_id
             return executor.execute(**cli_kwargs)
 
+        return _execute_sync(tool, work_dir, session_id, invocation_id, kwargs)
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "output": traceback.format_exc(),
+        }
+
+
+async def execute_async(
+    tool: str = "",
+    args: dict | None = None,
+    work_dir: str = "",
+    session_id: str | None = None,
+    invocation_id: str | None = None,
+    cancel_event: asyncio.Event | None = None,
+    **kwargs,
+) -> dict:
+    """执行核心基础工具（异步入口，支持中断）。
+
+    cli_executor 会响应 cancel_event 和用户点击的 detach/cancel 信号。
+    其他工具委托给同步 execute 并在线程池中运行。
+    """
+    try:
+        if tool == "cli_executor":
+            from utils.cli_executor import CLIExecutor
+            executor = CLIExecutor(work_dir=work_dir)
+            cli_kwargs = dict(args) if args else {}
+            if work_dir and "working_dir" not in cli_kwargs:
+                cli_kwargs["working_dir"] = work_dir
+            if invocation_id and "invocation_id" not in cli_kwargs:
+                cli_kwargs["invocation_id"] = invocation_id
+            cli_kwargs["cancel_event"] = cancel_event
+            return await executor.execute_async(**cli_kwargs)
+
+        loop = asyncio.get_running_loop()
+        merged_kwargs = dict(args) if args else {}
+        merged_kwargs.update(kwargs)
+        return await loop.run_in_executor(
+            None,
+            lambda: _execute_sync(tool, work_dir, session_id, invocation_id, merged_kwargs),
+        )
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "output": traceback.format_exc(),
+        }
+
+
+def _execute_sync(tool: str, work_dir: str, session_id: str | None, invocation_id: str | None, kwargs: dict) -> dict:
+    """非 cli_executor 工具的同步执行。"""
+    try:
         if tool == "read_skill_file":
             return _handle_read_skill_file(kwargs)
 
@@ -324,6 +386,12 @@ def execute(tool: str = "", work_dir: str = "", session_id: str | None = None, i
         if tool == "write_agent_memory":
             from memory.agent_memory import write_agent_memory
             return write_agent_memory(work_dir, str(kwargs.get("content") or ""))
+
+        # 多策略编辑工具（#4）
+        if tool in ("replace_string", "multi_replace_string", "apply_patch"):
+            from utils.edit_tools import EditTools
+            et = EditTools(work_dir=work_dir)
+            return et.execute(tool, kwargs)
 
         fm = _get_file_manager(work_dir)
 
@@ -338,6 +406,12 @@ def execute(tool: str = "", work_dir: str = "", session_id: str | None = None, i
         if tool == "search_file":
             return fm.execute_search_file(**kwargs)
 
+        # 非核心工具：转发到 skills_manager 执行（如 playwright、web_search 等 skill 工具）
+        from utils.skills_manager import execute_tool as execute_skill_tool
+        result = execute_skill_tool(tool, kwargs, work_dir=work_dir, session_id=session_id, invocation_id=invocation_id)
+        if result is not None:
+            return result
+
         return {
             "success": False,
             "error": f"Unknown tool: {tool}",
@@ -349,3 +423,10 @@ def execute(tool: str = "", work_dir: str = "", session_id: str | None = None, i
             "error": str(e),
             "output": traceback.format_exc(),
         }
+
+
+__all__ = [
+    "get_tool_definitions",
+    "execute",
+    "execute_async",
+]

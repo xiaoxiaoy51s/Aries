@@ -19,15 +19,6 @@
             <span class="mcp-panel-item-name">{{ plugin.id }}</span>
             <span class="mcp-panel-item-desc">{{ plugin.description || plugin.command || '无描述' }}</span>
           </div>
-          <button
-            type="button"
-            class="mcp-panel-item-status"
-            :class="{ 'mcp-panel-item-status--enabled': plugin.enabled }"
-            :disabled="mcpStatusBusy === plugin.id"
-            @click.stop="toggleMcpPlugin(plugin)"
-          >
-            {{ plugin.enabled ? '已启用' : '未启用' }}
-          </button>
         </div>
       </div>
     </div>
@@ -444,7 +435,7 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import SlashComposerInput, { type ComposerImage } from '@/components/SlashComposerInput.vue'
 import RoleEditorModal from '@/components/RoleEditorModal.vue'
 import { getInitPrompt } from '@/api/memory'
-import { listPlugins, updatePluginStatus, type PluginItem as McpPluginItem } from '@/api/plugins'
+import { listPlugins, type PluginItem as McpPluginItem } from '@/api/plugins'
 import { listPets } from '@/api/pets'
 import { listSkills, type SkillItem as ApiSkillItem } from '@/api/skills'
 import { compactSession } from '@/api/sessions'
@@ -527,7 +518,6 @@ const reviewPanelOpen = ref(false)
 const mcpPanelOpen = ref(false)
 const mcpPlugins = ref<McpPluginItem[]>([])
 const mcpLoading = ref(false)
-const mcpStatusBusy = ref<string | null>(null)
 const compactModalOpen = ref(false)
 const compactLoading = ref(false)
 
@@ -1162,19 +1152,6 @@ async function loadMcpPlugins() {
     console.error('加载 MCP 列表失败', e)
   } finally {
     mcpLoading.value = false
-  }
-}
-
-async function toggleMcpPlugin(plugin: McpPluginItem) {
-  const nextEnabled = !plugin.enabled
-  mcpStatusBusy.value = plugin.id
-  try {
-    await updatePluginStatus(plugin.id, nextEnabled)
-    plugin.enabled = nextEnabled
-  } catch (e) {
-    console.error('更新 MCP 状态失败', e)
-  } finally {
-    mcpStatusBusy.value = null
   }
 }
 

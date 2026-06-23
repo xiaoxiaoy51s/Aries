@@ -1,4 +1,5 @@
 import json
+import asyncio
 import base64
 import os
 import re
@@ -32,9 +33,22 @@ from api.modes import (
     stream_agent_mode,
     resolve_confirmation,
 )
-from services.chat_stream_manager import register as register_chat_stream, unregister as unregister_chat_stream, request_cancel as request_chat_cancel
+from services.chat_stream_manager import (
+    register as register_chat_stream,
+    unregister as unregister_chat_stream,
+    request_cancel as request_chat_cancel,
+    register_bg_session,
+    get_bg_queue,
+    set_bg_task,
+    mark_bg_done,
+    is_bg_running,
+    cleanup_bg_session,
+)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+# 后台 agent 任务追踪：SSE 断开后任务继续运行，避免被 GC 回收
+_background_tasks: set[asyncio.Task] = set()
 
 
 class ImageURL(BaseModel):
@@ -447,8 +461,42 @@ async def stream_chat(request: ChatRequest, http_request: Request) -> AsyncGener
 
     cancel_event = register_chat_stream(session_id)
 
-    async def disconnect_check():
-        return await http_request.is_disconnected()
+    # 后台任务：agent 执行与 SSE 连接解耦
+    # SSE 断开（切换对话）时，后台任务继续运行，事件推入 session queue
+    # 前端切回对话时通过 /chat/resume/{session_id} 从 queue 中继续读取
+    bg_queue = register_bg_session(session_id)
+    consumer_alive = True
+
+    async def background_runner():
+        nonlocal consumer_alive
+        try:
+            async for event in stream_agent_mode(
+                request,
+                messages,
+                headers,
+                payload,
+                session_id,
+                work_dir=effective_work_dir,
+                cancel_event=cancel_event,
+                disconnect_check=None,
+            ):
+                await bg_queue.put(event)
+            mark_bg_done(session_id)
+        except Exception as e:
+            print(f"[background_runner] error: {e}")
+            error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
+            await bg_queue.put(f"data: {error_data}\n\n")
+            mark_bg_done(session_id)
+        finally:
+            unregister_chat_stream(session_id)
+            # 延迟清理 bg_session，给 resume 端点时间读取 sentinel
+            await asyncio.sleep(30)
+            cleanup_bg_session(session_id)
+
+    task = asyncio.create_task(background_runner())
+    set_bg_task(session_id, task)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
     try:
         # 仅下发轻量摘要，避免把消息分组泄露到前端 SSE
@@ -459,19 +507,21 @@ async def stream_chat(request: ChatRequest, http_request: Request) -> AsyncGener
             "usage_percent": _ctx_info.get("usage_percent"),
         }
         yield f"data: {json.dumps({'context_token_usage': _ctx_summary}, ensure_ascii=False)}\n\n"
-        async for event in stream_agent_mode(
-            request,
-            messages,
-            headers,
-            payload,
-            session_id,
-            work_dir=effective_work_dir,
-            cancel_event=cancel_event,
-            disconnect_check=disconnect_check,
-        ):
-            yield event
+
+        while True:
+            if await http_request.is_disconnected():
+                consumer_alive = False
+                break
+            try:
+                event = await asyncio.wait_for(bg_queue.get(), timeout=1.0)
+                if event is None:
+                    break
+                yield event
+            except asyncio.TimeoutError:
+                continue
     finally:
-        unregister_chat_stream(session_id)
+        consumer_alive = False
+        # 不取消后台任务，不反注册 stream（background_runner 的 finally 会处理）
 
 
 @router.post("/stop")
@@ -482,6 +532,62 @@ async def stop_chat(body: StopChatRequest):
     if request_chat_cancel(session_id):
         return {"status": "stopping", "message": "已请求停止生成"}
     return {"status": "idle", "message": "当前没有运行中的对话"}
+
+
+@router.get("/status/{session_id}")
+async def chat_status(session_id: str):
+    """检查该 session 是否有正在运行的后台任务。"""
+    running = is_bg_running(session_id)
+    return {"running": running, "session_id": session_id}
+
+
+@router.get("/resume/{session_id}")
+async def resume_chat(session_id: str, http_request: Request):
+    """前端切回对话时恢复 SSE 流，从 session queue 中继续读取后台任务的事件。"""
+    bg_queue = get_bg_queue(session_id)
+    if bg_queue is None:
+        # 没有后台任务，返回空流
+        return StreamingResponse(
+            _empty_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+    return StreamingResponse(
+        _resume_stream(session_id, bg_queue, http_request),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+async def _empty_stream():
+    yield 'data: {"resumed": false}\n\n'
+
+
+async def _resume_stream(session_id: str, bg_queue: asyncio.Queue, http_request: Request):
+    """从 session queue 中读取剩余事件并推送给前端。"""
+    try:
+        while True:
+            if await http_request.is_disconnected():
+                break
+            try:
+                event = await asyncio.wait_for(bg_queue.get(), timeout=1.0)
+                if event is None:
+                    yield 'data: {"resumed_done": true}\n\n'
+                    break
+                yield event
+            except asyncio.TimeoutError:
+                # 检查任务是否已完成
+                if not is_bg_running(session_id):
+                    # 任务已完成，排空剩余事件
+                    while not bg_queue.empty():
+                        event = bg_queue.get_nowait()
+                        if event is None:
+                            break
+                        yield event
+                    yield 'data: {"resumed_done": true}\n\n'
+                    break
+    finally:
+        pass
 
 
 @router.post("/completions")

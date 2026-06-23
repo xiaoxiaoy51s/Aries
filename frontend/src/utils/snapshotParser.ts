@@ -114,6 +114,10 @@ function convertEvent(json: any): SnapshotEvent | null {
         timestamp: json.timestamp
       }
 
+    case 'info_event':
+      // 信息事件（上下文压缩、轮次提醒等）：不显示为错误，记录但不影响 blocks
+      return null
+
     case 'run_metadata':
       return {
         type: 'run_metadata',

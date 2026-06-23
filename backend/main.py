@@ -21,7 +21,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-from api import config_router, chat_router, upload_router, skills_router, plugins_router, subagents_router, sessions_router, debug_router, scheduled_tasks_router, platforms_router, system_router, path_permissions_router, terminal_router, git_router, files_router, chat_ws_router, memory_router, pets_router
+from api import config_router, chat_router, upload_router, skills_router, plugins_router, subagents_router, sessions_router, work_dirs_router, debug_router, scheduled_tasks_router, platforms_router, system_router, path_permissions_router, terminal_router, git_router, files_router, chat_ws_router, memory_router, pets_router, network_router, main_agent_router
 from db.database import init_database
 from utils.scheduler import run_scheduler
 
@@ -58,6 +58,21 @@ async def lifespan(app: FastAPI):
 
     threading.Thread(target=_boot_bots, daemon=True, name="BotManagerBoot").start()
 
+    # ---- 启动 Node.js CLI Server（VS Code 风格 CLI） ----
+    # 放到线程中执行，避免阻塞 FastAPI 事件循环
+    def _boot_cli():
+        try:
+            from services.terminal_manager import start_cli_server
+            cli_port = start_cli_server()
+            print(f"[CLI] Node.js CLI Server 已启动 (port={cli_port})")
+        except Exception as exc:
+            print(f"[CLI] 启动 Node.js CLI Server 失败: {exc}")
+
+    cli_thread = threading.Thread(target=_boot_cli, daemon=True, name="CLIBoot")
+    cli_thread.start()
+    # 等待 CLI Server 就绪（最多 10 秒）
+    cli_thread.join(timeout=10)
+
     yield
 
     # 先停 bots（它们各自跑在子线程的事件循环里）
@@ -71,31 +86,13 @@ async def lifespan(app: FastAPI):
     mcp_pool.shutdown()
     print("[MCP] 连接池已关闭")
 
+    # ---- 停止 Node.js CLI Server ----
     try:
-        from services.terminal_manager import TerminalManager
-        from utils.cli_executor import CLIExecutor
-        closed_terms = TerminalManager.close_all_sessions()
-        closed_procs = CLIExecutor.terminate_all_active(action="terminate")
-        cleared = CLIExecutor.clear_runtime_dir()
-        if closed_terms:
-            print(f"[Terminal] 关闭 {len(closed_terms)} 个终端会话")
-        if closed_procs:
-            print(f"[CLI] 终止 {len(closed_procs)} 个子进程")
-        if cleared:
-            print(f"[CLI] 清理 {cleared} 个运行时残留文件")
+        from services.terminal_manager import stop_cli_server
+        stop_cli_server()
+        print("[CLI] Node.js CLI Server 已停止")
     except Exception as exc:
-        print(f"[Shutdown] 清理终端/子进程异常: {exc}")
-
-    # 清理 PTY 临时脚本和捕获文件
-    try:
-        import shutil
-        from pathlib import Path
-        pty_jobs_dir = Path.home() / ".Aries" / "temp" / "cli_runtime"
-        if pty_jobs_dir.exists():
-            shutil.rmtree(pty_jobs_dir, ignore_errors=True)
-            print(f"[Shutdown] 已清理 CLI 运行时目录: {pty_jobs_dir}")
-    except Exception as exc:
-        print(f"[Shutdown] 清理 CLI 运行时文件异常: {exc}")
+        print(f"[Shutdown] 停止 CLI Server 异常: {exc}")
 
     scheduler_task.cancel()
     try:
@@ -135,6 +132,7 @@ app.include_router(skills_router)
 app.include_router(plugins_router)
 app.include_router(subagents_router)
 app.include_router(sessions_router)
+app.include_router(work_dirs_router)
 app.include_router(debug_router)
 app.include_router(scheduled_tasks_router)
 app.include_router(platforms_router)
@@ -146,6 +144,8 @@ app.include_router(files_router)
 app.include_router(chat_ws_router)
 app.include_router(memory_router)
 app.include_router(pets_router)
+app.include_router(network_router)
+app.include_router(main_agent_router)
 
 
 @app.get("/")

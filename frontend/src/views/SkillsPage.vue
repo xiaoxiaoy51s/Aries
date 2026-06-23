@@ -59,17 +59,6 @@
           placeholder="搜索插件和技能"
         />
       </div>
-      <button
-        type="button"
-        class="filter-btn"
-        :class="{ active: filterEnabledOnly }"
-        title="仅显示已启用"
-        @click="filterEnabledOnly = !filterEnabledOnly"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/>
-        </svg>
-      </button>
     </div>
 
     <div v-if="loading" class="state-msg">加载中...</div>
@@ -100,17 +89,6 @@
                 <span v-if="item.toolCount" class="tool-count">{{ item.toolCount }} 个工具</span>
               </div>
             </div>
-            <button
-              type="button"
-              class="status-btn"
-              :class="{ enabled: item.enabled }"
-              :title="item.enabled ? '已启用，点击关闭' : '已关闭，点击启用'"
-              @click.stop="toggleItem(item)"
-            >
-              <svg v-if="item.enabled" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <path d="M20 6 9 17l-5-5"/>
-              </svg>
-            </button>
           </li>
         </ul>
         <button
@@ -194,15 +172,6 @@
             </div>
           </div>
           <div class="detail-header-actions">
-            <label class="toggle-switch" :title="detailEnabled ? '已启用' : '已禁用'">
-              <input
-                type="checkbox"
-                :checked="detailEnabled"
-                :disabled="detailBusy"
-                @change="toggleDetailEnabled"
-              />
-              <span class="toggle-slider" />
-            </label>
             <button type="button" class="modal-close" @click="closeDetail">&times;</button>
           </div>
         </div>
@@ -223,18 +192,49 @@
           <p v-if="detailPathHint" class="detail-path">
             <code>{{ detailPathHint }}</code>
           </p>
-          <button
-            type="button"
-            class="btn-open-path"
-            :disabled="!detailOpenPath || detailLoading"
-            @click="openDetailLocation"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-              <polyline points="15 3 21 3 21 9"/>
-              <line x1="10" y1="14" x2="21" y2="3"/>
-            </svg>
-            打开文件位置
+          <div class="detail-footer-actions">
+            <button
+              type="button"
+              class="btn-open-path"
+              :disabled="!detailOpenPath || detailLoading"
+              @click="openDetailLocation"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                <polyline points="15 3 21 3 21 9"/>
+                <line x1="10" y1="14" x2="21" y2="3"/>
+              </svg>
+              打开文件位置
+            </button>
+            <button
+              type="button"
+              class="btn-delete-item"
+              :disabled="detailLoading"
+              @click="showDeleteConfirm = true"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+              删除
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 删除确认弹窗 -->
+    <div v-if="showDeleteConfirm" class="modal-overlay" @click.self="showDeleteConfirm = false">
+      <div class="delete-confirm-dialog">
+        <div class="delete-confirm-header">确认删除</div>
+        <div class="delete-confirm-body">
+          <p>确定删除{{ detailKind === 'skills' ? '技能' : 'MCP 插件' }}「{{ detailTitle }}」？</p>
+          <p v-if="detailKind === 'skills'" class="delete-confirm-hint">将删除整个技能目录，此操作不可恢复。</p>
+          <p v-else class="delete-confirm-hint">将从 mcp.json 中移除该插件配置，此操作不可恢复。</p>
+        </div>
+        <div class="delete-confirm-footer">
+          <button class="modal-btn-cancel" @click="showDeleteConfirm = false">取消</button>
+          <button class="modal-btn-danger" :disabled="deleteBusy" @click="confirmDeleteItem">
+            {{ deleteBusy ? '删除中…' : '删除' }}
           </button>
         </div>
       </div>
@@ -245,9 +245,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
-import { getSkillDetail, listSkills, updateSkillStatus, type SkillItem } from '@/api/skills'
-import { getPluginDetail, importPlugins, listPlugins, refreshPlugins, updatePluginStatus, type PluginItem } from '@/api/plugins'
+import { getSkillDetail, listSkills, type SkillItem } from '@/api/skills'
+import { getPluginDetail, importPlugins, listPlugins, refreshPlugins, type PluginItem } from '@/api/plugins'
 import { openPath } from '@/api/system'
+import { useModelStore } from '@/stores/model'
 
 type TabKind = 'plugins' | 'skills'
 
@@ -266,7 +267,6 @@ const SECTION_LIMIT = 5
 
 const activeTab = ref<TabKind>('skills')
 const query = ref('')
-const filterEnabledOnly = ref(false)
 const loading = ref(true)
 const error = ref('')
 const skills = ref<SkillItem[]>([])
@@ -281,19 +281,19 @@ const configJsonText = ref('')
 
 const showDetail = ref(false)
 const detailLoading = ref(false)
-const detailBusy = ref(false)
 const detailError = ref('')
 const detailKind = ref<TabKind>('skills')
 const detailId = ref('')
 const detailTitle = ref('')
 const detailSubtitle = ref('')
-const detailEnabled = ref(false)
 const detailContent = ref('')
 const detailContentType = ref<'markdown' | 'json'>('markdown')
 const detailOpenPath = ref('')
 const detailPathHint = ref('')
 const detailMeta = ref('')
 const detailIcon = ref('⚡')
+const showDeleteConfirm = ref(false)
+const deleteBusy = ref(false)
 
 function skillIcon(name: string): string {
   const first = name.trim().charAt(0).toUpperCase()
@@ -325,7 +325,7 @@ function mapPlugins(): ListItem[] {
     description: plugin.last_error
       ? `连接异常：${plugin.last_error}`
       : plugin.description,
-    enabled: plugin.enabled,
+    enabled: true,
     icon: pluginIcon(plugin.id),
     toolCount: plugin.tool_count,
   }))
@@ -335,7 +335,6 @@ const currentItems = computed(() => {
   const source = activeTab.value === 'skills' ? mapSkills() : mapPlugins()
   const normalized = query.value.trim().toLowerCase()
   return source.filter((item) => {
-    if (filterEnabledOnly.value && !item.enabled) return false
     if (!normalized) return true
     return (
       item.name.toLowerCase().includes(normalized) ||
@@ -390,27 +389,6 @@ async function refresh() {
   }
 }
 
-async function toggleItem(item: ListItem) {
-  const nextEnabled = !item.enabled
-  try {
-    if (item.kind === 'skills') {
-      await updateSkillStatus(item.id, nextEnabled)
-      const target = skills.value.find((skill) => skill.folder_name === item.id)
-      if (target) target.enabled = nextEnabled
-    } else {
-      await updatePluginStatus(item.id, nextEnabled)
-      const target = plugins.value.find((plugin) => plugin.id === item.id)
-      if (target) target.enabled = nextEnabled
-    }
-    if (showDetail.value && detailId.value === item.id && detailKind.value === item.kind) {
-      detailEnabled.value = nextEnabled
-    }
-    error.value = ''
-  } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '更新状态失败'
-  }
-}
-
 function closeDetail() {
   showDetail.value = false
   detailError.value = ''
@@ -423,7 +401,6 @@ async function openDetail(item: ListItem) {
   detailId.value = item.id
   detailTitle.value = item.name
   detailSubtitle.value = item.description || (item.kind === 'plugins' ? 'MCP 插件' : 'Agent 技能')
-  detailEnabled.value = item.enabled
   detailIcon.value = item.icon
   detailContent.value = ''
   detailContentType.value = item.kind === 'skills' ? 'markdown' : 'json'
@@ -438,7 +415,6 @@ async function openDetail(item: ListItem) {
       const data = await getSkillDetail(item.id)
       detailTitle.value = data.name
       detailSubtitle.value = data.description || 'Agent 技能'
-      detailEnabled.value = data.enabled
       detailContent.value = data.content
       detailOpenPath.value = data.skill_md_path
       detailPathHint.value = data.skill_md_path
@@ -446,7 +422,6 @@ async function openDetail(item: ListItem) {
       const data = await getPluginDetail(item.id)
       detailTitle.value = data.name
       detailSubtitle.value = data.description || 'MCP 插件'
-      detailEnabled.value = data.enabled
       detailContent.value = data.config_json
       detailOpenPath.value = data.config_path
       detailPathHint.value = data.config_path
@@ -463,35 +438,35 @@ async function openDetail(item: ListItem) {
   }
 }
 
-async function toggleDetailEnabled() {
-  if (!detailId.value || detailBusy.value) return
-  const nextEnabled = !detailEnabled.value
-  detailBusy.value = true
-  try {
-    if (detailKind.value === 'skills') {
-      await updateSkillStatus(detailId.value, nextEnabled)
-      const target = skills.value.find((skill) => skill.folder_name === detailId.value)
-      if (target) target.enabled = nextEnabled
-    } else {
-      await updatePluginStatus(detailId.value, nextEnabled)
-      const target = plugins.value.find((plugin) => plugin.id === detailId.value)
-      if (target) target.enabled = nextEnabled
-    }
-    detailEnabled.value = nextEnabled
-    error.value = ''
-  } catch (e: unknown) {
-    detailError.value = e instanceof Error ? e.message : '更新状态失败'
-  } finally {
-    detailBusy.value = false
-  }
-}
-
 async function openDetailLocation() {
   if (!detailOpenPath.value) return
   try {
     await openPath(detailOpenPath.value)
   } catch (e: unknown) {
     detailError.value = e instanceof Error ? e.message : '打开路径失败'
+  }
+}
+
+async function confirmDeleteItem() {
+  if (!detailId.value) return
+  deleteBusy.value = true
+  try {
+    const baseUrl = useModelStore().getBaseUrl()
+    const endpoint = detailKind.value === 'skills'
+      ? `/api/skills/${encodeURIComponent(detailId.value)}`
+      : `/api/plugins/${encodeURIComponent(detailId.value)}`
+    const res = await fetch(`${baseUrl}${endpoint}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data.detail || '删除失败')
+    }
+    showDeleteConfirm.value = false
+    showDetail.value = false
+    await refresh()
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '删除失败'
+  } finally {
+    deleteBusy.value = false
   }
 }
 
@@ -516,7 +491,6 @@ async function submitImportPlugins() {
 
 watch(activeTab, () => {
   query.value = ''
-  filterEnabledOnly.value = false
   expanded.value = false
   addError.value = ''
 })
@@ -1129,6 +1103,97 @@ onMounted(fetchAll)
 }
 
 .btn-open-path:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.detail-footer-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.btn-delete-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 10px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  background: transparent;
+  color: #ef4444;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.btn-delete-item:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.btn-delete-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.delete-confirm-dialog {
+  background: var(--bg-panel, #fff);
+  border-radius: 12px;
+  min-width: 360px;
+  max-width: 92vw;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.22);
+}
+
+.delete-confirm-header {
+  padding: 16px 20px;
+  font-size: 15px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+
+.delete-confirm-body {
+  padding: 16px 20px;
+}
+
+.delete-confirm-body p {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+.delete-confirm-hint {
+  font-size: 12px;
+  color: var(--text-muted, #888);
+}
+
+.delete-confirm-footer {
+  padding: 12px 20px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.delete-confirm-footer button {
+  padding: 7px 18px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  border: none;
+}
+
+.modal-btn-cancel {
+  background: var(--accent-hover, #f0f0ee);
+  color: var(--text);
+}
+
+.modal-btn-danger {
+  background: #ef4444;
+  color: #fff;
+}
+
+.modal-btn-danger:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }

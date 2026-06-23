@@ -251,6 +251,9 @@ interface ProjectSession {
 interface Project {
   work_dir: string
   name: string
+  archived?: boolean
+  created_at?: string
+  updated_at?: string
   sessions: ProjectSession[]
 }
 

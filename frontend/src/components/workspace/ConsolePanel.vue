@@ -1,5 +1,6 @@
 <template>
   <div class="console-panel">
+    <!-- 工具栏（对齐 VS Code 终端面板样式） -->
     <div class="console-toolbar">
       <div class="tab-bar">
         <button
@@ -10,7 +11,8 @@
           :class="{ active: tab.id === activeTabId }"
           @click="switchTab(tab.id)"
         >
-          <span>{{ tab.title }}</span>
+          <span class="tab-status" :class="{ running: tab.connected }"></span>
+          <span class="tab-title">{{ tab.title }}</span>
           <span
             v-if="tabs.length > 1"
             class="tab-close"
@@ -18,19 +20,31 @@
             @click.stop="closeTab(tab.id)"
           >×</span>
         </button>
-        <button type="button" class="tab-add" title="新建终端" @click="addTerminal()">+</button>
+        <button type="button" class="tab-add" title="新建终端" @click="addTerminal()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+        </button>
       </div>
       <div class="console-actions">
-        <button type="button" class="action-btn" title="清屏" @click="clearScreen">清屏</button>
-        <button type="button" class="action-btn" title="重置终端" @click="resetShell">重置</button>
-        <span
-          class="conn-dot"
-          :class="{ online: activeTab?.connected }"
-          :title="activeTab?.connected ? '已连接' : '未连接'"
-        ></span>
+        <button type="button" class="action-btn" title="清屏" @click="clearScreen">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="9" y1="9" x2="15" y2="15"></line>
+            <line x1="15" y1="9" x2="9" y2="15"></line>
+          </svg>
+        </button>
+        <button type="button" class="action-btn" title="重置终端" @click="resetShell">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+          </svg>
+        </button>
       </div>
     </div>
 
+    <!-- 终端容器 -->
     <div class="terminal-body">
       <div
         v-for="tab in tabs"
@@ -49,9 +63,6 @@
           <line x1="12" y1="19" x2="20" y2="19"></line>
         </svg>
       </div>
-      <p class="empty-title">AI 命令终端</p>
-      <p class="empty-desc">AI 执行 CLI 命令时，点击消息中的<strong>「查看终端」</strong>按钮即可在此实时查看命令输出</p>
-      <button type="button" class="empty-connect-btn" @click="addTerminal()">手动连接终端</button>
     </div>
 
     <div v-if="!workDir" class="console-empty">请先选择工作目录</div>
@@ -63,7 +74,7 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { Terminal, type ILink } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { closeTerminalSession, getTerminalWsUrl } from '@/api/terminal'
+import { closeTerminalSession, getAgentSessionId, getTerminalWsUrl } from '@/api/terminal'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { storeToRefs } from 'pinia'
 
@@ -95,16 +106,6 @@ let resizeObserver: ResizeObserver | null = null
 let resizeTimer: ReturnType<typeof setTimeout> | null = null
 const URL_RE = /https?:\/\/[^\s\]\)>'\"]+/g
 
-// 通配匹配两类 PTY 噪声行，整段替换为空：
-// 1. `& 'C:\...\cli_runtime\cmd_xxxxxxxx.ps1'` 调度行
-// 2. 紧跟其后的 `>>` 多行提示符（PowerShell 在执行调度命令时偶发触发）
-// g 标志确保一段输出里多条都被清除。
-const DISPATCH_LINE_RE = /&\s*'[^']*cli_runtime[^']*\.ps1'\s*\r?\n?(?:>>\s*\r?\n?)?/g
-
-function stripDispatch(data: string): string {
-  return data.replace(DISPATCH_LINE_RE, '')
-}
-
 const activeTab = computed(() => tabs.value.find(t => t.id === activeTabId.value) || null)
 
 function newTabId() {
@@ -114,7 +115,6 @@ function newTabId() {
 function setHostRef(id: string, el: HTMLElement | null) {
   if (el) {
     hostRefs.set(id, el)
-    // 终端 host 元素创建时立即开始观察，确保大小变化时触发 fit
     resizeObserver?.observe(el)
   } else {
     hostRefs.delete(id)
@@ -137,45 +137,73 @@ function fitTab(tab: TerminalTab) {
   }
 }
 
+/**
+ * VS Code Light 主题颜色（对齐 terminalColorRegistry.ts 的 light 默认值）
+ * 参考: src/vs/workbench/contrib/terminal/common/terminalColorRegistry.ts
+ */
+const VS_CODE_LIGHT_THEME = {
+  background: '#ffffff',
+  foreground: '#333333',
+  cursor: '#000000',
+  cursorAccent: '#ffffff',
+  selectionBackground: '#add6ff',
+  selectionForeground: '#000000',
+  black: '#000000',
+  red: '#cd3131',
+  green: '#107c10',
+  yellow: '#949800',
+  blue: '#0451a5',
+  magenta: '#bc05bc',
+  cyan: '#0598bc',
+  white: '#555555',
+  brightBlack: '#666666',
+  brightRed: '#cd3131',
+  brightGreen: '#14ce14',
+  brightYellow: '#b5ba00',
+  brightBlue: '#0451a5',
+  brightMagenta: '#bc05bc',
+  brightCyan: '#0598bc',
+  brightWhite: '#a5a5a5',
+}
+
+/**
+ * 创建 xterm 终端实例（对齐 VS Code xtermTerminal.ts 的配置）
+ * 参考: src/vs/workbench/contrib/terminal/browser/xterm/xtermTerminal.ts
+ */
 function createTerminal(tab: TerminalTab) {
   if (tab.initialized) return
   const host = hostRefs.get(tab.id)
   if (!host) return
 
   tab.term = new Terminal({
-    cursorBlink: true,
-    fontSize: 13,
-    lineHeight: 1.15,
-    fontFamily: "'Cascadia Mono', 'Consolas', 'Courier New', monospace",
-    scrollback: 5000,
-    convertEol: true,
-    theme: {
-      background: '#ffffff',
-      foreground: '#000000',
-      cursor: '#000000',
-      cursorAccent: '#ffffff',
-      selectionBackground: '#cce5ff',
-      black: '#000000',
-      red: '#c50f1f',
-      green: '#0a5c0a',
-      yellow: '#7a5f00',
-      blue: '#0037da',
-      magenta: '#6c1a6c',
-      cyan: '#005f5f',
-      white: '#666666',
-      brightBlack: '#333333',
-      brightRed: '#a80c1a',
-      brightGreen: '#0d7a0d',
-      brightYellow: '#8a6e00',
-      brightBlue: '#0028a8',
-      brightMagenta: '#7a1a7a',
-      brightCyan: '#006666',
-      brightWhite: '#999999',
-    },
+    // VS Code 默认配置
+    allowProposedApi: true,
+    scrollback: 1000,
+    theme: VS_CODE_LIGHT_THEME,
+    fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', 'Courier New', monospace",
+    fontSize: 14,
+    fontWeight: 'normal',
+    fontWeightBold: 'bold',
+    letterSpacing: 0,
+    lineHeight: 1,
+    cursorBlink: false,
+    cursorStyle: 'bar',
+    cursorWidth: 2,
+    drawBoldTextInBrightColors: true,
+    minimumContrastRatio: 1,
+    fastScrollSensitivity: 5,
+    scrollSensitivity: 1,
+    wordSeparator: ' ()[]{}\'"`',
+    macOptionIsMeta: false,
+    rightClickSelectsWord: false,
+    convertEol: false,
   })
+
   tab.fitAddon = new FitAddon()
   tab.term.loadAddon(tab.fitAddon)
   tab.term.open(host)
+
+  // 链接提供器（对齐 VS Code terminalInstance.ts 的链接处理）
   tab.term.registerLinkProvider({
     provideLinks: (lineNumber, callback) => {
       const line = tab.term?.buffer.active.getLine(lineNumber - 1)
@@ -199,21 +227,39 @@ function createTerminal(tab: TerminalTab) {
     },
   })
 
-  // Ctrl+C：始终发送 \x03 给 PTY（中断进程）。
-  // 如有选中文本，同时复制到剪贴板。
+  // Ctrl+C / Ctrl+V 处理（对齐 VS Code 行为）
+  // 用标志位防止粘贴时 onData 重复发送
+  let isPasting = false
   tab.term.attachCustomKeyEventHandler((event) => {
     if (event.type === 'keydown' && event.ctrlKey && event.key.toLowerCase() === 'c') {
-      const selection = tab.term?.getSelection()
-      if (selection) {
+      // 用 hasSelection() 检查（比 getSelection() 更可靠，空选中也能区分）
+      if (tab.term?.hasSelection()) {
+        const selection = tab.term.getSelection() || ''
         void navigator.clipboard?.writeText(selection).catch(() => {})
         tab.term?.clearSelection()
+        return false  // 阻止 \x03 发送
       }
-      // 不 return false：让 xterm.js 把 \x03 发送给 winpty
+      // 无选中则允许 \x03 发送给 PTY（中断命令）
+    }
+    // Ctrl+V 粘贴：手动读取剪贴板并发送，阻止 xterm 默认粘贴（避免重复）
+    if (event.type === 'keydown' && event.ctrlKey && event.key.toLowerCase() === 'v') {
+      isPasting = true
+      navigator.clipboard?.readText().then((text) => {
+        if (text && tab.ws?.readyState === WebSocket.OPEN && tab.attached) {
+          tab.ws.send(JSON.stringify({ type: 'input', data: text }))
+        }
+      }).catch(() => {}).finally(() => {
+        // 延迟重置，确保 onData 不会在同一次粘贴中重复发送
+        setTimeout(() => { isPasting = false }, 50)
+      })
+      return false
     }
     return true
   })
 
+  // 用户输入转发（粘贴时跳过，避免重复）
   tab.term.onData((data) => {
+    if (isPasting) return
     if (tab.ws?.readyState === WebSocket.OPEN && tab.attached) {
       tab.ws.send(JSON.stringify({ type: 'input', data }))
     }
@@ -246,9 +292,7 @@ function connectTab(tab: TerminalTab, reset = true) {
 
   ws.onopen = () => {
     if (gen !== tab.wsGen) return
-    // 等待 xterm 渲染完成后再 attach
     nextTick().then(() => {
-      // 确保容器有实际尺寸后再 fit
       requestAnimationFrame(() => {
         fitTab(tab)
         ws.send(JSON.stringify({
@@ -269,7 +313,6 @@ function connectTab(tab: TerminalTab, reset = true) {
       if (msg.type === 'ready') {
         tab.attached = true
         tab.connected = true
-        // 收到 ready 后再次 fit，确保终端尺寸与容器一致
         nextTick(() => {
           fitTab(tab)
           if (tab.ws?.readyState === WebSocket.OPEN && tab.term) {
@@ -284,12 +327,15 @@ function connectTab(tab: TerminalTab, reset = true) {
         return
       }
       if (msg.type === 'output' && msg.data) {
-        tab.term?.write(stripDispatch(msg.data))
+        tab.term?.write(msg.data)
+        return
+      }
+      if (msg.type === 'error') {
+        tab.term?.write(`\r\n\x1b[31m${msg.data || msg.error || '错误'}\x1b[0m\r\n`)
         return
       }
     } catch {
-      // plain text
-      tab.term?.write(stripDispatch(ev.data))
+      tab.term?.write(ev.data)
     }
   }
 
@@ -298,7 +344,6 @@ function connectTab(tab: TerminalTab, reset = true) {
     const wasAttached = tab.attached
     tab.connected = false
     tab.attached = false
-    // 如果从未成功 attach，说明终端 session 不存在
     if (!wasAttached) {
       tab.term?.write('\r\n\x1b[31m终端已关闭或不存在\x1b[0m\r\n')
       return
@@ -318,13 +363,15 @@ function connectTab(tab: TerminalTab, reset = true) {
   }
 }
 
-function addTerminal(reset = true) {
+function addTerminal(reset = true, sessionIdOverride?: string, isAgentTerminal = false) {
   if (!workDir.value) return
   tabCounter++
+  // agent 终端复用 agent session；用户手动新建的终端生成唯一 session ID
+  const tabSessionId = sessionIdOverride || (isAgentTerminal ? getAgentSessionId(workDir.value) : `user-${crypto.randomUUID().slice(0, 8)}`)
   const tab: TerminalTab = {
     id: newTabId(),
-    sessionId: crypto.randomUUID(),
-    title: `终端 ${tabCounter}`,
+    sessionId: tabSessionId,
+    title: isAgentTerminal ? 'AI 终端' : `终端 ${tabCounter}`,
     connected: false,
     attached: false,
     term: null,
@@ -375,9 +422,6 @@ function clearScreen() {
   const tab = activeTab.value
   if (!tab) return
   tab.term?.clear()
-  if (tab.attached && tab.ws?.readyState === WebSocket.OPEN) {
-    tab.ws.send(JSON.stringify({ type: 'input', data: 'cls\r\n' }))
-  }
 }
 
 function resetShell() {
@@ -409,14 +453,12 @@ function onOpenTerminal(e: Event) {
   const detail = (e as CustomEvent).detail as { sessionId: string; command?: string } | undefined
   if (!detail?.sessionId || !workDir.value) return
 
-  // 检查是否已存在同 session 的 tab
   const existing = tabs.value.find(t => t.sessionId === detail.sessionId)
   if (existing) {
     switchTab(existing.id)
     return
   }
 
-  // 创建新 tab 并连接到指定 session
   tabCounter++
   const tab: TerminalTab = {
     id: newTabId(),
@@ -437,7 +479,6 @@ function onOpenTerminal(e: Event) {
   })
 }
 
-// 只在用户点击「查看终端」或手动连接时才建立终端
 watch(() => props.visible, (visible) => {
   if (visible && workDir.value && tabs.value.length > 0) {
     const tab = activeTab.value
@@ -450,25 +491,29 @@ watch(() => props.visible, (visible) => {
   }
 })
 
-// 监听工作目录变化：不自动创建终端，只清理旧连接
-watch(workDir, () => {
+// 监听工作目录变化：关闭旧终端并自动创建新终端
+watch(workDir, (newDir) => {
   disposeAllTabs()
+  if (newDir) {
+    nextTick(() => addTerminal(true, undefined, true))
+  }
 })
 
 onMounted(() => {
-  // 不再自动创建终端
-  // 监听「查看终端」事件，按需创建终端
   window.addEventListener('aries:focus-console', onFocusConsoleFromTool)
   window.addEventListener('aries:open-terminal', onOpenTerminal)
+
+  // 组件挂载且有 workDir 时，自动创建一个默认终端，避免空面板
+  if (workDir.value && tabs.value.length === 0) {
+    addTerminal(true, undefined, true)
+  }
 
   resizeObserver = new ResizeObserver(() => {
     if (resizeTimer) clearTimeout(resizeTimer)
     resizeTimer = setTimeout(() => {
       const tab = activeTab.value
       if (tab && tab.attached && tab.term) {
-        // 先 fit 让终端重新计算 cols
         fitTab(tab)
-        // 通知后端新的尺寸
         if (tab.ws?.readyState === WebSocket.OPEN) {
           tab.ws.send(JSON.stringify({
             type: 'resize',
@@ -491,6 +536,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* VS Code 浅色主题终端面板样式 */
 .console-panel {
   position: relative;
   flex: 1;
@@ -500,22 +546,23 @@ onUnmounted(() => {
   background: #ffffff;
 }
 
+/* 工具栏（对齐 VS Code 终端标签栏） */
 .console-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 4px 6px 4px 4px;
-  background: #f7f7f5;
-  border-bottom: 1px solid var(--border);
+  padding: 0 4px 0 4px;
+  background: #f3f3f3;
+  border-bottom: 1px solid #e5e5e5;
   flex-shrink: 0;
-  min-height: 32px;
+  min-height: 35px;
 }
 
 .tab-bar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
   flex: 1;
   min-width: 0;
   overflow-x: auto;
@@ -525,109 +572,120 @@ onUnmounted(() => {
   height: 0;
 }
 
+/* 标签按钮（对齐 VS Code terminal tab 样式） */
 .tab-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  max-width: 120px;
-  padding: 3px 8px;
-  border: 1px solid transparent;
-  border-radius: 4px;
+  max-width: 140px;
+  padding: 6px 10px;
+  border: none;
+  border-right: 1px solid #e5e5e5;
   background: transparent;
-  color: var(--text-secondary);
-  font-size: 11px;
+  color: #6e6e6e;
+  font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
+  transition: background 0.1s, color 0.1s;
+}
+
+.tab-btn:hover {
+  background: #ffffff;
+  color: #424242;
 }
 
 .tab-btn.active {
   background: #ffffff;
-  border-color: var(--border);
-  color: var(--text-primary);
+  color: #000000;
+  border-bottom: 2px solid #005fb8;
+  padding-bottom: 4px;
 }
 
-.tab-btn:hover {
-  background: var(--accent-hover);
-  color: var(--text);
+.tab-status {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #9e9e9e;
+  flex-shrink: 0;
+}
+
+.tab-status.running {
+  background: #107c10;
+}
+
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tab-close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border-radius: 3px;
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1;
   opacity: 0.6;
 }
 
 .tab-close:hover {
   opacity: 1;
-  background: var(--accent-hover);
+  background: #e5e5e5;
 }
 
 .tab-add {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border: none;
   background: transparent;
-  color: var(--text-secondary);
-  font-size: 16px;
+  color: #6e6e6e;
   cursor: pointer;
   border-radius: 4px;
   flex-shrink: 0;
 }
 
 .tab-add:hover {
-  background: var(--accent-hover);
-  color: var(--text);
+  background: #ffffff;
+  color: #424242;
 }
 
 .console-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   flex-shrink: 0;
 }
 
 .action-btn {
-  padding: 3px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
   background: transparent;
-  color: var(--text-secondary);
-  font-size: 11px;
+  color: #6e6e6e;
   cursor: pointer;
-  white-space: nowrap;
+  border-radius: 4px;
 }
 
 .action-btn:hover {
-  background: var(--accent-hover);
-  color: var(--text);
+  background: #ffffff;
+  color: #424242;
 }
 
-.conn-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #e74c3c;
-  flex-shrink: 0;
-}
-
-.conn-dot.online {
-  background: #2ecc71;
-}
-
+/* 终端主体 */
 .terminal-body {
   flex: 1;
   min-height: 0;
   position: relative;
   overflow: hidden;
+  background: #ffffff;
 }
 
 .terminal-host {
@@ -636,6 +694,43 @@ onUnmounted(() => {
   left: 0;
   width: 100%;
   height: 100%;
+  padding: 4px 8px;
+}
+
+.terminal-host :deep(.xterm) {
+  height: 100%;
+}
+
+.terminal-host :deep(.xterm-viewport) {
+  background-color: #ffffff !important;
+  overflow-y: auto;
+}
+
+.terminal-host :deep(.xterm-screen) {
+  background-color: #ffffff;
+}
+
+/* 滚动条样式（对齐 VS Code 浅色主题） */
+.terminal-host :deep(.xterm-viewport::-webkit-scrollbar) {
+  width: 14px;
+}
+
+.terminal-host :deep(.xterm-viewport::-webkit-scrollbar-track) {
+  background: transparent;
+}
+
+.terminal-host :deep(.xterm-viewport::-webkit-scrollbar-thumb) {
+  background: #c4c4c4;
+  border: 3px solid #ffffff;
+  border-radius: 7px;
+}
+
+.terminal-host :deep(.xterm-viewport::-webkit-scrollbar-thumb:hover) {
+  background: #a8a8a8;
+}
+
+.terminal-host :deep(.xterm-viewport::-webkit-scrollbar-thumb:active) {
+  background: #8f8f8f;
 }
 
 .console-empty {
@@ -644,8 +739,9 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-muted);
+  color: #6e6e6e;
   font-size: 13px;
+  background: #ffffff;
 }
 
 .console-empty-state {
@@ -658,24 +754,25 @@ onUnmounted(() => {
   padding: 24px;
   gap: 12px;
   text-align: center;
+  background: #ffffff;
 }
 
 .empty-icon {
-  color: var(--text-muted);
-  opacity: 0.5;
+  color: #9e9e9e;
+  opacity: 0.6;
   margin-bottom: 4px;
 }
 
 .empty-title {
   font-size: 15px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: #333333;
   margin: 0;
 }
 
 .empty-desc {
   font-size: 12px;
-  color: var(--text-muted);
+  color: #6e6e6e;
   margin: 0;
   max-width: 280px;
   line-height: 1.5;
@@ -684,9 +781,9 @@ onUnmounted(() => {
 .empty-connect-btn {
   margin-top: 8px;
   padding: 6px 16px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: #1a1a1a;
+  border: 1px solid #e5e5e5;
+  border-radius: 4px;
+  background: #005fb8;
   color: #ffffff;
   font-size: 12px;
   font-weight: 500;
@@ -695,6 +792,6 @@ onUnmounted(() => {
 }
 
 .empty-connect-btn:hover {
-  background: #333333;
+  background: #1177bb;
 }
 </style>

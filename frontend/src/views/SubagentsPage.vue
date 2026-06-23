@@ -15,6 +15,27 @@
       被引用的技能 / MCP 即使在全局未启用，也会在该智能体内部强制激活。
     </p>
 
+    <!-- 主 Agent 配置 -->
+    <div class="main-agent-card">
+      <div class="card-header">
+        <span class="card-icon main-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 1v6m0 10v6m11-11h-6m-10 0H1m17.5-6.5l-4.24 4.24M9.74 14.26 5.5 18.5m13 0-4.24-4.24M9.74 9.74 5.5 5.5"/>
+          </svg>
+        </span>
+        <h3 class="card-title">主 Agent</h3>
+        <span class="status-pill pill-ok">核心</span>
+        <button type="button" class="btn-text" @click="openMainAgentDialog">配置</button>
+      </div>
+      <p class="card-content">主 Agent 可使用的技能与 MCP。未勾选的技能/MCP 不会加载到主 Agent 的工具列表中。</p>
+      <div class="card-tags">
+        <span v-for="s in mainAgentSkills" :key="'ms-' + s" class="tag tag-skill">技能 · {{ s }}</span>
+        <span v-for="m in mainAgentMcps" :key="'mm-' + m" class="tag tag-mcp">MCP · {{ m }}</span>
+        <span v-if="mainAgentSkills.length === 0 && mainAgentMcps.length === 0" class="tag tag-empty">未配置（无技能与 MCP）</span>
+      </div>
+    </div>
+
     <!-- 空状态 -->
     <div v-if="!loading && subagents.length === 0" class="empty-state">
       <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4">
@@ -56,7 +77,7 @@
         <div class="card-meta">
           <span class="meta-item">
             <span class="meta-label">模型</span>
-            <span class="meta-value">{{ agent.model || agent.fallback_model || '—' }}</span>
+            <span class="meta-value">{{ agent.model || '—' }}</span>
           </span>
         </div>
 
@@ -126,21 +147,12 @@
             />
           </div>
 
-          <div class="form-row form-row-2">
-            <div>
-              <label class="form-label">主模型</label>
-              <select v-model="form.model" class="form-input">
-                <option value="">使用默认（fallback）</option>
-                <option v-for="m in availableModels" :key="m.id" :value="m.model">{{ m.model }}</option>
-              </select>
-            </div>
-            <div>
-              <label class="form-label">Fallback 模型</label>
-              <select v-model="form.fallback_model" class="form-input">
-                <option value="default">default（系统默认）</option>
-                <option v-for="m in availableModels" :key="m.id" :value="m.model">{{ m.model }}</option>
-              </select>
-            </div>
+          <div class="form-row">
+            <label class="form-label">主模型</label>
+            <select v-model="form.model" class="form-input">
+              <option value="">使用默认模型</option>
+              <option v-for="m in availableModels" :key="m.id" :value="m.model">{{ m.model }}</option>
+            </select>
           </div>
 
           <div class="form-row">
@@ -178,9 +190,7 @@
                   @change="toggleMcp(mc.id)"
                 />
                 <span class="cb-name">{{ mc.name }}</span>
-                <span class="cb-tag" :class="mc.enabled ? 'tag-on' : 'tag-off'">
-                  {{ mc.enabled ? '已启用' : '未启用' }}
-                </span>
+                <span class="cb-tag tag-on">有效</span>
                 <span class="cb-desc" :title="mc.description">{{ mc.description || '（无描述）' }}</span>
               </label>
             </div>
@@ -209,6 +219,56 @@
         <div class="modal-footer">
           <button class="modal-btn modal-btn-cancel" @click="closeDialog">取消</button>
           <button class="modal-btn modal-btn-confirm" :disabled="saving" @click="saveForm">
+            {{ saving ? '保存中…' : '保存' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 主 Agent 配置弹窗 -->
+    <div v-if="mainAgentDialogVisible" class="modal-overlay" @click="mainAgentDialogVisible = false">
+      <div class="modal-dialog modal-large" @click.stop>
+        <div class="modal-header">主 Agent 配置</div>
+        <div class="modal-body">
+          <div class="form-row">
+            <label class="form-label">可使用技能</label>
+            <div class="checkbox-list">
+              <div v-if="skills.length === 0" class="checkbox-empty">未发现任何技能</div>
+              <label v-for="sk in skills" :key="sk.folder_name" class="checkbox-item">
+                <input
+                  type="checkbox"
+                  :value="sk.folder_name"
+                  :checked="mainAgentForm.allowed_skills.includes(sk.folder_name)"
+                  @change="toggleMainAgentSkill(sk.folder_name)"
+                />
+                <span class="cb-name">{{ sk.name }}</span>
+                <span class="cb-desc" :title="sk.description">{{ sk.description || '（无描述）' }}</span>
+              </label>
+            </div>
+            <p class="form-hint">不勾选任何技能 = 主 Agent 无技能可用。勾选后主 Agent 只能使用选中的技能。</p>
+          </div>
+
+          <div class="form-row">
+            <label class="form-label">可使用 MCP</label>
+            <div class="checkbox-list">
+              <div v-if="plugins.length === 0" class="checkbox-empty">未发现任何 MCP</div>
+              <label v-for="mc in plugins" :key="mc.id" class="checkbox-item">
+                <input
+                  type="checkbox"
+                  :value="mc.id"
+                  :checked="mainAgentForm.allowed_mcps.includes(mc.id)"
+                  @change="toggleMainAgentMcp(mc.id)"
+                />
+                <span class="cb-name">{{ mc.name }}</span>
+                <span class="cb-desc" :title="mc.description">{{ mc.description || '（无描述）' }}</span>
+              </label>
+            </div>
+            <p class="form-hint">不勾选任何 MCP = 主 Agent 无 MCP 可用。勾选后主 Agent 只能使用选中的 MCP。</p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="modal-btn modal-btn-cancel" @click="mainAgentDialogVisible = false">取消</button>
+          <button class="modal-btn modal-btn-confirm" :disabled="saving" @click="saveMainAgent">
             {{ saving ? '保存中…' : '保存' }}
           </button>
         </div>
@@ -245,6 +305,7 @@ import {
 import { listSkills, type SkillItem } from '@/api/skills'
 import { listPlugins, type PluginItem } from '@/api/plugins'
 import { useModelStore } from '@/stores/model'
+import { getMainAgentConfig, saveMainAgentConfig, type MainAgentConfig } from '@/api/mainAgent'
 
 const modelStore = useModelStore()
 
@@ -266,7 +327,6 @@ const defaultForm = (): SubagentPayload & { allowed_skills: string[]; allowed_mc
   name: '',
   description: '',
   model: '',
-  fallback_model: 'default',
   enabled: true,
   allowed_skills: [],
   allowed_mcps: [],
@@ -287,6 +347,61 @@ function statusPillLabel(agent: SubagentItem) {
   return '可用'
 }
 
+// ---------- 主 Agent 配置 ----------
+const mainAgentConfig = ref<MainAgentConfig>({ allowed_skills: [], allowed_mcps: [] })
+const mainAgentSkills = computed(() => mainAgentConfig.value.allowed_skills)
+const mainAgentMcps = computed(() => mainAgentConfig.value.allowed_mcps)
+const mainAgentDialogVisible = ref(false)
+const mainAgentForm = reactive<{ allowed_skills: string[]; allowed_mcps: string[] }>({
+  allowed_skills: [],
+  allowed_mcps: [],
+})
+
+async function loadMainAgentConfig() {
+  try {
+    mainAgentConfig.value = await getMainAgentConfig()
+  } catch (e) {
+    console.error('加载主 Agent 配置失败', e)
+  }
+}
+
+function openMainAgentDialog() {
+  mainAgentForm.allowed_skills = [...mainAgentConfig.value.allowed_skills]
+  mainAgentForm.allowed_mcps = [...mainAgentConfig.value.allowed_mcps]
+  mainAgentDialogVisible.value = true
+}
+
+function toggleMainAgentSkill(folderName: string) {
+  const idx = mainAgentForm.allowed_skills.indexOf(folderName)
+  if (idx >= 0) mainAgentForm.allowed_skills.splice(idx, 1)
+  else mainAgentForm.allowed_skills.push(folderName)
+}
+
+function toggleMainAgentMcp(id: string) {
+  const idx = mainAgentForm.allowed_mcps.indexOf(id)
+  if (idx >= 0) mainAgentForm.allowed_mcps.splice(idx, 1)
+  else mainAgentForm.allowed_mcps.push(id)
+}
+
+async function saveMainAgent() {
+  saving.value = true
+  try {
+    await saveMainAgentConfig({
+      allowed_skills: [...mainAgentForm.allowed_skills],
+      allowed_mcps: [...mainAgentForm.allowed_mcps],
+    })
+    mainAgentConfig.value = {
+      allowed_skills: [...mainAgentForm.allowed_skills],
+      allowed_mcps: [...mainAgentForm.allowed_mcps],
+    }
+    mainAgentDialogVisible.value = false
+  } catch (e) {
+    errorMessage.value = (e as Error).message || '保存失败'
+  } finally {
+    saving.value = false
+  }
+}
+
 async function loadAll() {
   loading.value = true
   try {
@@ -298,6 +413,7 @@ async function loadAll() {
     subagents.value = agents
     skills.value = sk
     plugins.value = pl.plugins
+    await loadMainAgentConfig()
   } catch (e) {
     errorMessage.value = (e as Error).message || '加载失败'
   } finally {
@@ -316,7 +432,6 @@ function openEditDialog(agent: SubagentItem) {
     name: agent.name,
     description: agent.description,
     model: agent.model,
-    fallback_model: agent.fallback_model || 'default',
     enabled: agent.enabled,
     allowed_skills: [...agent.allowed_skills],
     allowed_mcps: [...agent.allowed_mcps],
@@ -364,7 +479,6 @@ async function saveForm() {
       name,
       description: form.description?.trim() || '',
       model: (form.model || '').trim(),
-      fallback_model: (form.fallback_model || 'default').trim() || 'default',
       enabled: !!form.enabled,
       allowed_skills: [...form.allowed_skills],
       allowed_mcps: [...form.allowed_mcps],
@@ -514,6 +628,22 @@ onMounted(() => {
 .subagent-card:hover { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08); }
 .subagent-card.is-disabled { opacity: 0.62; }
 .subagent-card.is-unavailable { border-color: rgba(255, 149, 0, 0.5); }
+
+/* 主 Agent 卡片 */
+.main-agent-card {
+  background: var(--bg-card, #fff);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin-bottom: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.main-icon {
+  background: rgba(45, 122, 79, 0.12) !important;
+  color: #2d7a4f !important;
+}
 
 .card-header {
   display: flex;

@@ -19,6 +19,14 @@ from db.sessions import (
     list_sessions as list_session_meta,
     delete_session_meta,
 )
+from db.work_dirs import (
+    upsert_work_dir,
+    list_work_dirs,
+    delete_work_dir,
+    archive_work_dir,
+    rename_work_dir,
+    get_latest_work_dir,
+)
 from utils.session_logger import resolve_message_log_events
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -88,35 +96,74 @@ def list_sessions(limit: int = 30):
 
 @router.get("/projects")
 def list_projects():
-    """按 work_dir 去重分组，返回项目（工作目录）列表及其下的 session。"""
-    meta_list = list_session_meta(limit=1000)
+    """按 work_dir 分组，返回项目（工作目录）列表及其下的 session。
 
-    # 按 work_dir 分组（排除 __project_aries__ 这种配置项）
-    projects: dict[str, list[dict]] = {}
+    以 work_dirs 表为主源，确保即使没有 session 的工作目录也会出现在列表中。
+    """
+    # 1. 取 work_dirs 表中未归档的记录（主源）
+    wd_list = list_work_dirs(include_archived=False, limit=500)
+
+    # 2. 取 sessions 元数据，按 work_dir 分组
+    meta_list = list_session_meta(limit=1000)
+    sessions_by_wd: dict[str, list[dict]] = {}
     for m in meta_list:
         sid = m.get("session_id", "")
         wd = m.get("work_dir", "")
         if sid.startswith("__") and sid.endswith("__"):
             continue  # 跳过系统配置项
         if not wd:
-            wd = "__default__"  # 无工作目录的归到默认项目
-        projects.setdefault(wd, []).append({
+            wd = "__default__"
+        sessions_by_wd.setdefault(wd, []).append({
             "session_id": sid,
             "title": (m.get("title") or "").strip()[:18],
             "created_at": m.get("created_at", ""),
             "updated_at": m.get("updated_at", ""),
         })
 
-    # 组装返回结构
+    # 3. 合并：work_dirs 表为主，补上 sessions 表中有但 work_dirs 表中没有的
     result = []
-    for wd, sessions in sorted(projects.items(), key=lambda x: x[1][0].get("updated_at", ""), reverse=True):
-        name = "New project" if wd == "__default__" else wd.replace("\\", "/").rstrip("/").split("/")[-1]
+    seen_wd = set()
+
+    for w in wd_list:
+        wd = w["work_dir"]
+        seen_wd.add(wd)
+        sessions = sorted(
+            sessions_by_wd.get(wd, []),
+            key=lambda x: x.get("updated_at", ""),
+            reverse=True,
+        )
         result.append({
-            "work_dir": wd if wd != "__default__" else "",
-            "name": name,
+            "work_dir": wd,
+            "name": w.get("name") or _derive_name(wd),
+            "archived": w.get("archived", False),
+            "created_at": w.get("created_at", ""),
+            "updated_at": w.get("updated_at", ""),
+            "sessions": sessions,
+        })
+
+    # 补 sessions 表中有但 work_dirs 表中没有的（兼容旧数据）
+    for wd, sessions in sessions_by_wd.items():
+        if wd in seen_wd or wd == "__default__":
+            continue
+        result.append({
+            "work_dir": wd,
+            "name": _derive_name(wd),
+            "archived": False,
+            "created_at": sessions[0].get("created_at", "") if sessions else "",
+            "updated_at": sessions[0].get("updated_at", "") if sessions else "",
             "sessions": sorted(sessions, key=lambda x: x.get("updated_at", ""), reverse=True),
         })
+
+    # 按 updated_at 倒序
+    result.sort(key=lambda x: x.get("updated_at", "") or x.get("created_at", ""), reverse=True)
     return {"projects": result, "total": len(result)}
+
+
+def _derive_name(work_dir: str) -> str:
+    """从路径提取最后一段作为显示名。"""
+    normalized = work_dir.replace("\\", "/").rstrip("/")
+    parts = normalized.split("/")
+    return parts[-1] if parts and parts[-1] else normalized
 
 
 @router.get("/{session_id}")

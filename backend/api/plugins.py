@@ -4,18 +4,14 @@ import json
 
 from utils.plugins_manager import (
     MCP_CACHE_ROOT,
+    delete_plugin,
     discover_plugins,
     get_mcp_config_path,
     get_mcp_server_config,
     import_mcp_json,
-    set_plugin_enabled,
 )
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
-
-
-class PluginStatusUpdate(BaseModel):
-    enabled: bool
 
 
 class PluginImport(BaseModel):
@@ -24,13 +20,11 @@ class PluginImport(BaseModel):
 
 def _reload_mcp_pool() -> None:
     from utils.mcp_runtime import get_mcp_pool
-
     get_mcp_pool().rebuild(force=True)
 
 
 @router.get("")
 async def list_plugins():
-    """返回用户在 ~/.Aries/mcp.json 中配置的 MCP 插件。"""
     from utils.mcp_runtime import get_mcp_diagnostics
 
     entries = discover_plugins()
@@ -56,7 +50,6 @@ async def list_plugins():
 
 @router.get("/{plugin_id}")
 async def get_plugin_detail(plugin_id: str):
-    """返回单个 MCP 插件的配置 JSON。"""
     from utils.mcp_runtime import get_mcp_diagnostics
 
     server = get_mcp_server_config(plugin_id)
@@ -71,7 +64,6 @@ async def get_plugin_detail(plugin_id: str):
         "id": plugin_id,
         "name": plugin_id,
         "description": server.get("description") if isinstance(server.get("description"), str) else "",
-        "enabled": not (server.get("disabled") is True or server.get("enabled") is False),
         "config_path": get_mcp_config_path(),
         "server_config": server,
         "config_json": json.dumps(wrapped, ensure_ascii=False, indent=2) + "\n",
@@ -81,23 +73,8 @@ async def get_plugin_detail(plugin_id: str):
     }
 
 
-@router.put("/{plugin_id}/status")
-async def update_plugin_status(plugin_id: str, body: PluginStatusUpdate):
-    """启用或禁用 MCP 插件。"""
-    found = any(entry.id == plugin_id for entry in discover_plugins())
-    if not found:
-        raise HTTPException(status_code=404, detail=f"插件 {plugin_id} 不存在")
-    try:
-        set_plugin_enabled(plugin_id, body.enabled)
-        _reload_mcp_pool()
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {"id": plugin_id, "enabled": body.enabled}
-
-
 @router.post("/import")
 async def import_plugins(body: PluginImport):
-    """粘贴 Trae/Cursor 风格的 MCP JSON 并合并到 mcp.json。"""
     try:
         added = import_mcp_json(body.config_json)
         if added:
@@ -109,11 +86,20 @@ async def import_plugins(body: PluginImport):
 
 @router.post("/refresh")
 async def refresh_plugins():
-    """手动刷新 MCP 连接池（类似 Kun 重启 runtime）。"""
     _reload_mcp_pool()
     from utils.mcp_runtime import get_mcp_diagnostics, get_mcp_tool_definitions
-
     return {
         "tool_count": len(get_mcp_tool_definitions()),
         "diagnostics": get_mcp_diagnostics(),
     }
+
+
+@router.delete("/{plugin_id}")
+async def delete_plugin_endpoint(plugin_id: str):
+    """从 mcp.json 中删除指定插件。"""
+    try:
+        delete_plugin(plugin_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _reload_mcp_pool()
+    return {"success": True, "id": plugin_id}

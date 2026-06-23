@@ -132,6 +132,31 @@ def init_database():
         )
     """)
 
+    # 工作目录表 —— 独立于 sessions，方便归档/删除/列出历史
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS work_dirs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            work_dir TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL DEFAULT '',
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_work_dirs_updated_at ON work_dirs(updated_at)
+    """)
+
+    # 新用户默认插入 ~/.Aries/work_dir
+    default_wd = str((Path.home() / ".Aries" / "work_dir").resolve())
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO work_dirs (work_dir, name, archived, created_at, updated_at)
+        VALUES (?, 'work_dir', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,
+        (default_wd,),
+    )
+
     conn.commit()
     conn.close()
 

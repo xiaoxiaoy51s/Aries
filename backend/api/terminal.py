@@ -1,4 +1,8 @@
-"""WebSocket terminal and REST helpers."""
+"""WebSocket terminal and REST helpers.
+
+前端 WebSocket → Python（透明的代理转发）→ Node.js CLI Server
+REST 命令执行 → Python HTTP 客户端 → Node.js CLI Server
+"""
 from __future__ import annotations
 
 import asyncio
@@ -8,9 +12,29 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from services.terminal_manager import TerminalManager
+from services.terminal_manager import get_cli_port
+from utils.cli_executor import CLIExecutor, get_server_url
+
+import httpx
+import websockets
 
 router = APIRouter(tags=["terminal"])
+
+
+@router.get("/terminal/cli-status")
+async def cli_status() -> dict[str, Any]:
+    """检查 Node.js CLI Server 状态"""
+    server_url = get_server_url()
+    port = get_cli_port()
+    if not server_url:
+        return {"running": False, "port": 0, "error": "CLI Server 未启动"}
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{server_url}/health", timeout=3)
+            data = resp.json()
+            return {"running": True, "port": port, "pid": data.get("pid")}
+    except Exception as e:
+        return {"running": False, "port": port, "error": str(e)}
 
 
 class RunCommandRequest(BaseModel):
@@ -29,144 +53,170 @@ async def terminal_websocket(
     work_dir: str | None = None,
     session_id: str | None = None,
 ) -> None:
+    """WebSocket 代理：前端 → Python → Node.js CLI
+
+    前端保持现有协议不变，Python 层透明转发到 Node.js CLI 的 WebSocket。
+    """
     await websocket.accept()
-    manager = TerminalManager.get_instance()
-    manager.set_event_loop(asyncio.get_running_loop())
-    raw_sid = (session_id or "default").strip() or "default"
-    # 前端用 "__agent__" 标记想订阅 agent session，绑定到 work_dir 对应的会话
-    if raw_sid == "__agent__":
-        sid = manager.resolve_agent_session_id(work_dir)
-    else:
-        sid = raw_sid
-    session, queue, callback = manager.subscribe_ws(sid, work_dir)
-    attached = False
+    server_url = get_server_url()
+    if not server_url:
+        await websocket.send_text(json.dumps({"type": "error", "data": "CLI Server 未启动"}))
+        await websocket.close()
+        return
 
-    async def pump_output() -> None:
-        try:
-            while True:
-                data = await queue.get()
-                await websocket.send_text(json.dumps({"type": "output", "data": data}, ensure_ascii=False))
-        except asyncio.CancelledError:
-            raise
+    port = get_cli_port()
+    sid = session_id or "default"
+    # 关键：必须把 work_dir 也传给 Node.js CLI，否则不知道在哪个目录创建终端
+    wd = work_dir or ""
+    ws_url = f"ws://127.0.0.1:{port}/ws/terminal?session_id={sid}&work_dir={wd}"
 
-    pump_task = asyncio.create_task(pump_output())
     try:
-        while True:
-            raw = await websocket.receive_text()
+        async with websockets.connect(ws_url) as cli_ws:
+            # 双向转发
+            async def forward_to_frontend():
+                try:
+                    async for msg in cli_ws:
+                        if isinstance(msg, bytes):
+                            msg = msg.decode("utf-8", errors="replace")
+                        await websocket.send_text(msg)
+                except Exception:
+                    pass
+
+            fwd_task = asyncio.create_task(forward_to_frontend())
+
             try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                if attached:
-                    session.write(raw)
-                continue
-            msg_type = msg.get("type", "input")
-            if msg_type == "attach":
-                rows = int(msg.get("rows", 30))
-                cols = int(msg.get("cols", 120))
-                reset = bool(msg.get("reset", True))
-                replay = bool(msg.get("replay", False))
-                session = manager.get_session(sid, work_dir)
-                if attached:
-                    session.resize(rows, cols)
-                else:
-                    session = manager.attach_interactive(
-                        sid, work_dir, rows=rows, cols=cols, reset=reset
-                    )
-                    attached = True
-                    if replay and not reset:
-                        replay_data = session.get_replay_buffer()
-                        if replay_data:
-                            await websocket.send_text(
-                                json.dumps({"type": "output", "data": replay_data}, ensure_ascii=False)
-                            )
-                await websocket.send_text(
-                    json.dumps(
-                        {"type": "ready", "shell": session.shell_kind},
-                        ensure_ascii=False,
-                    )
-                )
-            elif msg_type == "input":
-                if not attached:
-                    continue
-                data = msg.get("data", "")
-                session.write(data)
-            elif msg_type == "resize":
-                rows = int(msg.get("rows", 30))
-                cols = int(msg.get("cols", 120))
-                if attached:
-                    session.resize(rows, cols)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        pump_task.cancel()
-        try:
-            await pump_task
-        except asyncio.CancelledError:
-            pass
-        manager.unsubscribe_ws(sid, queue, callback)
+                while True:
+                    raw = await websocket.receive_text()
+                    await cli_ws.send(raw)
+            except WebSocketDisconnect:
+                pass
+            finally:
+                fwd_task.cancel()
+                try:
+                    await fwd_task
+                except asyncio.CancelledError:
+                    pass
+    except Exception as e:
+        if websocket.client_state.name != "DISCONNECTED":
+            await websocket.send_text(json.dumps({"type": "error", "data": f"CLI 连接失败: {e}"}))
 
 
 @router.post("/terminal/reset-agent")
 async def reset_agent_terminal(req: ResetAgentTerminalRequest) -> dict[str, Any]:
-    """强制清理 agent 侧遗留 PTY 会话（shared 命令已改为独立子进程）。"""
-    manager = TerminalManager.get_instance()
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, lambda: manager.reset_agent_session(req.work_dir))
-    return {"status": "ok", "message": "agent 终端已重置"}
+    """重置 agent 终端"""
+    import httpx
+    server_url = get_server_url()
+    if server_url:
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(f"{server_url}/reset-agent", json={"work_dir": req.work_dir})
+        except Exception:
+            pass
+    return {"status": "ok"}
 
 
 @router.post("/terminal/run")
 async def run_command(req: RunCommandRequest) -> dict[str, Any]:
-    manager = TerminalManager.get_instance()
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: manager.run_command_and_wait(
-            command=req.command,
-            work_dir=req.work_dir,
-            timeout=req.timeout,
-        ),
+    """运行命令（前端手动执行）"""
+    executor = CLIExecutor(work_dir=req.work_dir)
+    result = executor.execute(
+        command=req.command,
+        working_dir=req.work_dir,
+        timeout=req.timeout,
     )
     return result
 
 
 @router.get("/terminal/session/{invocation_id}")
 async def get_terminal_session(invocation_id: str) -> dict[str, Any]:
-    """通过 invocation_id 查找对应的终端 session_id。"""
-    session_id = TerminalManager.lookup_session_for_invocation(invocation_id)
-    if session_id:
-        return {"session_id": session_id}
-    return {"session_id": None, "error": "未找到对应终端"}
+    """通过 invocation_id 查找对应的终端 session_id"""
+    server_url = get_server_url()
+    if server_url:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{server_url}/sessions/{invocation_id}")
+                return resp.json()
+        except Exception:
+            pass
+    return {"session_id": None}
 
 
 @router.post("/terminal/session/{session_id}/close")
 async def close_terminal_session(session_id: str) -> dict[str, Any]:
-    """关闭指定终端会话，并终止该终端里的后台进程。"""
-    closed = TerminalManager.close_session_if_exists(session_id)
-    return {"status": "ok", "closed": closed}
+    """关闭指定终端会话"""
+    server_url = get_server_url()
+    if server_url:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.delete(f"{server_url}/sessions/{session_id}")
+                return resp.json()
+        except Exception:
+            pass
+    return {"status": "ok", "closed": False}
 
 
 @router.post("/terminal/{invocation_id}/background")
 async def background_command(invocation_id: str) -> dict[str, Any]:
-    """将 AI 命令转入后台运行，不再等待结果。"""
-    resolved_id = TerminalManager.resolve_invocation_id(invocation_id)
-    TerminalManager.set_interrupt_action(resolved_id, "background")
-    return {"status": "ok", "message": "命令已转入后台"}
+    """将命令转入后台运行（手动 detach）。
+
+    通知 Python 执行层和 Node.js CLI 让正在执行的命令立即返回 auto_detached=true，
+    命令本身继续在终端中运行，AI 拿到"已转入后台"的结果继续工作。
+    """
+    # 先通知 Python CLIExecutor 的异步执行层
+    try:
+        from utils.cli_executor import CLIExecutor
+        CLIExecutor.signal_detach(invocation_id)
+    except Exception:
+        pass
+
+    server_url = get_server_url()
+    if not server_url:
+        return {"status": "ok", "detached": True, "note": "已通知执行层"}
+
+    try:
+        async with httpx.AsyncClient() as client:
+            # 先尝试用 invocation_id 直接 detach（Node.js 会同时尝试作为 session_id 和 invocation_id）
+            resp = await client.post(
+                f"{server_url}/sessions/{invocation_id}/detach",
+                timeout=5,
+            )
+            data = resp.json()
+            if data.get("detached"):
+                return {"status": "ok", "detached": True}
+
+            # 如果失败，尝试通过 /sessions/{invocation_id} 查 session_id
+            resp2 = await client.get(f"{server_url}/sessions/{invocation_id}", timeout=3)
+            sess_data = resp2.json()
+            session_id = sess_data.get("session_id")
+            if session_id and session_id != invocation_id:
+                resp3 = await client.post(
+                    f"{server_url}/sessions/{session_id}/detach",
+                    timeout=5,
+                )
+                data3 = resp3.json()
+                return {"status": "ok", "detached": data3.get("detached", False)}
+
+            return {"status": "ok", "detached": False}
+    except Exception as e:
+        return {"status": "error", "detached": False, "error": str(e)}
 
 
 @router.post("/terminal/{invocation_id}/stop")
 async def stop_command(invocation_id: str) -> dict[str, Any]:
-    """终止 AI 命令并关闭对应终端。"""
-    resolved_id = TerminalManager.resolve_invocation_id(invocation_id)
-    TerminalManager.set_interrupt_action(resolved_id, "terminate")
+    """终止命令"""
+    # 先通知 Python CLIExecutor 的异步执行层
     try:
         from utils.cli_executor import CLIExecutor
-        CLIExecutor.set_interrupt_action(resolved_id, "terminate")
-        if resolved_id != invocation_id:
-            CLIExecutor.set_interrupt_action(invocation_id, "terminate")
+        CLIExecutor.signal_cancel(invocation_id)
     except Exception:
         pass
-    session_id = TerminalManager.lookup_session_for_invocation(resolved_id)
-    if session_id:
-        TerminalManager.close_session_if_exists(session_id)
-    return {"status": "ok", "message": "命令已终止"}
+
+    server_url = get_server_url()
+    if server_url:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(f"{server_url}/sessions/{invocation_id}/interrupt")
+                return resp.json()
+        except Exception:
+            pass
+    return {"status": "ok"}

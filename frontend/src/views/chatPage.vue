@@ -150,10 +150,11 @@
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useModelStore } from '@/stores/model'
 import { usePrivacyStore } from '@/stores/privacy'
-import { streamChat, streamVision, stopChat, jsonToStreamEvent, type StreamEvent } from '@/api/chat'
+import { streamChat, streamVision, stopChat, checkChatStatus, resumeChat, jsonToStreamEvent, type StreamEvent } from '@/api/chat'
 import { confirmTool } from '@/api/git'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { getSessionMessages, getSession, updateSessionMeta, getSessionContextUsage } from '@/api/sessions'
+import { getLatestWorkDir, listWorkDirs, createWorkDir } from '@/api/work_dirs'
 import AssistantMessage from '@/components/AssistantMessage.vue'
 import ChatComposer from '@/components/ChatComposer.vue'
 import DangerCommandConfirm from '@/components/DangerCommandConfirm.vue'
@@ -633,30 +634,25 @@ const workDirLabel = computed(() => {
 
 async function loadWorkDir() {
   try {
-    const meta = await getSession('__project_ariesclaw__')
-    workDir.value = meta.work_dir || ''
-  } catch (e) {
-    workDir.value = localStorage.getItem('aries:workdir') || DEFAULT_WORK_DIR
+    const data = await getLatestWorkDir()
+    workDir.value = data.work_dir || DEFAULT_WORK_DIR
+  } catch {
+    workDir.value = DEFAULT_WORK_DIR
   }
-  if (!workDir.value) workDir.value = DEFAULT_WORK_DIR
   workspaceStore.setWorkDir(workDir.value)
   loadWorkDirHistory()
 }
 
-function loadWorkDirHistory() {
+async function loadWorkDirHistory() {
   try {
-    const raw = localStorage.getItem('aries:workdir_history')
-    const list = raw ? (JSON.parse(raw) as string[]) : []
-    // 去重：使用 Set 去重后再转回数组
-    const uniqueList = Array.from(new Set(list))
+    const data = await listWorkDirs()
+    const list = (data.work_dirs || []).map((w: any) => w.work_dir as string)
     // 把当前 workDir 置顶（如果不在列表中）
     const cur = workDir.value
-    if (cur && !uniqueList.includes(cur)) {
-      uniqueList.unshift(cur)
+    if (cur && !list.includes(cur)) {
+      list.unshift(cur)
     }
-    workDirHistory.value = uniqueList.slice(0, 8)
-    // 同步更新 localStorage，确保下次读取也是去重的
-    localStorage.setItem('aries:workdir_history', JSON.stringify(workDirHistory.value))
+    workDirHistory.value = list.slice(0, 8)
   } catch {
     workDirHistory.value = workDir.value ? [workDir.value] : []
   }
@@ -666,9 +662,6 @@ function pushWorkDirHistory(path: string) {
   const list = workDirHistory.value.filter((d) => d !== path)
   list.unshift(path)
   workDirHistory.value = list.slice(0, 8)
-  try {
-    localStorage.setItem('aries:workdir_history', JSON.stringify(workDirHistory.value))
-  } catch {}
 }
 
 function onWorkDirChanged(e: Event) {
@@ -697,11 +690,10 @@ async function pickWorkDir() {
 
 async function applyWorkDir(path: string) {
   try {
-    await updateSessionMeta('__project_ariesclaw__', { work_dir: path })
+    await createWorkDir(path)
     workDir.value = path
     workspaceStore.setWorkDir(path)
     pendingWorkDir.value = path
-    localStorage.setItem('aries:workdir', path)
     pushWorkDirHistory(path)
     window.dispatchEvent(new CustomEvent('aries:workdir-changed', { detail: path }))
   } catch (e) {
@@ -784,6 +776,58 @@ async function loadSessionById(id: string) {
   } finally {
     startChatWs()
     emit('sessionLoaded')
+    // 异步检查是否有运行中的后台任务，如果有则恢复 SSE 流
+    void tryResumeSession(id)
+  }
+}
+
+async function tryResumeSession(sessionId: string) {
+  try {
+    const running = await checkChatStatus(sessionId)
+    if (!running) return
+    // 有运行中的后台任务，复用最后一条 assistant 消息（从数据库加载的占位）
+    // 不创建新消息，避免重复
+    let assistantIdx = -1
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      if (messages.value[i].role === 'assistant') {
+        assistantIdx = i
+        break
+      }
+    }
+    if (assistantIdx < 0) {
+      // 没有 assistant 消息，才创建占位
+      messages.value.push({
+        role: 'assistant',
+        content: '',
+        mode: 'agent',
+        reasoning: [],
+        tools: [],
+        blocks: [],
+        isLoading: true,
+      })
+      assistantIdx = messages.value.length - 1
+    }
+    // 重置该消息为 loading 状态，清空旧内容（将从 queue 重新接收事件）
+    const msg = messages.value[assistantIdx]
+    msg.content = ''
+    msg.reasoning = []
+    msg.tools = []
+    msg.blocks = []
+    msg.isLoading = true
+    messages.value[assistantIdx] = { ...msg }
+
+    isSending.value = true
+    streamAbortController = new AbortController()
+    try {
+      const stream = resumeChat(sessionId)
+      await runAssistantStream(stream, messages.value[assistantIdx], assistantIdx)
+    } finally {
+      isSending.value = false
+      messages.value[assistantIdx].isLoading = false
+      streamAbortController = null
+    }
+  } catch {
+    // 恢复失败时静默处理，用户可以重新发送消息
   }
 }
 

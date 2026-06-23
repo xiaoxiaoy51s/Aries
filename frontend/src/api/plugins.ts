@@ -9,7 +9,6 @@ export interface PluginItem {
   id: string
   name: string
   description: string
-  enabled: boolean
   transport?: string
   command?: string
   status?: string
@@ -33,18 +32,6 @@ export async function listPlugins(): Promise<{
     }
   } catch {
     return { plugins: [], configPath: '', cacheRoot: '' }
-  }
-}
-
-export async function updatePluginStatus(id: string, enabled: boolean): Promise<void> {
-  const res = await fetch(`${getBaseUrl()}/api/plugins/${encodeURIComponent(id)}/status`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled }),
-  })
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}))
-    throw new Error(data.detail || '更新插件状态失败')
   }
 }
 
@@ -74,7 +61,6 @@ export interface PluginDetail {
   id: string
   name: string
   description: string
-  enabled: boolean
   config_path: string
   server_config: Record<string, unknown>
   config_json: string

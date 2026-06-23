@@ -12,6 +12,38 @@ MCP_CONFIG_PATH = ARIES_ROOT / "mcp.json"
 MCP_EXAMPLE_PATH = ARIES_ROOT / "mcp.example.json"
 MCP_CACHE_ROOT = ARIES_ROOT / "mcps"
 
+
+@dataclass
+class PluginEntry:
+    id: str
+    name: str
+    description: str
+    transport: str = ""
+    command: str = ""
+    status: str = ""
+    tool_count: int = 0
+
+    def to_api_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "transport": self.transport,
+            "command": self.command,
+            "status": self.status,
+            "tool_count": self.tool_count,
+        }
+
+
+def _ensure_config_dir() -> None:
+    ARIES_ROOT.mkdir(parents=True, exist_ok=True)
+    MCP_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _empty_config() -> dict[str, Any]:
+    return {"mcpServers": {}}
+
+
 MCP_EXAMPLE_CONTENT = """{
   "mcpServers": {
     "playwright": {
@@ -32,39 +64,6 @@ MCP_EXAMPLE_CONTENT = """{
   }
 }
 """
-
-
-@dataclass
-class PluginEntry:
-    id: str
-    name: str
-    description: str
-    enabled: bool
-    transport: str = ""
-    command: str = ""
-    status: str = ""
-    tool_count: int = 0
-
-    def to_api_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "name": self.name,
-            "description": self.description,
-            "enabled": self.enabled,
-            "transport": self.transport,
-            "command": self.command,
-            "status": self.status,
-            "tool_count": self.tool_count,
-        }
-
-
-def _ensure_config_dir() -> None:
-    ARIES_ROOT.mkdir(parents=True, exist_ok=True)
-    MCP_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
-
-
-def _empty_config() -> dict[str, Any]:
-    return {"mcpServers": {}}
 
 
 def ensure_mcp_files() -> None:
@@ -92,7 +91,6 @@ def _normalize_transport_token(value: str) -> str:
 
 
 def resolve_mcp_transport(server: dict[str, Any]) -> str:
-    """解析 MCP 传输方式：stdio / sse / streamable-http。"""
     raw = server.get("transport") or server.get("type")
     if isinstance(raw, str) and raw.strip():
         token = _normalize_transport_token(raw)
@@ -102,7 +100,6 @@ def resolve_mcp_transport(server: dict[str, Any]) -> str:
             return "sse"
         if token in {"http", "streamable-http", "streamablehttp"}:
             return "streamable-http"
-
     if server.get("url"):
         return "streamable-http"
     if server.get("command"):
@@ -115,7 +112,6 @@ def build_mcp_http_headers(server: dict[str, Any]) -> dict[str, str]:
     raw_headers = server.get("headers")
     if isinstance(raw_headers, dict):
         headers = {str(key): str(value) for key, value in raw_headers.items()}
-
     bearer = server.get("bearerToken") or server.get("bearer_token")
     if isinstance(bearer, str) and bearer.strip():
         headers.setdefault("Authorization", f"Bearer {bearer.strip()}")
@@ -123,7 +119,6 @@ def build_mcp_http_headers(server: dict[str, Any]) -> dict[str, str]:
 
 
 def _extract_servers_block(parsed: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """兼容 mcpServers（Trae/Cursor）与 servers（Aries 旧写法）。"""
     merged: dict[str, dict[str, Any]] = {}
     for key in ("mcpServers", "servers"):
         block = parsed.get(key)
@@ -167,7 +162,6 @@ def save_mcp_config(config: dict[str, Any]) -> None:
 
 
 def parse_json_fragments(text: str) -> list[dict[str, Any]]:
-    """解析粘贴内容，支持多个 JSON 对象连续粘贴。"""
     raw = text.strip()
     if not raw:
         return []
@@ -177,7 +171,6 @@ def parse_json_fragments(text: str) -> list[dict[str, Any]]:
             return [single]
     except json.JSONDecodeError:
         pass
-
     decoder = JSONDecoder()
     results: list[dict[str, Any]] = []
     idx = 0
@@ -197,32 +190,26 @@ def parse_json_fragments(text: str) -> list[dict[str, Any]]:
 
 
 def import_mcp_json(raw_text: str) -> list[str]:
-    """合并粘贴的 MCP 配置到 mcp.json，返回新增的 server id 列表。"""
     fragments = parse_json_fragments(raw_text)
     if not fragments:
         raise ValueError("请粘贴有效的 MCP JSON 配置")
-
     incoming: dict[str, dict[str, Any]] = {}
     for fragment in fragments:
         incoming.update(_extract_servers_block(fragment))
         if not incoming and fragment.get("command"):
             raise ValueError("缺少 mcpServers 键，请粘贴完整配置片段")
-
     if not incoming:
         raise ValueError("未找到 mcpServers 配置")
-
     config = load_mcp_config()
     servers = config.setdefault("mcpServers", {})
     if not isinstance(servers, dict):
         servers = {}
         config["mcpServers"] = servers
-
     added: list[str] = []
     for server_id, entry in incoming.items():
         if server_id not in servers:
             added.append(server_id)
         servers[server_id] = entry
-
     save_mcp_config(config)
     return added
 
@@ -234,9 +221,7 @@ def _server_transport(server: dict[str, Any]) -> str:
         return "unknown"
 
 
-def _server_status(server: dict[str, Any], enabled: bool) -> str:
-    if not enabled:
-        return "disabled"
+def _server_status(server: dict[str, Any]) -> str:
     last_error = server.get("lastError")
     if isinstance(last_error, str) and last_error.strip():
         return "error"
@@ -260,16 +245,6 @@ def _server_description(server: dict[str, Any]) -> str:
     return "MCP 服务"
 
 
-def _is_server_enabled(server: dict[str, Any]) -> bool:
-    if server.get("disabled") is True:
-        return False
-    if server.get("enabled") is False:
-        return False
-    if server.get("isActive") is False:
-        return False
-    return True
-
-
 def _cached_tool_count(server_id: str) -> int:
     tools_dir = MCP_CACHE_ROOT / _safe_dir_name(server_id) / "tools"
     if not tools_dir.is_dir():
@@ -285,18 +260,13 @@ def get_mcp_cache_dir(server_id: str) -> Path:
     return MCP_CACHE_ROOT / _safe_dir_name(server_id)
 
 
-def get_enabled_servers() -> dict[str, dict[str, Any]]:
+def get_all_servers() -> dict[str, dict[str, Any]]:
+    """获取所有 MCP 服务（不再有 enabled/disabled 概念）。"""
     config = load_mcp_config()
     servers = config.get("mcpServers", {})
     if not isinstance(servers, dict):
         return {}
-    enabled: dict[str, dict[str, Any]] = {}
-    for server_id, raw in servers.items():
-        if not server_id.strip() or not isinstance(raw, dict):
-            continue
-        if _is_server_enabled(raw):
-            enabled[server_id] = raw
-    return enabled
+    return {sid: raw for sid, raw in servers.items() if sid.strip() and isinstance(raw, dict)}
 
 
 def discover_plugins() -> list[PluginEntry]:
@@ -304,22 +274,19 @@ def discover_plugins() -> list[PluginEntry]:
     servers = config.get("mcpServers", {})
     if not isinstance(servers, dict):
         return []
-
     entries: list[PluginEntry] = []
     for plugin_id, raw_server in sorted(servers.items()):
         if not plugin_id.strip() or not isinstance(raw_server, dict):
             continue
-        enabled = _is_server_enabled(raw_server)
         command = raw_server.get("command")
         entries.append(
             PluginEntry(
                 id=plugin_id,
                 name=plugin_id,
                 description=_server_description(raw_server),
-                enabled=enabled,
                 transport=_server_transport(raw_server),
                 command=command if isinstance(command, str) else "",
-                status=_server_status(raw_server, enabled),
+                status=_server_status(raw_server),
                 tool_count=_cached_tool_count(plugin_id),
             )
         )
@@ -327,16 +294,8 @@ def discover_plugins() -> list[PluginEntry]:
 
 
 def set_plugin_enabled(plugin_id: str, enabled: bool) -> None:
-    config = load_mcp_config()
-    servers = config.get("mcpServers", {})
-    if not isinstance(servers, dict) or plugin_id not in servers:
-        raise FileNotFoundError(f"插件 {plugin_id} 不存在，请先在 mcp.json 中配置")
-    server = servers[plugin_id]
-    if not isinstance(server, dict):
-        raise FileNotFoundError(f"插件 {plugin_id} 配置无效")
-    server["disabled"] = not enabled
-    server["enabled"] = enabled
-    save_mcp_config(config)
+    """已废弃：MCP 不再支持 enable/disable。保留函数签名以兼容 API。"""
+    pass
 
 
 def get_mcp_server_config(plugin_id: str) -> dict[str, Any] | None:
@@ -351,3 +310,13 @@ def get_mcp_server_config(plugin_id: str) -> dict[str, Any] | None:
 def get_mcp_config_path() -> str:
     ensure_mcp_files()
     return str(MCP_CONFIG_PATH)
+
+
+def delete_plugin(plugin_id: str) -> None:
+    """从 mcp.json 中删除指定插件。"""
+    config = load_mcp_config()
+    servers = config.get("mcpServers", {})
+    if not isinstance(servers, dict) or plugin_id not in servers:
+        raise FileNotFoundError(f"插件 {plugin_id} 不存在")
+    del servers[plugin_id]
+    save_mcp_config(config)

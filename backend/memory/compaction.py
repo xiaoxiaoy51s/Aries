@@ -177,3 +177,270 @@ def make_memory_record(session_id: str, messages: list[dict[str, Any]]) -> dict[
         "summary_token_estimate": estimate_tokens(summary),
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
+
+
+# ===========================================================================
+# 后台异步压缩（#6）
+# ===========================================================================
+
+import asyncio
+import logging
+import random
+from dataclasses import dataclass, field
+from enum import Enum
+
+logger = logging.getLogger(__name__)
+
+
+class CompactionState(Enum):
+    """压缩状态机。"""
+    IDLE = "idle"           # 无压缩任务
+    IN_PROGRESS = "in_progress"  # 正在压缩
+    COMPLETED = "completed"  # 压缩完成，摘要可用
+    FAILED = "failed"        # 压缩失败
+
+
+# 阈值常量（借鉴 VS Code backgroundSummarizer.ts）
+WARM_JITTER_MIN = 0.78       # 暖缓存下限
+WARM_JITTER_SPAN = 0.04      # 暖缓存范围宽度 → [0.78, 0.82)
+EMERGENCY_RATIO = 0.90       # 紧急阈值：即使冷缓存也要压缩
+APPLY_MIN_RATIO = 0.65       # 低于此比例不应用已完成的摘要
+MIN_MESSAGES_FOR_COMPACT = 12  # 消息数不足时不压缩
+
+
+@dataclass
+class CompactionResult:
+    """一次压缩的结果。"""
+    state: CompactionState
+    summary: str = ""
+    summary_tokens: int = 0
+    source_messages: int = 0
+    source_tokens: int = 0
+    error: str = ""
+    created_at: str = ""
+
+
+@dataclass
+class SessionCompactionTracker:
+    """单个会话的压缩状态追踪。"""
+    session_id: str
+    state: CompactionState = CompactionState.IDLE
+    pending_result: CompactionResult | None = None
+    last_compact_message_count: int = 0
+    last_compact_at: str = ""
+    _task: asyncio.Task | None = field(default=None, repr=False)
+
+    def is_warm(self) -> bool:
+        """是否处于暖缓存状态（最近刚完成过一次工具调用轮次）。"""
+        return self.state == CompactionState.COMPLETED and bool(self.pending_result)
+
+    def can_apply(self, current_ratio: float) -> bool:
+        """是否可以应用已完成的摘要。"""
+        if not self.pending_result or self.state != CompactionState.COMPLETED:
+            return False
+        return current_ratio >= APPLY_MIN_RATIO
+
+
+class BackgroundCompactor:
+    """后台对话压缩管理器。
+
+    借鉴 VS Code Copilot 的 backgroundSummarizer.ts：
+    - 在 Agent 回复完成后检查是否需要触发后台压缩
+    - 暖缓存（刚完成工具调用）在 ~80% 触发
+    - 冷缓存在 90% 紧急触发，避免下次请求时阻塞
+    - 压缩异步执行，不阻塞主流程
+    - 下次请求时如果压缩已完成则应用，否则继续用原始历史
+
+    用法：
+        compactor = BackgroundCompactor()
+        # 每轮 Agent 回复后检查
+        compactor.maybe_trigger_compaction(session_id, messages, context_window=200000)
+        # 下次请求前检查是否有已完成的压缩
+        result = compactor.get_pending_result(session_id)
+        if result and result.state == CompactionState.COMPLETED:
+            # 应用摘要，替换旧消息
+            ...
+    """
+
+    def __init__(self) -> None:
+        self._trackers: dict[str, SessionCompactionTracker] = {}
+
+    def get_tracker(self, session_id: str) -> SessionCompactionTracker:
+        if session_id not in self._trackers:
+            self._trackers[session_id] = SessionCompactionTracker(session_id=session_id)
+        return self._trackers[session_id]
+
+    def compute_context_ratio(
+        self,
+        messages: list[dict[str, Any]],
+        context_window: int = 200_000,
+    ) -> float:
+        """计算当前上下文占用比例。"""
+        if context_window <= 0:
+            return 0.0
+        total_tokens = sum(estimate_message_tokens(m) for m in messages)
+        return total_tokens / context_window
+
+    def should_trigger(
+        self,
+        messages: list[dict[str, Any]],
+        context_window: int = 200_000,
+        is_warm: bool = False,
+    ) -> bool:
+        """判断是否应该触发后台压缩。
+
+        Args:
+            messages: 当前会话消息列表
+            context_window: 模型上下文窗口大小
+            is_warm: 是否处于暖缓存状态（刚完成工具调用轮次）
+        """
+        if len(messages) < MIN_MESSAGES_FOR_COMPACT:
+            return False
+
+        ratio = self.compute_context_ratio(messages, context_window)
+
+        # 紧急阈值：无论冷热都要压缩
+        if ratio >= EMERGENCY_RATIO:
+            return True
+
+        # 暖缓存阈值：带 jitter
+        if is_warm:
+            threshold = WARM_JITTER_MIN + random.uniform(0, WARM_JITTER_SPAN)
+            if ratio >= threshold:
+                return True
+
+        # 消息数过多也触发
+        if len(messages) > 40:
+            return True
+
+        return False
+
+    def maybe_trigger_compaction(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        context_window: int = 200_000,
+        is_warm: bool = False,
+    ) -> bool:
+        """如果需要，触发后台压缩。返回是否触发了压缩。"""
+        tracker = self.get_tracker(session_id)
+
+        # 已有压缩在进行中，不重复触发
+        if tracker.state == CompactionState.IN_PROGRESS:
+            return False
+
+        if not self.should_trigger(messages, context_window, is_warm):
+            return False
+
+        # 触发后台压缩
+        self._start_compaction(session_id, messages)
+        return True
+
+    def _start_compaction(self, session_id: str, messages: list[dict[str, Any]]) -> None:
+        """启动异步压缩任务。"""
+        tracker = self.get_tracker(session_id)
+        tracker.state = CompactionState.IN_PROGRESS
+
+        # 取快照，避免压缩过程中消息被修改
+        messages_snapshot = [dict(m) for m in messages]
+
+        async def _compact():
+            try:
+                to_compact, _ = split_messages_for_compaction(messages_snapshot)
+                if not to_compact:
+                    tracker.state = CompactionState.IDLE
+                    return
+
+                summary = build_session_summary(to_compact)
+                result = CompactionResult(
+                    state=CompactionState.COMPLETED,
+                    summary=summary,
+                    summary_tokens=estimate_tokens(summary),
+                    source_messages=len(to_compact),
+                    source_tokens=sum(estimate_message_tokens(m) for m in to_compact),
+                    created_at=datetime.now().isoformat(timespec="seconds"),
+                )
+                tracker.pending_result = result
+                tracker.state = CompactionState.COMPLETED
+                tracker.last_compact_message_count = len(messages_snapshot)
+                tracker.last_compact_at = result.created_at
+                logger.info(
+                    "[Compactor] 会话 %s 后台压缩完成: %d 消息 → %d tokens 摘要",
+                    session_id, result.source_messages, result.summary_tokens,
+                )
+            except Exception as exc:
+                tracker.state = CompactionState.FAILED
+                tracker.pending_result = CompactionResult(
+                    state=CompactionState.FAILED,
+                    error=str(exc),
+                )
+                logger.warning("[Compactor] 会话 %s 后台压缩失败: %s", session_id, exc)
+
+        # 尝试获取事件循环
+        try:
+            loop = asyncio.get_event_loop()
+            tracker._task = loop.create_task(_compact())
+        except RuntimeError:
+            # 没有事件循环，同步执行
+            tracker._task = None
+            asyncio.run(_compact())
+
+    def get_pending_result(self, session_id: str) -> CompactionResult | None:
+        """获取已完成的压缩结果（不阻塞）。"""
+        tracker = self.get_tracker(session_id)
+        if tracker.state == CompactionState.COMPLETED and tracker.pending_result:
+            return tracker.pending_result
+        return None
+
+    def consume_result(self, session_id: str) -> CompactionResult | None:
+        """获取并消费压缩结果（取出后清除）。"""
+        tracker = self.get_tracker(session_id)
+        result = tracker.pending_result
+        tracker.pending_result = None
+        tracker.state = CompactionState.IDLE
+        return result
+
+    def cancel(self, session_id: str) -> None:
+        """取消会话的后台压缩。"""
+        tracker = self.get_tracker(session_id)
+        if tracker._task and not tracker._task.done():
+            tracker._task.cancel()
+        tracker.state = CompactionState.IDLE
+        tracker.pending_result = None
+
+
+# 全局单例
+_compactor: BackgroundCompactor | None = None
+
+
+def get_compactor() -> BackgroundCompactor:
+    """获取全局 BackgroundCompactor 实例。"""
+    global _compactor
+    if _compactor is None:
+        _compactor = BackgroundCompactor()
+    return _compactor
+
+
+# ---------------------------------------------------------------------------
+# 增强的压缩判断（替换原有 should_compact）
+# ---------------------------------------------------------------------------
+
+def should_compact_enhanced(
+    messages: list[dict[str, Any]],
+    context_window: int = 200_000,
+    is_warm: bool = False,
+    max_history_tokens: int = DEFAULT_MAX_HISTORY_TOKENS,
+) -> bool:
+    """增强的压缩判断（带阈值策略）。
+
+    比 should_compact 更精细：
+    - 支持暖/冷缓存区分
+    - 支持上下文窗口比例判断
+    - 保留消息数判断作为兜底
+    """
+    compactor = get_compactor()
+    return compactor.should_trigger(
+        messages=messages,
+        context_window=context_window,
+        is_warm=is_warm,
+    ) or should_compact(messages, max_history_tokens)

@@ -9,6 +9,10 @@ export function getTerminalWsUrl(workDir: string, sessionId: string): string {
   return `${wsBase}/ws/terminal?work_dir=${encodeURIComponent(workDir)}&session_id=${encodeURIComponent(sessionId)}`
 }
 
+export function getAgentSessionId(workDir: string): string {
+  return `agent:${workDir}`
+}
+
 export async function getTerminalSessionId(invocationId: string): Promise<string | null> {
   const baseUrl = useModelStore().getBaseUrl()
   const res = await fetch(`${baseUrl}/terminal/session/${encodeURIComponent(invocationId)}`)

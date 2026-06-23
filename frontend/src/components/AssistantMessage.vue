@@ -67,13 +67,16 @@
             <div
               v-if="block.type === 'text' || block.type === 'summary'"
               class="text-block"
-              :class="{ 'error-block': block.error }"
+              :class="[
+                { 'error-block': block.error },
+                block.errorType === 'step_limit_exceeded' ? 'pause-block' : ''
+              ]"
             >
               <MarkdownRenderer
                 :content="block.text || ''"
-                :text-color="block.error ? '#ef4444' : textColor"
+                :text-color="textColor"
                 :font-size="fontSize"
-                :show-actions="block._isLastText"
+                :show-actions="block._isLastText && !block.error"
                 :is-streaming="isLoading"
               />
             </div>
@@ -147,7 +150,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import ToolBlock from './ToolBlock.vue'
 
@@ -168,6 +171,7 @@ interface MessageBlock {
   preview?: string
   result?: string
   error?: string
+  errorType?: string
   started_at?: string
   ended_at?: string
   tool_call_id?: string
@@ -221,16 +225,54 @@ const props = withDefaults(defineProps<{
 
 const showReasoning = ref(false)
 
+// ---------- 实时计时 ----------
+// loading 时前端每秒计算已运行时长，不等后端 meta 事件
+const liveDurationMs = ref(0)
+let liveTimer: ReturnType<typeof setInterval> | null = null
+
+function startLiveTimer() {
+  stopLiveTimer()
+  const start = Date.now()
+  liveDurationMs.value = 0
+  liveTimer = setInterval(() => {
+    liveDurationMs.value = Date.now() - start
+  }, 1000)
+}
+
+function stopLiveTimer() {
+  if (liveTimer) {
+    clearInterval(liveTimer)
+    liveTimer = null
+  }
+}
+
+watch(() => props.isLoading, (loading) => {
+  if (loading) {
+    startLiveTimer()
+  } else {
+    stopLiveTimer()
+  }
+}, { immediate: true })
+
+onMounted(() => {
+  if (props.isLoading) startLiveTimer()
+})
+
+onUnmounted(() => {
+  stopLiveTimer()
+})
+
 const textColor = computed(() => props.textColor || '#1a1a1a')
 const fontSize = computed(() => props.fontSize || 15)
 
 // meta 相关计算
 const hasMetaInfo = computed(() => {
-  return !!(props.meta?.model || formattedDuration.value || formattedTokens.value || contextPercent.value !== null)
+  return !!(props.isLoading || props.meta?.model || formattedDuration.value || formattedTokens.value || contextPercent.value !== null)
 })
 
 const formattedDuration = computed(() => {
-  const ms = props.meta?.duration_ms
+  // loading 时用前端实时计时，结束后用后端 meta
+  const ms = props.isLoading ? liveDurationMs.value : (props.meta?.duration_ms ?? 0)
   if (!ms || ms <= 0) return ''
   if (ms < 1000) return `${ms}ms`
   const s = ms / 1000
@@ -557,11 +599,34 @@ function onMessageClick(e: MouseEvent) {
 }
 
 .error-block {
-  background: #fef2f2;
-  border: 1px solid #fecaca;
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
   border-radius: 8px;
-  padding: 12px 16px;
-  margin: 8px 0;
+  padding: 8px 12px;
+  margin: 6px 0;
+  color: #92400e;
+  max-width: 80%;
+}
+
+.error-block .error-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  color: #b45309;
+}
+
+/* step_limit_exceeded 专用：不显示为错误，而是温和的暂停提示 */
+.pause-block {
+  background: #f0f9ff;
+  border-color: #bae6fd;
+  color: #0369a1;
+}
+
+.pause-block .error-header {
+  color: #0284c7;
 }
 
 /* 加载动画 */

@@ -26,6 +26,22 @@
         </div>
         <div class="explorer-toolbar-actions">
           <button
+            v-if="previewType === 'text' && selectedPath"
+            type="button"
+            class="tb-action"
+            :class="{ 'tb-save-dirty': isDirty }"
+            :title="isDirty ? '保存 (Ctrl+S)' : '保存 (Ctrl+S)'"
+            :disabled="saving || !isDirty"
+            @click="saveFile"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+              <polyline points="17 21 17 13 7 13 7 21"/>
+              <polyline points="7 3 7 8 15 8"/>
+            </svg>
+            <span>{{ saving ? '保存中…' : (isDirty ? '保存*' : '保存') }}</span>
+          </button>
+          <button
             type="button"
             class="tb-action"
             title="使用 VSCode 打开项目"
@@ -117,15 +133,60 @@
         :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }"
         @mousedown.self="contextMenu.open = false"
       >
+        <!-- 文件特有：打开 / 打开方式 -->
+        <template v-if="contextMenu.node && !contextMenu.node.isDir">
+          <button class="ctx-item" @click="ctxOpenFile('vscode')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 7h10"/><path d="M7 12h10"/><path d="M7 17h10"/></svg>
+            <span>打开</span>
+          </button>
+          <div class="ctx-submenu-wrap">
+            <button class="ctx-item ctx-has-submenu" @mouseenter="openSubmenu('openWith')">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+              <span>打开方式</span>
+              <svg class="ctx-submenu-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+            <div
+              v-if="activeSubmenu === 'openWith'"
+              class="ctx-submenu"
+              @mouseleave="closeSubmenu"
+            >
+              <button class="ctx-item" @click="ctxOpenFile('vscode')">
+                <span>Visual Studio Code</span>
+              </button>
+              <button class="ctx-item" @click="ctxOpenFile('default')">
+                <span>默认程序</span>
+              </button>
+            </div>
+          </div>
+          <div class="ctx-divider"></div>
+        </template>
+
+        <!-- 文件夹特有：展开/折叠 -->
+        <template v-if="contextMenu.node && contextMenu.node.isDir">
+          <button class="ctx-item" @click="ctxToggleFolder">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            <span>{{ contextMenu.node.expanded ? '折叠' : '展开' }}</span>
+          </button>
+          <div class="ctx-divider"></div>
+        </template>
+
+        <button class="ctx-item" @click="ctxOpenInExplorer">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          <span>在资源管理器中打开</span>
+        </button>
+        <button class="ctx-item" @click="ctxCopyPath">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span>复制路径</span>
+        </button>
         <button class="ctx-item" @click="ctxAddToChat">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
           <span>添加到对话</span>
         </button>
+        <div class="ctx-divider"></div>
         <button class="ctx-item" @click="ctxStartRename">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg>
           <span>重命名</span>
         </button>
-        <div class="ctx-divider"></div>
         <button class="ctx-item ctx-danger" @click="ctxStartDelete">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
           <span>删除</span>
@@ -191,6 +252,8 @@ const { workDir } = storeToRefs(workspace)
 const modelStore = useModelStore()
 
 const loading = ref(false)
+const isDirty = ref(false)
+const saving = ref(false)
 const editorContainerRef = ref<HTMLElement | null>(null)
 const selectedPath = ref<string | null>(null)
 const searchQuery = ref('')
@@ -206,6 +269,7 @@ const previewBinaryInfo = ref<{ ext: string; size: number } | null>(null)
 
 // 右键菜单
 const contextMenu = ref({ open: false, x: 0, y: 0, node: null as TreeNode | null })
+const activeSubmenu = ref<string | null>(null)
 
 // 重命名弹窗
 const renameInputRef = ref<HTMLInputElement | null>(null)
@@ -435,24 +499,38 @@ async function loadFileContent() {
     }
 
     if (!editor) {
-      editor = monaco.editor.create(editorContainerRef.value, {
-        readOnly: true,
-        automaticLayout: true,
-        fontSize: 13,
-        minimap: { enabled: false },
-        scrollBeyondLastLine: false,
-        lineNumbers: 'on',
-      })
+        editor = monaco.editor.create(editorContainerRef.value, {
+          readOnly: false,
+          automaticLayout: true,
+          fontSize: 13,
+          minimap: { enabled: false },
+          scrollBeyondLastLine: false,
+          lineNumbers: 'on',
+        })
 
-      // 监听选区变化
-      selectionListener = editor.onDidChangeCursorSelection((e: any) => {
-        updateAddButton(e.selection)
-      })
-    }
+        // 监听选区变化
+        selectionListener = editor.onDidChangeCursorSelection((e: any) => {
+          updateAddButton(e.selection)
+        })
+
+        // Ctrl+S 保存
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+          saveFile()
+        })
+
+        // 内容变化时更新脏标记
+        editor.onDidChangeModelContent(() => {
+          isDirty.value = true
+        })
+      }
 
     const language = getLanguageFromPath(selectedPath.value)
     currentModel = monaco.editor.createModel(data.content || '', language)
     editor.setModel(currentModel)
+    isDirty.value = false
+
+    // 加载语法诊断（如果启用了诊断）
+    loadDiagnostics(monaco)
   } catch (e) {
     console.error('加载文件内容失败', e)
   } finally {
@@ -503,6 +581,59 @@ function getLanguageFromPath(path: string): string {
     sh: 'shell', yml: 'yaml', yaml: 'yaml', xml: 'xml',
   }
   return map[ext] || 'plaintext'
+}
+
+/**
+ * 加载文件语法诊断（对齐 VS Code MarkerService / Monaco setModelMarkers）。
+ * Runs language-specific linters on the backend and displays squiggly underlines.
+ */
+async function loadDiagnostics(monaco: any) {
+  if (!selectedPath.value || !workDir.value || !currentModel) return
+  try {
+    const url = `${modelStore.getBaseUrl()}/files/diagnostics?work_dir=${encodeURIComponent(workDir.value)}&path=${encodeURIComponent(selectedPath.value)}`
+    const res = await fetch(url)
+    if (!res.ok) return
+    const data = await res.json()
+    const markers = data.markers || []
+    // 设置 Monaco 编辑器标记（自动渲染波浪线和 gutter 图标）
+    monaco.editor.setModelMarkers(currentModel, 'file-linter', markers)
+  } catch (e) {
+    console.debug('Failed to load diagnostics', e)
+  }
+}
+
+/** 保存当前文件内容到后端 */
+async function saveFile() {
+  if (!selectedPath.value || !workDir.value || !currentModel || saving.value) return
+  saving.value = true
+  try {
+    const res = await fetch(`${modelStore.getBaseUrl()}/files/save`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        work_dir: workDir.value,
+        path: selectedPath.value,
+        content: currentModel.getValue(),
+      }),
+    })
+    const data = await res.json()
+    if (data.ok) {
+      isDirty.value = false
+      // 保存后重新加载诊断
+      const monaco = await loadMonaco()
+      loadDiagnostics(monaco)
+    } else {
+      window.dispatchEvent(new CustomEvent('aries:toast', {
+        detail: { message: data.error || '保存失败', type: 'error' },
+      }))
+    }
+  } catch (e: any) {
+    window.dispatchEvent(new CustomEvent('aries:toast', {
+      detail: { message: e.message || '保存失败', type: 'error' },
+    }))
+  } finally {
+    saving.value = false
+  }
 }
 
 function formatFileSize(bytes: number): string {
@@ -600,11 +731,113 @@ function onTreeContextMenu(payload: { node: TreeNode; event: MouseEvent }) {
     y: payload.event.clientY,
     node: payload.node,
   }
+  activeSubmenu.value = null
+}
+
+function openSubmenu(name: string) {
+  activeSubmenu.value = name
+}
+
+function closeSubmenu() {
+  activeSubmenu.value = null
+}
+
+/** 获取右键菜单选中节点的绝对路径 */
+function getContextMenuFullPath(): string {
+  const node = contextMenu.value.node
+  if (!node || !workDir.value) return ''
+  return `${workDir.value}\\${node.path.replace(/\//g, '\\')}`
+}
+
+async function ctxOpenFile(editor: 'vscode' | 'default') {
+  const node = contextMenu.value.node
+  contextMenu.value.open = false
+  activeSubmenu.value = null
+  if (!node || !workDir.value || node.isDir) return
+  try {
+    if (editor === 'vscode') {
+      const res = await fetch(`${modelStore.getBaseUrl()}/files/open-in-editor`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ work_dir: workDir.value, path: node.path, editor: 'vscode-file' }),
+      })
+      const data = await res.json()
+      if (data.error) {
+        window.dispatchEvent(new CustomEvent('aries:toast', { detail: { message: data.error, type: 'error' } }))
+      }
+    } else {
+      // 默认程序：使用系统默认程序打开文件
+      const targetPath = getContextMenuFullPath()
+      if (!targetPath) return
+      // 通过后端 explorer-file 在资源管理器中选中，然后用户可手动打开（跨平台兜底）
+      const res = await fetch(`${modelStore.getBaseUrl()}/files/open-in-editor`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ work_dir: workDir.value, path: node.path, editor: 'explorer-file' }),
+      })
+      const data = await res.json()
+      if (data.error) {
+        window.dispatchEvent(new CustomEvent('aries:toast', { detail: { message: data.error, type: 'error' } }))
+      }
+    }
+  } catch (e: any) {
+    window.dispatchEvent(new CustomEvent('aries:toast', { detail: { message: e.message || '打开失败', type: 'error' } }))
+  }
+}
+
+function ctxToggleFolder() {
+  const node = contextMenu.value.node
+  contextMenu.value.open = false
+  if (!node || !node.isDir) return
+  onToggleFolder(node)
+}
+
+async function ctxOpenInExplorer() {
+  const node = contextMenu.value.node
+  contextMenu.value.open = false
+  if (!node || !workDir.value) return
+  try {
+    const res = await fetch(`${modelStore.getBaseUrl()}/files/open-in-editor`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        work_dir: workDir.value,
+        path: node.path,
+        editor: node.isDir ? 'explorer' : 'explorer-file',
+      }),
+    })
+    const data = await res.json()
+    if (data.error) {
+      window.dispatchEvent(new CustomEvent('aries:toast', { detail: { message: data.error, type: 'error' } }))
+    }
+  } catch (e: any) {
+    window.dispatchEvent(new CustomEvent('aries:toast', { detail: { message: e.message || '打开失败', type: 'error' } }))
+  }
+}
+
+async function ctxCopyPath() {
+  const node = contextMenu.value.node
+  contextMenu.value.open = false
+  if (!node || !workDir.value) return
+  const fullPath = getContextMenuFullPath()
+  if (!fullPath) return
+  try {
+    await navigator.clipboard.writeText(fullPath)
+  } catch {
+    // 降级方案
+    const input = document.createElement('input')
+    input.value = fullPath
+    document.body.appendChild(input)
+    input.select()
+    document.execCommand('copy')
+    document.body.removeChild(input)
+  }
 }
 
 function ctxAddToChat() {
   const node = contextMenu.value.node
   contextMenu.value.open = false
+  activeSubmenu.value = null
   if (!node || !workDir.value) return
   let fullPath: string
   if (node.isDir) {
@@ -813,6 +1046,10 @@ async function refreshTree() {
   cursor: not-allowed;
 }
 
+.tb-action.tb-save-dirty {
+  color: #c69026;
+}
+
 .tb-action.tb-icon {
   padding: 3px 5px;
 }
@@ -1015,6 +1252,34 @@ async function refreshTree() {
 .ctx-item svg {
   opacity: 0.6;
   flex-shrink: 0;
+}
+
+.ctx-has-submenu {
+  position: relative;
+  justify-content: space-between;
+}
+
+.ctx-submenu-arrow {
+  margin-left: auto;
+  opacity: 0.4;
+}
+
+.ctx-submenu-wrap {
+  position: relative;
+}
+
+.ctx-submenu {
+  position: absolute;
+  left: 100%;
+  top: 0;
+  min-width: 140px;
+  margin-left: 4px;
+  background: #fff;
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+  padding: 4px;
+  z-index: 10001;
 }
 
 .ctx-danger {

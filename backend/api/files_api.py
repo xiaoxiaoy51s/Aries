@@ -1,12 +1,16 @@
-"""文件浏览器 API: 列出目录、读取文件内容。"""
+"""文件浏览器 API: 列出目录、读取文件内容、语法诊断（对齐 VS Code MarkerService）。"""
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
+import json
 import mimetypes
+import re
 import shutil
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -167,6 +171,243 @@ async def delete_file(req: DeleteRequest) -> dict[str, Any]:
         return {"error": str(e)}
 
 
+# ─── 语法诊断（对齐 VS Code MarkerService / Monaco setModelMarkers） ───
+
+_DIAGNOSTIC_LANGUAGES = {
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".json": "json",
+    ".jsonc": "json",
+    ".html": "html",
+    ".css": "css",
+    ".scss": "scss",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".md": "markdown",
+}
+
+# Monaco MarkerSeverity: Hint=1, Info=2, Warning=4, Error=8
+_MONACO_SEVERITY = {
+    "error": 8,
+    "warning": 4,
+    "info": 2,
+    "hint": 1,
+}
+
+
+def _lint_pyflakes(content: str) -> list[dict[str, Any]]:
+    """使用 pyflakes 进行 Python 语法/逻辑诊断（快，无 import 解析）。"""
+    try:
+        from pyflakes.api import check
+        from pyflakes.reporter import Reporter
+    except ImportError:
+        return _lint_python_ast(content)
+
+    markers: list[dict[str, Any]] = []
+
+    class CaptureReporter(Reporter):
+        def unexpectedError(self, filename, msg):  # type: ignore
+            pass
+        def syntaxError(self, filename, msg, lineno, offset, text):  # type: ignore
+            markers.append({
+                "startLineNumber": lineno or 1,
+                "startColumn": (offset or 0) + 1,
+                "endLineNumber": lineno or 1,
+                "endColumn": (offset or 0) + 2,
+                "message": f"[语法错误] {msg}",
+                "severity": 8,
+                "code": "syntax-error",
+            })
+        def flake(self, message):  # type: ignore
+            markers.append({
+                "startLineNumber": message.lineno,
+                "startColumn": message.col,
+                "endLineNumber": message.lineno,
+                "endColumn": message.col + 1,
+                "message": str(message.message),
+                "severity": 4 if "warning" in type(message).__name__.lower() else 2,
+                "code": type(message).__name__,
+            })
+
+    try:
+        check(content, "buffer", CaptureReporter())
+    except Exception:
+        pass  # fallback to ast
+        return _lint_python_ast(content)
+
+    return markers
+
+
+def _lint_python_ast(content: str) -> list[dict[str, Any]]:
+    """使用 Python ast 模块做基础语法检查（零依赖）。"""
+    markers: list[dict[str, Any]] = []
+    try:
+        ast.parse(content)
+    except SyntaxError as e:
+        lineno = e.lineno or 1
+        offset = (e.offset or 0) + 1
+        markers.append({
+            "startLineNumber": lineno,
+            "startColumn": offset,
+            "endLineNumber": lineno,
+            "endColumn": offset + 1,
+            "message": f"[语法错误] {e.msg}",
+            "severity": 8,
+            "code": "syntax-error",
+        })
+    return markers
+
+
+def _lint_javascript(content: str, ext: str) -> list[dict[str, Any]]:
+    """使用 Node.js --check 做 JS 语法诊断。"""
+    markers: list[dict[str, Any]] = []
+
+    # 对 TypeScript 不做 Node --check（不支持），返回空
+    if ext in (".ts", ".tsx"):
+        return markers
+
+    node = shutil.which("node")
+    if not node:
+        return markers
+
+    try:
+        proc = subprocess.run(
+            [node, "--check", "--stdin"],
+            input=content,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode != 0:
+            stderr = proc.stderr.strip()
+            # 解析 Node.js 错误输出格式: "path:line:col: error message"
+            for line in stderr.split("\n"):
+                line = line.strip()
+                # 匹配标准格式: 文件名:行号:列号: 错误信息
+                match = re.match(r".+:(\d+):(\d+):\s*(.+)", line)
+                if match:
+                    lineno = int(match.group(1))
+                    col = int(match.group(2))
+                    msg = match.group(3).strip()
+                    markers.append({
+                        "startLineNumber": lineno,
+                        "startColumn": col,
+                        "endLineNumber": lineno,
+                        "endColumn": col + 1,
+                        "message": f"[SyntaxError] {msg}",
+                        "severity": 8,
+                        "code": "js-syntax-error",
+                    })
+    except Exception:
+        pass
+
+    return markers
+
+
+def _lint_json(content: str) -> list[dict[str, Any]]:
+    """使用 Python json 模块做 JSON 语法诊断。"""
+    markers: list[dict[str, Any]] = []
+    try:
+        json.loads(content)
+    except json.JSONDecodeError as e:
+        lineno = e.lineno
+        col = e.colno
+        markers.append({
+            "startLineNumber": lineno,
+            "startColumn": col,
+            "endLineNumber": lineno,
+            "endColumn": col + 1,
+            "message": f"[JSON Error] {e.msg}",
+            "severity": 8,
+            "code": "json-syntax-error",
+        })
+    return markers
+
+
+def _run_diagnostics(content: str, ext: str) -> list[dict[str, Any]]:
+    """根据文件扩展名选择合适的诊断器。"""
+    lang = _DIAGNOSTIC_LANGUAGES.get(ext)
+
+    if lang == "python":
+        return _lint_pyflakes(content)
+    elif lang == "javascript":
+        return _lint_javascript(content, ext)
+    elif lang == "json":
+        return _lint_json(content)
+    # HTML/CSS/YAML/Markdown: 不做深层诊断，返回空
+    return []
+
+
+@router.get("/diagnostics")
+async def get_diagnostics(
+    work_dir: str | None = None,
+    path: str | None = None,
+) -> dict[str, Any]:
+    """对指定文件运行语法诊断，返回 Monaco 兼容的 marker 数组。
+
+    返回值格式对齐 Monaco Editor 的 IMarkerData：
+    ```json
+    {
+      "markers": [
+        {
+          "startLineNumber": 1,
+          "startColumn": 5,
+          "endLineNumber": 1,
+          "endColumn": 10,
+          "message": "错误描述",
+          "severity": 8,
+          "code": "error-code"
+        }
+      ]
+    }
+    ```
+    severity: 1=Hint, 2=Info, 4=Warning, 8=Error
+    """
+    base = Path(_normalize_work_dir(work_dir))
+    if not path:
+        return {"markers": []}
+    target = (base / path).resolve()
+    if not str(target).startswith(str(base)):
+        return {"markers": []}
+    if not target.exists() or not target.is_file():
+        return {"markers": []}
+
+    ext = target.suffix.lower()
+    try:
+        content = target.read_text(encoding="utf-8", errors="replace")
+        markers = _run_diagnostics(content, ext)
+        return {"markers": markers}
+    except Exception:
+        return {"markers": []}
+
+
+class SaveFileRequest(BaseModel):
+    work_dir: str
+    path: str
+    content: str
+
+
+@router.put("/save")
+async def save_file(req: SaveFileRequest) -> dict[str, Any]:
+    """保存文件内容。"""
+    base = Path(_normalize_work_dir(req.work_dir))
+    target = (base / req.path).resolve()
+    if not str(target).startswith(str(base)):
+        return {"error": "路径越界"}
+    if not target.exists() or not target.is_file():
+        return {"error": "文件不存在"}
+    try:
+        target.write_text(req.content, encoding="utf-8")
+        return {"ok": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @router.put("/rename")
 async def rename_file(req: RenameRequest) -> dict[str, Any]:
     """重命名文件或目录。"""
@@ -197,36 +438,67 @@ async def rename_file(req: RenameRequest) -> dict[str, Any]:
 
 class OpenInEditorRequest(BaseModel):
     work_dir: str | None = None
-    editor: str = "vscode"  # vscode | explorer
+    path: str | None = None
+    editor: str = "vscode"  # vscode | vscode-file | explorer | explorer-file
 
 
 @router.post("/open-in-editor")
 async def open_in_editor(req: OpenInEditorRequest) -> dict[str, Any]:
-    """用外部编辑器（VSCode）或系统文件管理器打开工作目录。"""
+    """用外部编辑器（VSCode）或系统文件管理器打开工作目录/文件。
+
+    editor 取值:
+    - vscode      : 在 VSCode 中打开工作目录
+    - vscode-file : 在 VSCode 中打开单个文件
+    - explorer    : 在资源管理器中打开工作目录
+    - explorer-file: 在资源管理器中选中并高亮指定文件/文件夹
+    """
     base = Path(_normalize_work_dir(req.work_dir))
     if not base.exists():
         return {"error": "工作目录不存在"}
 
+    target = base
+    if req.path:
+        target = (base / req.path).resolve()
+        if not str(target).startswith(str(base)):
+            return {"error": "路径越界"}
+        if not target.exists():
+            return {"error": "路径不存在"}
+
     try:
-        if req.editor == "vscode":
-            # 优先使用 code 命令行（VSCode 安装时通常会注册到 PATH）
+        if req.editor in ("vscode", "vscode-file"):
             code_bin = shutil.which("code") or shutil.which("code.cmd")
-            if code_bin:
-                subprocess.Popen(
-                    [code_bin, str(base)],
-                    shell=False,
-                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-                )
-                return {"ok": True, "editor": "vscode"}
-            return {"error": "未找到 VSCode（请确保已安装并将 code 命令加入 PATH）"}
+            if not code_bin:
+                return {"error": "未找到 VSCode（请确保已安装并将 code 命令加入 PATH）"}
+            args = [code_bin]
+            if req.editor == "vscode-file" and target != base:
+                # 打开文件，并在可能时定位到首行
+                args.append(f"{target}:1")
+            else:
+                args.append(str(target))
+            subprocess.Popen(
+                args,
+                shell=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            return {"ok": True, "editor": req.editor}
         elif req.editor == "explorer":
             if sys.platform == "win32":
-                subprocess.Popen(["explorer", str(base)], shell=False)
+                subprocess.Popen(["explorer", str(target)], shell=False)
             elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(base)])
+                subprocess.Popen(["open", str(target)])
             else:
-                subprocess.Popen(["xdg-open", str(base)])
+                subprocess.Popen(["xdg-open", str(target)])
             return {"ok": True, "editor": "explorer"}
+        elif req.editor == "explorer-file":
+            if sys.platform == "win32":
+                # /select 参数会在资源管理器中打开并高亮指定项
+                subprocess.Popen(["explorer", "/select,", str(target)], shell=False)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", str(target)])
+            else:
+                # Linux 下没有统一的高亮方案，退回到打开父目录
+                subprocess.Popen(["xdg-open", str(target.parent)])
+            return {"ok": True, "editor": "explorer-file"}
         else:
             return {"error": f"不支持的编辑器: {req.editor}"}
     except Exception as e:

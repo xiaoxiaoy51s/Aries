@@ -42,17 +42,28 @@
               :class="{ active: activeTab === 'pets' }"
               @click="activeTab = 'pets'; loadPets()"
             >
-              <svg t="1781971061983" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" 
+              <svg t="1781971061983" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg"
               p-id="3864" width="16" height="16">
-              <path d="M636.589292 466.203569c-30.641231-33.988923-74.326646-53.492185-119.855261-53.492184-45.536492 
-              0-89.221908 19.495385-119.863139 53.492184L183.288123 703.188677c-46.355692 51.436308-55.6032 
-              124.463262-23.559877 186.045046 31.578585 60.675938 95.586462 94.538831 163.005046 86.244431l194.000739-23.835569 
-              194.000738 23.835569c6.750523 0.827077 13.469538 1.236677 20.133416 1.236677 59.809477 0 114.467446-32.886154 
-              142.879507-87.488985 32.043323-61.581785 22.795815-134.600862-23.567754-186.037169L636.589292 466.203569z 
-              m181.248 393.940677c-15.375754 29.538462-49.569477 58.927262-99.422523 52.791139l-197.844677-24.308185a31.373785 
-              31.373785 0 0 0-7.687877 0L315.045415 912.935385c-49.845169 
+              <path d="M636.589292 466.203569c-30.641231-33.988923-74.326646-53.492185-119.855261-53.492184-45.536492
+              0-89.221908 19.495385-119.863139 53.492184L183.288123 703.188677c-46.355692 51.436308-55.6032
+              124.463262-23.559877 186.045046 31.578585 60.675938 95.586462 94.538831 163.005046 86.244431l194.000739-23.835569
+              194.000738 23.835569c6.750523 0.827077 13.469538 1.236677 20.133416 1.236677 59.809477 0 114.467446-32.886154
+              142.879507-87.488985 32.043323-61.581785 22.795815-134.600862-23.567754-186.037169L636.589292 466.203569z
+              m181.248 393.940677c-15.375754 29.538462-49.569477 58.927262-99.422523 52.791139l-197.844677-24.308185a31.373785
+              31.373785 0 0 0-7.687877 0L315.045415 912.935385c-49.845169
               6.104615-84.046769-23.252677-99.422523-52.791139-15.745969-30.255262-20.204308-76.288 14.469908-114.766769l213.582769-236.985108c18.983385-21.062892 44.929969-32.657723 73.050585-32.657723 28.120615 0 54.0672 11.602708 73.050584 32.657723l213.58277 236.985108c34.682092 38.478769 30.215877 84.511508 14.477784 114.766769zM266.531446 364.016246c22.795815 18.660431 48.529723 28.349046 75.019816 28.349046 3.654892 0 7.325538-0.181169 11.004061-0.551384 74.988308-7.546092 126.282831-88.9856 116.791139-185.391262-5.293292-53.736369-28.900431-101.415385-64.779816-130.788431-25.560615-20.936862-56.083692-30.790892-86.031754-27.797661-74.980431 7.546092-126.282831 88.9856-116.791138 185.391261 5.301169 53.736369 28.908308 101.407508 64.787692 130.788431z m58.320739-253.487261c1.504492-0.157538 2.985354-0.220554 4.442584-0.220554 14.871631 0 27.277785 7.467323 35.351631 14.076061 22.677662 18.573785 38.376369 51.546585 41.984 88.213662 5.8368 59.273846-21.819077 112.632123-60.392369 116.515446-16.832985 1.693538-30.932677-6.592985-39.786339-13.847631-22.685538-18.573785-38.384246-51.546585-41.991877-88.213661-5.8368-59.281723 21.819077-112.64 60.39237-116.523323zM653.501046 391.806031c3.528862 0.354462 7.057723 0.527754 10.594462 0.527754 26.442831 0 52.877785-9.854031 75.429415-28.325416 35.871508-29.373046 59.486523-77.044185 64.779815-130.788431 9.491692-96.405662-41.810708-177.845169-116.791138-185.391261-30.286769-3.040492-60.085169 6.561477-86.023877 27.789785-35.879385 29.373046-59.486523 77.052062-64.787692 130.78843-9.483815 96.421415 41.818585 177.853046 116.799015 185.399139z m-54.082954-179.215754c3.607631-36.6592 19.306338-69.639877 41.991877-88.213662 8.861538-7.254646 22.992738-15.588431 39.786339-13.84763 38.573292 3.883323 66.229169 57.2416 60.392369 116.515446-3.607631 36.6592-19.306338 69.639877-41.984 88.213661-8.861538 7.254646-23.008492 15.556923-39.786339 13.847631-38.573292-3.875446-66.237046-57.2416-60.400246-116.515446zM231.077415 464.659692c-8.491323-43.189169-31.783385-80.273723-63.905477-101.746215-24.064-16.0768-51.704123-22.039631-77.839753-16.777846C26.647631 358.730831-11.894154 432.317046 3.402831 510.164677c8.491323 43.197046 31.791262 80.2816 63.913354 101.746215 18.353231 12.264369 38.793846 18.644677 59.069046 18.644677 6.293662 0 12.579446-0.6144 18.770707-1.858954 62.676677-12.603077 101.226338-86.189292 85.921477-164.036923zM102.329108 559.521477c-18.0224-12.043815-31.885785-35.036554-37.092431-61.518769-8.483446-43.149785 8.239262-84.409108 36.517415-90.096246 2.205538-0.441108 4.371692-0.645908 6.474831-0.645908 9.641354 0 18.109046 4.151138 23.930092 8.042338 18.0224 12.043815 31.885785 35.036554 37.084554 61.510893 8.483446 43.149785-8.231385 84.409108-36.509538 90.096246-12.303754 2.465477-23.315692-2.654523-30.404923-7.388554zM934.675692 346.135631c-26.119877-5.253908-53.783631 0.701046-77.839754 16.777846-32.122092 21.464615-55.414154 58.549169-63.905476 101.746215-15.304862 77.847631 23.2448 151.425969 85.921476 164.029046 6.199138 1.244554 12.477046 1.858954 18.770708 1.858954 20.267323 0 40.715815-6.380308 59.069046-18.644677 32.122092-21.464615 55.414154-58.557046 63.905477-101.746215 15.296985-77.839754-23.2448-151.425969-85.921477-164.021169z m24.087631 151.874954c-5.206646 26.474338-19.070031 49.467077-37.084554 61.518769-7.089231 4.741908-18.109046 9.877662-30.404923 7.396431-28.270277-5.687138-44.992985-46.946462-36.509538-90.096247 5.206646-26.474338 19.070031-49.474954 37.09243-61.518769 7.081354-4.741908 18.132677-9.846154 30.404924-7.396431 28.2624 5.679262 44.985108 46.938585 36.501661 90.096247z" fill="" p-id="3865"></path></svg>
               桌面宠物
+            </li>
+            <li
+              :class="{ active: activeTab === 'network' }"
+              @click="activeTab = 'network'; loadNetworkConfig()"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="2" y1="12" x2="22" y2="12"/>
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+              </svg>
+              网络代理
             </li>
           </ul>
         </nav>
@@ -312,6 +323,153 @@
                 </div>
               </div>
             </div>
+
+            <!-- 网络代理 -->
+            <div v-if="activeTab === 'network'" class="settings-section">
+              <p class="section-desc">配置代理服务器。AI 搜索、爬虫、npm/git 等操作访问匹配的域名或命令时自动走代理。</p>
+
+              <!-- 启用开关 -->
+              <div class="network-toggle-row">
+                <div class="network-toggle-info">
+                  <span class="network-toggle-label">启用代理</span>
+                  <span class="network-toggle-hint">开启后，下方域名和命令将走代理访问</span>
+                </div>
+                <button
+                  type="button"
+                  class="network-switch"
+                  :class="{ on: networkConfig.enabled }"
+                  @click="networkConfig.enabled = !networkConfig.enabled"
+                >
+                  <span class="network-switch-knob" />
+                </button>
+              </div>
+
+              <!-- 代理地址 -->
+              <div class="network-field">
+                <label class="form-label">代理地址</label>
+                <input
+                  v-model="networkConfig.proxy_url"
+                  type="text"
+                  class="form-input"
+                  placeholder="http://127.0.0.1:7890"
+                  :disabled="!networkConfig.enabled"
+                />
+              </div>
+
+              <!-- 命令行代理开关 -->
+              <div class="network-toggle-row">
+                <div class="network-toggle-info">
+                  <span class="network-toggle-label">命令行代理</span>
+                  <span class="network-toggle-hint">npm install / git clone 等命令也注入代理环境变量</span>
+                </div>
+                <button
+                  type="button"
+                  class="network-switch"
+                  :class="{ on: networkConfig.command_proxy }"
+                  :disabled="!networkConfig.enabled"
+                  @click="networkConfig.command_proxy = !networkConfig.command_proxy"
+                >
+                  <span class="network-switch-knob" />
+                </button>
+              </div>
+
+              <!-- 代理域名列表 -->
+              <div class="network-field">
+                <label class="form-label">代理域名</label>
+                <span class="network-field-hint">访问这些域名时走代理（子域名自动匹配，如 google.com 包含 www.google.com）</span>
+                <div class="network-tag-input">
+                  <input
+                    v-model="networkDomainInput"
+                    type="text"
+                    class="form-input network-tag-input-field"
+                    placeholder="输入域名后回车，如 google.com"
+                    :disabled="!networkConfig.enabled"
+                    @keydown.enter.prevent="addNetworkDomain"
+                  />
+                  <button
+                    type="button"
+                    class="network-tag-add-btn"
+                    :disabled="!networkConfig.enabled || !networkDomainInput.trim()"
+                    @click="addNetworkDomain"
+                  >添加</button>
+                </div>
+                <div class="network-tag-list">
+                  <span
+                    v-for="(d, i) in networkConfig.proxy_domains"
+                    :key="'d' + i"
+                    class="network-tag"
+                  >
+                    {{ d }}
+                    <button
+                      type="button"
+                      class="network-tag-remove"
+                      :disabled="!networkConfig.enabled"
+                      @click="removeNetworkDomain(i)"
+                    >&times;</button>
+                  </span>
+                  <span v-if="networkConfig.proxy_domains.length === 0" class="network-tag-empty">暂无域名</span>
+                </div>
+              </div>
+
+              <!-- 代理命令列表 -->
+              <div class="network-field">
+                <label class="form-label">代理命令</label>
+                <span class="network-field-hint">以这些前缀开头的命令会注入代理环境变量</span>
+                <div class="network-tag-input">
+                  <input
+                    v-model="networkCommandInput"
+                    type="text"
+                    class="form-input network-tag-input-field"
+                    placeholder="输入命令前缀后回车，如 npm install"
+                    :disabled="!networkConfig.enabled || !networkConfig.command_proxy"
+                    @keydown.enter.prevent="addNetworkCommand"
+                  />
+                  <button
+                    type="button"
+                    class="network-tag-add-btn"
+                    :disabled="!networkConfig.enabled || !networkConfig.command_proxy || !networkCommandInput.trim()"
+                    @click="addNetworkCommand"
+                  >添加</button>
+                </div>
+                <div class="network-tag-list">
+                  <span
+                    v-for="(c, i) in networkConfig.proxy_commands"
+                    :key="'c' + i"
+                    class="network-tag"
+                  >
+                    {{ c }}
+                    <button
+                      type="button"
+                      class="network-tag-remove"
+                      :disabled="!networkConfig.enabled || !networkConfig.command_proxy"
+                      @click="removeNetworkCommand(i)"
+                    >&times;</button>
+                  </span>
+                  <span v-if="networkConfig.proxy_commands.length === 0" class="network-tag-empty">暂无命令</span>
+                </div>
+              </div>
+
+              <!-- 操作按钮 -->
+              <div class="network-actions">
+                <button
+                  type="button"
+                  class="network-test-btn"
+                  :disabled="!networkConfig.enabled || networkTesting"
+                  @click="handleTestProxy"
+                >{{ networkTesting ? '测试中...' : '测试代理' }}</button>
+                <button
+                  type="button"
+                  class="form-submit-btn"
+                  :disabled="networkSaving"
+                  @click="handleSaveNetwork"
+                >{{ networkSaving ? '保存中...' : '保存配置' }}</button>
+              </div>
+
+              <!-- 测试结果 -->
+              <div v-if="networkTestResult" class="network-test-result" :class="{ success: networkTestResult.success, fail: !networkTestResult.success }">
+                {{ networkTestResult.success ? '代理可用' : '代理不可用' }}{{ networkTestResult.error ? '：' + networkTestResult.error : '' }}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -376,6 +534,7 @@ import {
 } from '@/api/pathPermissions'
 import { selectDirectory } from '@/api/system'
 import { listPets, type PetInfo } from '@/api/pets'
+import { getNetworkConfig, saveNetworkConfig, testNetworkProxy, type NetworkConfig } from '@/api/network'
 import ModelEditModal from './ModelEditModal.vue'
 
 const props = defineProps<{ visible: boolean }>()
@@ -574,10 +733,10 @@ onUnmounted(() => {
   stopFeishuPoll()
 })
 
-const activeTab = ref<'models' | 'accounts' | 'paths' | 'pets'>('models')
+const activeTab = ref<'models' | 'accounts' | 'paths' | 'pets' | 'network'>('models')
 
 const tabTitle = computed(() => {
-  const map = { models: '模型管理', accounts: '账号绑定', paths: '路径权限', pets: '桌面宠物' } as const
+  const map = { models: '模型管理', accounts: '账号绑定', paths: '路径权限', pets: '桌面宠物', network: '网络代理' } as const
   return map[activeTab.value]
 })
 
@@ -685,6 +844,92 @@ async function handleAddPath(type: 'whitelist' | 'blacklist') {
     }
   } catch (e: any) {
     alert(e.message || '添加失败')
+  }
+}
+
+// ---------- 网络代理 ----------
+const networkConfig = ref<NetworkConfig>({
+  enabled: false,
+  proxy_url: 'http://127.0.0.1:7890',
+  proxy_domains: [],
+  proxy_commands: [],
+  command_proxy: true,
+})
+const networkDomainInput = ref('')
+const networkCommandInput = ref('')
+const networkSaving = ref(false)
+const networkTesting = ref(false)
+const networkTestResult = ref<{ success: boolean; error?: string } | null>(null)
+
+async function loadNetworkConfig() {
+  try {
+    const data = await getNetworkConfig()
+    networkConfig.value = {
+      enabled: data.enabled ?? false,
+      proxy_url: data.proxy_url || 'http://127.0.0.1:7890',
+      proxy_domains: data.proxy_domains || [],
+      proxy_commands: data.proxy_commands || [],
+      command_proxy: data.command_proxy ?? true,
+    }
+    networkTestResult.value = null
+  } catch (e) {
+    console.error('加载网络配置失败', e)
+  }
+}
+
+function addNetworkDomain() {
+  const val = networkDomainInput.value.trim().toLowerCase()
+  if (!val) return
+  if (networkConfig.value.proxy_domains.includes(val)) {
+    networkDomainInput.value = ''
+    return
+  }
+  networkConfig.value.proxy_domains.push(val)
+  networkDomainInput.value = ''
+}
+
+function removeNetworkDomain(idx: number) {
+  networkConfig.value.proxy_domains.splice(idx, 1)
+}
+
+function addNetworkCommand() {
+  const val = networkCommandInput.value.trim()
+  if (!val) return
+  if (networkConfig.value.proxy_commands.includes(val)) {
+    networkCommandInput.value = ''
+    return
+  }
+  networkConfig.value.proxy_commands.push(val)
+  networkCommandInput.value = ''
+}
+
+function removeNetworkCommand(idx: number) {
+  networkConfig.value.proxy_commands.splice(idx, 1)
+}
+
+async function handleSaveNetwork() {
+  networkSaving.value = true
+  try {
+    await saveNetworkConfig({ ...networkConfig.value })
+  } catch (e: any) {
+    alert(e.message || '保存失败')
+  } finally {
+    networkSaving.value = false
+  }
+}
+
+async function handleTestProxy() {
+  networkTesting.value = true
+  networkTestResult.value = null
+  // 先保存当前配置，确保后端用最新的 proxy_url 测试
+  try {
+    await saveNetworkConfig({ ...networkConfig.value })
+    const res = await testNetworkProxy()
+    networkTestResult.value = { success: res.success, error: res.error }
+  } catch (e: any) {
+    networkTestResult.value = { success: false, error: e.message || '测试失败' }
+  } finally {
+    networkTesting.value = false
   }
 }
 
@@ -1517,5 +1762,200 @@ function showPetOnDesktop(pet: PetInfo) {
   font-size: 10px;
   color: var(--text-muted);
   text-align: center;
+}
+
+/* 网络代理 */
+.network-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.network-toggle-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.network-toggle-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.network-toggle-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.network-switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  border: none;
+  border-radius: 11px;
+  background: var(--border-strong);
+  cursor: pointer;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.network-switch.on {
+  background: var(--send-bg);
+}
+
+.network-switch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.network-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.network-switch.on .network-switch-knob {
+  transform: translateX(18px);
+}
+
+.network-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.network-field-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: -2px;
+}
+
+.network-tag-input {
+  display: flex;
+  gap: 8px;
+}
+
+.network-tag-input-field {
+  flex: 1;
+}
+
+.network-tag-add-btn {
+  padding: 8px 16px;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.network-tag-add-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.network-tag-add-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.network-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 28px;
+}
+
+.network-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.network-tag-remove {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+  display: flex;
+  align-items: center;
+}
+
+.network-tag-remove:hover:not(:disabled) {
+  color: #ef4444;
+}
+
+.network-tag-remove:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.network-tag-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 0;
+}
+
+.network-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.network-test-btn {
+  padding: 8px 16px;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.network-test-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.network-test-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.network-test-result {
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.network-test-result.success {
+  background: rgba(45, 122, 79, 0.1);
+  color: #2d7a4f;
+}
+
+.network-test-result.fail {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
 }
 </style>

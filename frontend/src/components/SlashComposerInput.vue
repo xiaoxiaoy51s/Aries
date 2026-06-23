@@ -22,6 +22,26 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
+import { getIconForFile, DEFAULT_FILE } from 'vscode-icons-js'
+
+const FILE_ICON_CDN = '/file-icons'
+
+/** 根据文件名获取对应图标 URL（对齐 ExplorerTreeNode 的图标方案） */
+function getFileIconUrl(fileName: string): string {
+  const iconName = getIconForFile(fileName) || DEFAULT_FILE
+  return `${FILE_ICON_CDN}/${iconName}`
+}
+
+/** 创建文件类型图标 img 元素 */
+function createFileIconEl(fileName: string): HTMLImageElement {
+  const img = document.createElement('img')
+  img.className = 'file-type-icon'
+  img.src = getFileIconUrl(fileName)
+  img.alt = ''
+  img.width = 14
+  img.height = 14
+  return img
+}
 
 export interface ComposerImage {
   id: string
@@ -258,6 +278,9 @@ function createFileRefTag(full: string) {
   tag.contentEditable = 'false'
   tag.dataset.ref = full
 
+  // 文件类型图标
+  tag.appendChild(createFileIconEl(fileName))
+
   const name = document.createElement('span')
   name.className = 'file-ref-name'
   name.textContent = fileName
@@ -292,10 +315,10 @@ function createPlainFileRefTag(full: string) {
   tag.contentEditable = 'false'
   tag.dataset.ref = full
 
-  // 文件图标
+  // 文件类型图标（根据扩展名动态加载）
   const icon = document.createElement('span')
   icon.className = 'file-ref-icon'
-  icon.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>'
+  icon.appendChild(createFileIconEl(fileName))
   tag.appendChild(icon)
 
   // 文件名
@@ -332,7 +355,13 @@ function createFolderRefTag(full: string) {
   // 文件夹图标
   const icon = document.createElement('span')
   icon.className = 'folder-ref-icon'
-  icon.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
+  const folderImg = document.createElement('img')
+  folderImg.className = 'file-type-icon'
+  folderImg.src = `${FILE_ICON_CDN}/default_folder.svg`
+  folderImg.alt = ''
+  folderImg.width = 14
+  folderImg.height = 14
+  icon.appendChild(folderImg)
   tag.appendChild(icon)
 
   // 文件夹名称
@@ -717,61 +746,68 @@ defineExpose({ openFilePicker, clearImages, focus })
 :deep(.file-ref-tag) {
   display: inline-flex;
   align-items: center;
-  gap: 0;
+  gap: 3px;
   max-width: 100%;
-  height: 26px;
+  height: 22px;
   margin: 0 2px;
-  padding: 0;
-  background: #f5f5f5;
-  border: 1px solid #e0e0e0;
-  border-radius: 6px;
-  color: #333;
+  padding: 0 4px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #007acc;
   font-size: 13px;
-  line-height: 1;
+  line-height: 22px;
   vertical-align: middle;
   white-space: nowrap;
-  cursor: default;
+  cursor: pointer;
   user-select: none;
-  overflow: hidden;
+  transition: background 0.15s;
+}
+
+:deep(.file-ref-tag:hover) {
+  background: #f0f0f0;
 }
 
 :deep(.file-ref-name) {
-  padding: 0 6px 0 8px;
   max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 :deep(.file-ref-lines) {
-  color: #666;
+  color: #007acc;
   font-size: 12px;
   flex-shrink: 0;
-  padding-right: 2px;
+  opacity: 0.8;
 }
 
 :deep(.file-ref-remove) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  margin-left: 4px;
-  margin-right: 3px;
+  width: 14px;
+  height: 14px;
   padding: 0;
   border: none;
-  background: #e8e8e8;
-  color: #555;
-  font-size: 14px;
+  background: transparent;
+  color: #666;
+  font-size: 12px;
   line-height: 1;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: 3px;
   flex-shrink: 0;
-  transition: background 0.15s;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+:deep(.file-ref-tag:hover .file-ref-remove),
+:deep(.folder-ref-tag:hover .file-ref-remove) {
+  opacity: 1;
 }
 
 :deep(.file-ref-remove:hover) {
-  background: #d5d5d5;
+  background: #e0e0e0;
   color: #333;
 }
 
@@ -779,39 +815,41 @@ defineExpose({ openFilePicker, clearImages, focus })
 :deep(.folder-ref-tag) {
   display: inline-flex;
   align-items: center;
-  gap: 0;
+  gap: 3px;
   max-width: 100%;
-  height: 26px;
+  height: 22px;
   margin: 0 2px;
-  padding: 0;
-  background: #f0f4ff;
-  border: 1px solid #c7d6fe;
-  border-radius: 6px;
-  color: #3b5998;
+  padding: 0 4px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #007acc;
   font-size: 13px;
-  line-height: 1;
+  line-height: 22px;
   vertical-align: middle;
   white-space: nowrap;
-  cursor: default;
+  cursor: pointer;
   user-select: none;
-  overflow: hidden;
+  transition: background 0.15s;
+}
+
+:deep(.folder-ref-tag:hover) {
+  background: #f0f0f0;
 }
 
 :deep(.folder-ref-icon) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding-left: 6px;
   flex-shrink: 0;
-  opacity: 0.65;
+  opacity: 0.85;
 }
 
 :deep(.folder-ref-name) {
-  padding: 0 6px;
   max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 /* 技能 chip（@skill:xxx），与 code-review 同色系（蓝） */
@@ -855,17 +893,36 @@ defineExpose({ openFilePicker, clearImages, focus })
 
 /* 纯文件路径 chip（无行号） */
 :deep(.plain-file-tag) {
-  background: #fafafa;
-  border-color: #e5e5e5;
+  background: transparent;
+  border: none;
 }
 
 :deep(.plain-file-tag .file-ref-icon) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding-left: 6px;
   flex-shrink: 0;
-  opacity: 0.6;
+  opacity: 0.9;
+}
+
+/* 文件类型图标（来自 /file-icons/） */
+:deep(.file-type-icon) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+:deep(.file-ref-tag .file-type-icon) {
+  margin-right: 2px;
+  margin-left: 6px;
+}
+
+:deep(.folder-ref-tag .file-type-icon) {
+  margin-right: 2px;
+  margin-left: 6px;
 }
 
 .image-previews {

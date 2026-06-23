@@ -31,7 +31,6 @@ class SubagentPayload(BaseModel):
     name: str
     description: str = ""
     model: str = ""
-    fallback_model: str = "default"
     enabled: bool = True
     allowed_skills: list[str] = Field(default_factory=list)
     allowed_mcps: list[str] = Field(default_factory=list)

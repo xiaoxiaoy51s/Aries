@@ -462,7 +462,7 @@ async function stopService() {
 }
 
 .error-text {
-  color: #ef4444;
+  color: #c2410c;
 }
 
 .running-text {

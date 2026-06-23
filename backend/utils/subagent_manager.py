@@ -4,7 +4,7 @@
 - 配置目录：~/.Aries/agent/*.json，单目录扁平结构
 - 可用性：由 enabled 字段 + 依赖检查（skill/mcp 是否存在 + 模型是否可用）共同决定
 - Subagent 的 allowed_skills / allowed_mcps 对内强制激活：
-    即使 skill 在 unavailable/ 或 mcp enabled:false，只要 Subagent 声明就强制可用
+    即使 skill 在全局未配置给主 Agent，只要 Subagent 声明就强制可用
     （但前提是文件/配置必须存在，不存在则视为加载失败）
 - 主 Agent 看到的精简字段：name / description / model / fallback_model / enabled /
   allowed_skills / allowed_mcps
@@ -52,7 +52,6 @@ class SubagentEntry:
             "name": self.name,
             "description": self.description,
             "model": self.effective_model or self.model,
-            "fallback_model": self.fallback_model,
             "enabled": self.enabled,
             "allowed_skills": list(self.allowed_skills),
             "allowed_mcps": list(self.allowed_mcps),
@@ -133,18 +132,18 @@ def _check_model_available(model: str) -> bool:
 
 
 def _check_skill_exists(skill_name: str) -> bool:
-    """检查 skill 是否在 ~/.Aries/skills/（含 available 和 unavailable）下存在。"""
+    """检查 skill 是否在 ~/.Aries/skills/ 下存在。"""
     try:
-        from utils.skills_manager import find_skill_dir
+        from utils.skills_manager import get_skill_by_folder_name
 
-        return find_skill_dir(skill_name) is not None
+        return get_skill_by_folder_name(skill_name) is not None
     except Exception as exc:
-        logger.debug("skills_manager.find_skill_dir 调用失败: %s", exc)
+        logger.debug("skills_manager.get_skill_by_folder_name 调用失败: %s", exc)
         return False
 
 
 def _check_mcp_exists(mcp_name: str) -> bool:
-    """检查 mcp 是否在 ~/.Aries/mcp.json 中配置（不要求 enabled）。"""
+    """检查 mcp 是否在 ~/.Aries/mcp.json 中配置。"""
     try:
         from utils.plugins_manager import load_mcp_config
 
@@ -196,11 +195,16 @@ def _compute_availability(entry: SubagentEntry) -> None:
 
 
 def discover_subagents() -> list[SubagentEntry]:
-    """扫描 ~/.Aries/agent/*.json，返回全部条目（含 disabled / unavailable）。"""
+    """扫描 ~/.Aries/agent/*.json，返回全部条目（含 disabled / unavailable）。
+
+    自动跳过 main_agent.json（主 Agent 配置，不是子 Agent）。
+    """
     ensure_agent_dir()
     entries: list[SubagentEntry] = []
     for path in sorted(AGENT_ROOT.glob("*.json")):
         if not path.is_file():
+            continue
+        if path.name == "main_agent.json":
             continue
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
@@ -326,15 +330,15 @@ def build_subagent_router_section(entries: list[SubagentEntry] | None = None) ->
 
 # ---- Subagent 运行时上下文 ----
 # 供后续 Subagent 执行引擎调用。核心要点：
-# - allowed_skills 强制激活：即使 skill 在 ~/.Aries/skills/unavailable/ 也会被加载
+# - allowed_skills 强制激活：即使 skill 未配置给主 Agent 也会被加载
 # - allowed_mcps 强制激活：即使 mcp.json 中 enabled=false 也会为该 subagent 暴露工具
 # - 公共技能 COMMON_SKILLS 默认追加（去重）
 
 def _load_skill_entry_anywhere(skill_name: str):
-    """跨 available / unavailable 目录加载 skill 完整信息。"""
+    """加载 skill 完整信息。"""
     from utils.skills_manager import get_skill_by_name
 
-    return get_skill_by_name(skill_name, enabled_only=False)
+    return get_skill_by_name(skill_name)
 
 
 def _build_subagent_skills_context(skill_names: list[str]) -> str:
@@ -375,7 +379,7 @@ def build_subagent_runtime(name: str) -> dict[str, Any]:
 
     skill_entries = []
     for skill_name in list(entry.allowed_skills) + list(COMMON_SKILLS):
-        sk = get_skill_by_name(skill_name, enabled_only=False)
+        sk = get_skill_by_name(skill_name)
         if sk is None and skill_name not in COMMON_SKILLS:
             # 公共技能允许缺失（向后兼容），声明的 skill 必须存在
             raise ValueError(f"Subagent {name} 依赖的 skill 不存在：{skill_name}")

@@ -254,6 +254,27 @@ class SessionLogger:
             "timestamp": _utc_now(),
         })
 
+    def write_info_event(
+        self,
+        info_type: str,
+        info_msg: str,
+        details: str = "",
+    ) -> None:
+        """记录信息事件（如上下文压缩、轮次提醒等），非错误。
+
+        info_type 示例：
+        - context_compacted: 上下文已压缩
+        - step_reminder: 工具调用即将达到上限提醒
+        - repeat_detected: 检测到重复工具调用
+        """
+        _append_event(self.path, {
+            "type": "info_event",
+            "info_type": info_type,
+            "info_msg": info_msg,
+            "details": details,
+            "timestamp": _utc_now(),
+        })
+
     def _tool_summary(self) -> str:
         if not self._tool_log:
             return ""

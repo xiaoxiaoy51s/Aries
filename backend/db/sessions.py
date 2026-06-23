@@ -10,6 +10,8 @@ from .database import get_connection
 
 def _ensure_session_row(session_id: str, title: str = "", work_dir: str = "") -> None:
     """若 sessions 表中不存在该 session_id 则插入一条。"""
+    from .work_dirs import upsert_work_dir
+
     conn = get_connection()
     try:
         conn.execute(
@@ -23,8 +25,13 @@ def _ensure_session_row(session_id: str, title: str = "", work_dir: str = "") ->
     finally:
         conn.close()
 
+    if work_dir and work_dir.strip():
+        upsert_work_dir(work_dir)
+
 
 def upsert_session(session_id: str, title: Optional[str] = None, work_dir: Optional[str] = None) -> None:
+    from .work_dirs import upsert_work_dir
+
     conn = get_connection()
     try:
         existing = conn.execute(
@@ -55,6 +62,10 @@ def upsert_session(session_id: str, title: Optional[str] = None, work_dir: Optio
         conn.commit()
     finally:
         conn.close()
+
+    # 同步 work_dirs 表（刷新 updated_at，方便后续按工作目录列出/归档）
+    if work_dir and work_dir.strip():
+        upsert_work_dir(work_dir)
 
 
 def get_session(session_id: str) -> Optional[dict]:

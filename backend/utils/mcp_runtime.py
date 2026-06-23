@@ -16,7 +16,7 @@ from datetime import timedelta
 from utils.plugins_manager import (
     build_mcp_http_headers,
     discover_plugins,
-    get_enabled_servers,
+    get_all_servers,
     get_mcp_cache_dir,
     resolve_mcp_transport,
 )
@@ -34,9 +34,8 @@ class McpToolRoute:
 @dataclass
 class McpServerDiagnostic:
     id: str
-    enabled: bool
     transport: str
-    status: str  # disabled | connected | error
+    status: str  # connected | error
     tool_count: int = 0
     last_error: str | None = None
     last_connected_at: str | None = None
@@ -45,7 +44,6 @@ class McpServerDiagnostic:
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
-            "enabled": self.enabled,
             "transport": self.transport,
             "status": self.status,
             "tool_count": self.tool_count,
@@ -262,7 +260,6 @@ class McpConnectionPool:
         self._routes: dict[str, McpToolRoute] = {}
         self._definitions: list[dict[str, Any]] = []
         self._diagnostics: list[McpServerDiagnostic] = []
-        self._disabled_servers: list[McpServerDiagnostic] = []
         self._started = False
 
     def start(self) -> None:
@@ -369,30 +366,16 @@ class McpConnectionPool:
         self._routes.clear()
         self._definitions.clear()
         self._diagnostics.clear()
-        self._disabled_servers.clear()
 
-        config_servers = discover_plugins()
-        enabled_map = get_enabled_servers()
+        all_servers = get_all_servers()
 
-        for plugin in config_servers:
-            if not plugin.enabled:
-                self._disabled_servers.append(
-                    McpServerDiagnostic(
-                        id=plugin.id,
-                        enabled=False,
-                        transport=plugin.transport or "stdio",
-                        status="disabled",
-                    )
-                )
-
-        for server_id, server in enabled_map.items():
+        for server_id, server in all_servers.items():
             try:
                 conn = await self._connect_server(server_id, server)
                 self._connections[server_id] = conn
                 self._diagnostics.append(
                     McpServerDiagnostic(
                         id=server_id,
-                        enabled=True,
                         transport=_server_transport(server),
                         status="connected",
                         tool_count=len(conn.tools),
@@ -407,7 +390,6 @@ class McpConnectionPool:
                 self._diagnostics.append(
                     McpServerDiagnostic(
                         id=server_id,
-                        enabled=True,
                         transport=_server_transport(server),
                         status="error",
                         tool_count=len(cached),
@@ -472,7 +454,7 @@ class McpConnectionPool:
         except Exception as exc:
             conn.last_error = str(exc)
             await self._disconnect_server(conn)
-            server = get_enabled_servers().get(route.server_id)
+            server = get_all_servers().get(route.server_id)
             if server is None:
                 raise
             new_conn = await self._connect_server(route.server_id, server)
@@ -503,7 +485,6 @@ class McpConnectionPool:
         self._routes.clear()
         self._definitions.clear()
         self._diagnostics.clear()
-        self._disabled_servers.clear()
 
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -513,7 +494,9 @@ class McpConnectionPool:
 
     def get_diagnostics(self) -> list[dict[str, Any]]:
         with self._lock:
-            return [item.to_dict() for item in self._diagnostics + self._disabled_servers]
+            if not self._diagnostics and not self._routes:
+                self.rebuild()
+            return [item.to_dict() for item in self._diagnostics]
 
     def get_load_errors(self) -> dict[str, str]:
         errors: dict[str, str] = {}
@@ -537,7 +520,7 @@ class McpConnectionPool:
             if route is None:
                 return None
 
-            server = get_enabled_servers().get(route.server_id)
+            server = get_all_servers().get(route.server_id)
             if not server:
                 return {
                     "success": False,
@@ -574,11 +557,40 @@ def refresh_mcp_tool_registry(*, force_refresh: bool = False) -> None:
     get_mcp_pool().rebuild(force=force_refresh)
 
 
-def get_mcp_tool_definitions(*, force_refresh: bool = False) -> list[dict[str, Any]]:
+def get_mcp_tool_definitions(
+    *,
+    force_refresh: bool = False,
+    allowed_mcp_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """获取 MCP 工具定义。
+
+    Args:
+        force_refresh: 是否强制刷新连接池。
+        allowed_mcp_ids: 主 Agent 允许的 MCP ID 列表。None = 不过滤（子 Agent 用）；空列表 = 不加载任何。
+    """
     pool = get_mcp_pool()
     if force_refresh:
         pool.rebuild(force=True)
-    return pool.get_tool_definitions()
+    all_defs = pool.get_tool_definitions()
+
+    # 按 allowed_mcp_ids 过滤
+    # None = 不过滤（子 Agent 用 _filter_mcp_tools 自行过滤）；空列表 = 不加载任何 MCP
+    if allowed_mcp_ids is None:
+        return all_defs
+    if not allowed_mcp_ids:
+        return []
+
+    allowed_set = set(allowed_mcp_ids)
+    result: list[dict[str, Any]] = []
+    for tool_def in all_defs:
+        # MCP 工具名的格式通常是 "mcp__{server_id}__{tool_name}"
+        tool_name = tool_def.get("function", {}).get("name", "")
+        # 检查工具名中是否包含允许的 server_id
+        for mcp_id in allowed_set:
+            if mcp_id in tool_name:
+                result.append(tool_def)
+                break
+    return result
 
 
 def get_mcp_load_errors() -> dict[str, str]:
@@ -603,9 +615,8 @@ def execute_mcp_tool(tool_name: str, arguments: dict[str, Any] | None = None) ->
 def build_mcp_prompt_context() -> str:
     pool = get_mcp_pool()
     plugins = discover_plugins()
-    enabled = [p for p in plugins if p.enabled]
 
-    if not enabled:
+    if not plugins:
         return ""
 
     lines = [
@@ -617,7 +628,7 @@ def build_mcp_prompt_context() -> str:
     for exposed_name, route in pool._routes.items():
         routes_by_server.setdefault(route.server_id, []).append(exposed_name)
 
-    for plugin in enabled:
+    for plugin in plugins:
         tool_names = routes_by_server.get(plugin.id, [])
         if tool_names:
             lines.append(f"- {plugin.id}: {', '.join(tool_names)}")

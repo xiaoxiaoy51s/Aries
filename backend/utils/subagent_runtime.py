@@ -240,6 +240,7 @@ def _build_subagent_system_prompt(
     skills_context: str,
     task: str,
     context: str,
+    work_dir: str | None = None,
 ) -> str:
     today = datetime.now().strftime("%Y-%m-%d")
     parts: list[str] = []
@@ -250,6 +251,33 @@ def _build_subagent_system_prompt(
     )
     if user_system_prompt.strip():
         parts.append(f"# 详细职责\n{user_system_prompt.strip()}\n")
+
+    # 注入项目记忆（agent.md + rules.md），让子 Agent 了解项目约定和代码结构
+    if work_dir and work_dir.strip():
+        try:
+            from memory.agent_memory import build_agent_memory_system_section
+            memory_section = build_agent_memory_system_section(work_dir)
+            if memory_section:
+                parts.append(memory_section)
+        except Exception:
+            pass
+
+    # 注入精简版编码行为约束，确保子 Agent 遵守相同的代码规范
+    try:
+        from prompt.coding_agent_prompts import (
+            DOING_TASKS_RULES,
+            CODE_STYLE_RULES,
+            COMPLETION_HONESTY_RULES,
+        )
+        parts.append(
+            "# 编码行为约束（精简版）\n"
+            + DOING_TASKS_RULES + "\n\n"
+            + CODE_STYLE_RULES + "\n\n"
+            + COMPLETION_HONESTY_RULES
+        )
+    except Exception:
+        pass
+
     parts.append(
         "# 任务通信规则\n"
         "- 你看不到主 Agent 与用户的对话历史，下方 task 已包含完成任务所需的全部信息\n"
@@ -330,12 +358,17 @@ async def run_subagent(
     work_dir: str | None = None,
     cancel_event: asyncio.Event | None = None,
     on_event: EventEmitter | None = None,
+    isolation: str = "",
 ) -> dict[str, Any]:
     """执行一次子 Agent 任务。
 
     返回给主 Agent 的极简结构：
         成功: {"result": "<final_output>", "log_path": "..."}
         失败: {"error": "...", "status": "failed|timeout|cancelled", "log_path": "..."}
+
+    isolation 参数：
+        "" 或 "none"：不隔离（默认，共享工作目录）
+        "worktree"：创建 git worktree 隔离工作空间
     """
     task_id = f"sa-{uuid.uuid4().hex[:8]}"
     execution = SubagentExecution(
@@ -411,14 +444,35 @@ async def run_subagent(
     tool_definitions.extend(mcp_tools)
     tool_definitions.append(get_report_to_main_tool_definition())
 
-    # 5. 构造 system prompt
+    # 5. 构造 system prompt（注入项目记忆和编码约束）
     system_prompt = _build_subagent_system_prompt(
         subagent_name=subagent_name,
         user_system_prompt=entry.system_prompt,
         skills_context=skills_context,
         task=task,
         context=context,
+        work_dir=work_dir,
     )
+
+    # 6. 可选：创建 git worktree 隔离工作空间
+    worktree_info: dict[str, Any] | None = None
+    effective_work_dir = work_dir
+    if isolation and isolation.lower() == "worktree" and work_dir:
+        try:
+            from utils.worktree_manager import create_worktree_for_subagent
+
+            worktree_info = create_worktree_for_subagent(
+                repo_root=work_dir,
+                slug=task_id,
+            )
+            if worktree_info and worktree_info.get("path"):
+                effective_work_dir = worktree_info["path"]
+                _update_event(execution, f"已创建 worktree 隔离：{effective_work_dir}")
+                await _emit(on_event, execution)
+        except Exception as exc:
+            logger.warning("创建 worktree 失败，回退到共享工作目录: %s", exc)
+            worktree_info = None
+
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": task},
@@ -440,7 +494,7 @@ async def run_subagent(
                 base_url=base_url,
                 api_key=api_key,
                 real_model=real_model,
-                work_dir=work_dir,
+                work_dir=effective_work_dir,
                 cancel_event=cancel_event,
                 on_event=on_event,
                 sub_logger=sub_logger,
@@ -483,6 +537,19 @@ async def run_subagent(
         except (asyncio.CancelledError, Exception):
             pass
         sub_logger.finalize()
+
+        # 清理 worktree：有变更则保留返回路径，无变更则自动删除
+        if worktree_info:
+            try:
+                from utils.worktree_manager import cleanup_worktree
+                cleanup_result = cleanup_worktree(worktree_info)
+                if cleanup_result and cleanup_result.get("kept"):
+                    # worktree 被保留（有变更），将路径附加到结果
+                    if isinstance(result, dict):
+                        result["worktree_path"] = cleanup_result.get("path", "")
+            except Exception as exc:
+                logger.warning("清理 worktree 失败: %s", exc)
+
         await _emit(on_event, execution)
         # 注销取消事件（任务已结束）
         unregister_cancel_event(task_id)

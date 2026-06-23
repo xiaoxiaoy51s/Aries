@@ -13,9 +13,9 @@ from utils.url_utils import normalize_base_url
 from utils.skills_manager import (
     discover_skills,
     get_all_tool_definitions,
-    execute_tool,
     build_skills_context_from_entries,
 )
+from utils.agent_tools import execute_async as execute_tool
 from utils.message_snapshot import (
     create_assistant_snapshot,
     set_summary_block,
@@ -26,9 +26,13 @@ from utils.token_counter import extract_usage_from_stream_chunk
 from memory.agent_memory import build_agent_memory_system_section
 from db.chat import save_message, update_message
 from prompt import CODING_BEHAVIOR_RULES
+from prompt.edit_code_prompts import build_optimized_edit_prompt
 
-# 参考 OpenCode 的 MAX_STEPS=25：每轮最多一次模型响应 + 一批工具调用 + 续跑。
-MAX_TOOL_ROUNDS = 25
+# 工具调用轮次上限：100 轮足够完成复杂任务（重构+测试验证）。
+# 另有连续相同工具检测（REPEAT_TOOL_LIMIT=8）防止 AI 卡在循环里。
+MAX_TOOL_ROUNDS = 100
+# 连续调用相同工具名超过此次数，判定为卡在循环，立即停止
+REPEAT_TOOL_LIMIT = 8
 CONFIRMATION_TIMEOUT_SECONDS = 120.0
 LLM_CONNECT_TIMEOUT_SECONDS = 30.0
 LLM_READ_TIMEOUT_SECONDS = 900.0
@@ -117,6 +121,20 @@ async def _should_stop_stream(
         except Exception:
             pass
     return False
+
+
+_HINT_PREFIXES = (
+    "【系统提醒】你当前已接近本地工具调用上限",
+    "【系统提醒】检测到连续",
+)
+
+
+def _pop_limit_hint_message(messages: list[dict[str, Any]]) -> None:
+    """移除临时追加的系统提示（工具上限/重复检测），避免污染会话历史。"""
+    if messages and messages[-1].get("role") == "system":
+        content = messages[-1].get("content", "")
+        if isinstance(content, str) and any(content.startswith(p) for p in _HINT_PREFIXES):
+            messages.pop()
 
 
 def _cancel_cli_invocations() -> None:
@@ -223,6 +241,12 @@ def build_agent_system_prompt_parts(
         "在使用skill前，必须阅读SKILL.md文件，了解技能的用途和使用方法。不要直接上来就调用工具，有些工具虽然可以通过描述知道对应的使用方法，但是md文件中会有更加详细的使用说明。\n"
         "\n"
         + CODING_BEHAVIOR_RULES
+        + "\n\n"
+        + build_optimized_edit_prompt(
+            has_replace_string=True,
+            has_multi_replace=True,
+            has_apply_patch=True,
+        )
     )
 
     # Subagent 使用规范仅在确有可用 subagent 时注入，避免浪费上下文
@@ -238,7 +262,8 @@ def build_agent_system_prompt_parts(
         "- 子 Agent 一次性返回最终结果（result 或 error），不能交互式追问；它会通过自己的 `report_to_main` 工具提交结论。\n"
         "- 何时委派：复杂多步任务、需要保护主上下文不被淹没、独立可并行的子查询。\n"
         "- 何时不要委派：简单任务、答案已知、必须串行依赖前序结果、能用一两个工具直接搞定。\n"
-        "- 同一轮 tool_calls 中可以并发委派多个不同 Subagent；返回后用一段简洁文字向用户汇报整合结论。\n"
+        "- 同一轮 tool_calls 中可以并发委派多个不同 Subagent，它们会被真正并行执行；返回后用一段简洁文字向用户汇报整合结论。\n"
+        "- 并行委派多个会修改文件的 Subagent 时，建议设置 `isolation: \"worktree\"` 参数，让每个子 Agent 在独立的 git worktree 中工作，避免写入冲突。\n"
     )
 
     rules = build_agent_memory_system_section(wd) or ""
@@ -291,13 +316,30 @@ def build_agent_system_prompt(
 def get_agent_skills_and_tools():
     from utils.mcp_runtime import build_mcp_prompt_context
     from utils.subagent_manager import build_subagent_router_section
+    from utils.main_agent_config import get_main_agent_allowed_skills
 
-    skills = discover_skills()
-    enabled_skills = [s for s in skills if s.enabled]
+    allowed_skills = get_main_agent_allowed_skills()
+    all_skills = discover_skills()
+    # 主 Agent 只加载 allowed_skills 中配置的技能
+    if allowed_skills:
+        enabled_skills = [s for s in all_skills if s.folder_name in allowed_skills]
+    else:
+        enabled_skills = []
     skills_context = build_skills_context_from_entries(enabled_skills)
     tool_definitions = get_all_tool_definitions()
     mcp_context = build_mcp_prompt_context()
     subagents_context = build_subagent_router_section()
+
+    # 虚拟工具分组（#7）：工具数过多时自动分组，减少 prompt token 占用
+    try:
+        from utils.tool_grouper import maybe_group_tools
+        tool_definitions, group_context = maybe_group_tools(tool_definitions)
+        if group_context:
+            # 分组说明拼到 skills_context 中，随 system prompt 注入
+            skills_context = (skills_context or "") + "\n\n" + group_context
+    except Exception:
+        pass
+
     return skills_context, tool_definitions, mcp_context, subagents_context
 
 
@@ -367,6 +409,44 @@ async def stream_agent_mode(
         # 推送初始 meta 事件（模型名 + 上下文占用），前端立即展示
         yield f"data: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
 
+        # ===== 意图识别（#2）：根据用户消息动态选择 prompt 和工具子集 =====
+        intent = "agent"
+        try:
+            from prompt.edit_code_prompts import (
+                classify_intent,
+                filter_tools_for_intent,
+                get_prompt_for_intent,
+                INTENT_AGENT,
+            )
+            # 从 messages 中提取最后一条用户消息文本
+            user_text = ""
+            for msg in reversed(messages):
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        user_text = content
+                    elif isinstance(content, list):
+                        for part in content:
+                            if isinstance(part, dict) and part.get("type") == "text":
+                                user_text += part.get("text", "")
+                    break
+
+            intent = classify_intent(user_text)
+
+            # 根据意图过滤工具（只读意图不加载编辑工具，减少 token）
+            if intent != INTENT_AGENT:
+                tool_definitions = filter_tools_for_intent(intent, tool_definitions)
+
+            # 追加意图专用 prompt 到 system prompt
+            intent_prompt = get_prompt_for_intent(intent)
+            if intent_prompt:
+                system_prompt = system_prompt + "\n\n" + intent_prompt
+
+            # 推送 intent 事件给前端（UI 可展示当前模式）
+            yield f"data: {json.dumps({'intent': intent}, ensure_ascii=False)}\n\n"
+        except Exception:
+            pass
+
         current_messages = [{"role": "system", "content": system_prompt}]
         current_messages.extend(messages)
 
@@ -379,11 +459,29 @@ async def stream_agent_mode(
         )
 
         async with httpx.AsyncClient(timeout=llm_timeout, trust_env=False) as client:
+            # 连续相同工具调用检测
+            last_tool_name: str = ""
+            repeat_count: int = 0
+
             for round_no in range(1, MAX_TOOL_ROUNDS + 1):
                 if await _should_stop_stream(cancel_event, disconnect_check):
                     cancelled = True
                     # 不再终止 PTY / ps1 调度进程：保留控制台会话供回放
                     break
+
+                # 第 24 轮时主动提醒 AI：本地工具调用即将达到上限，请总结已执行内容
+                if round_no == MAX_TOOL_ROUNDS - 1:
+                    limit_hint = (
+                        "【系统提醒】你当前已接近本地工具调用上限（25 轮）。"
+                        "本轮请不要再发起新的工具调用，而是总结截至目前已完成的任务内容、"
+                        "已修改的文件、已验证的结果，以及剩余未完成的工作。"
+                        "用精炼的语言向用户汇报进度，并告知用户如需要继续可发送「继续」。"
+                    )
+                    # 临时追加到 current_messages 中（作为 system 提示）
+                    current_messages.append({"role": "system", "content": limit_hint})
+                    # 向前端推送一个低调的提示事件，用于 UI 展示（不弹大警告）
+                    yield f"data: {json.dumps({'hint': '工具调用即将达到上限，正在整理执行进度…'}, ensure_ascii=False)}\n\n"
+
                 reasoning_emitted_before_content = False
                 current_payload = {
                     "model": request.model,
@@ -523,6 +621,20 @@ async def stream_agent_mode(
                             reasoning=reasoning_text,
                             assistant=assistant_text,
                         )
+                    # 后台压缩检查（#6）：Agent 回复完成后，如果是暖缓存则检查是否需要压缩
+                    try:
+                        from memory.compaction import get_compactor
+                        compactor = get_compactor()
+                        compactor.maybe_trigger_compaction(
+                            session_id,
+                            current_messages,
+                            context_window=200_000,
+                            is_warm=True,  # 刚完成工具调用轮次，视为暖缓存
+                        )
+                    except Exception:
+                        pass
+                    # 清理临时追加的工具上限提示，避免污染会话历史
+                    _pop_limit_hint_message(current_messages)
                     break
 
                 # 本轮分析文本落盘，再执行工具（避免多轮时只保存最后一轮）
@@ -537,22 +649,8 @@ async def stream_agent_mode(
 
                 # 执行工具调用
                 tool_results = []
-                # 用于收集子 Agent 在执行过程中的 SSE 事件
-                subagent_event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-                async def _on_subagent_event(payload: dict[str, Any]) -> None:
-                    await subagent_event_queue.put(payload)
-
-                async def _drain_subagent_events():
-                    """非阻塞地把队列里的事件全部弹出，作为字符串列表返回。"""
-                    out: list[str] = []
-                    while True:
-                        try:
-                            ev = subagent_event_queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-                        out.append(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n")
-                    return out
+                # delegate_to_subagent 调用先收集，循环结束后并行执行
+                delegate_items: list[dict[str, Any]] = []
 
                 for tc in tool_calls_buffer:
                     stream_stopped = False
@@ -570,16 +668,26 @@ async def stream_agent_mode(
                     except:
                         args = {}
 
-                    # ===== 委派子 Agent 分支：走 async 执行，期间持续推送 subagent_event =====
+                    # ===== 收集 delegate_to_subagent 调用，稍后并行执行 =====
                     if tool_name == "delegate_to_subagent":
-                        from utils.subagent_runtime import run_subagent
-
-                        sub_name = str(args.get("subagent_name") or "").strip()
-                        sub_task = str(args.get("task") or "").strip()
+                        sub_name = str(args.get("subagent_name") or args.get("agent_name") or "").strip()
+                        sub_task_text = str(args.get("task") or "").strip()
                         sub_desc = str(args.get("description") or "").strip()
                         sub_context = str(args.get("context") or "")
+                        sub_isolation = str(args.get("isolation") or "").strip()
 
-                        # 1. 主对话流先推一个 tool_call 事件，让前端展示"工具开始"
+                        delegate_items.append({
+                            "tool_id": tool_id,
+                            "tool_name": tool_name,
+                            "args": args,
+                            "sub_name": sub_name,
+                            "sub_task": sub_task_text,
+                            "sub_desc": sub_desc,
+                            "sub_context": sub_context,
+                            "sub_isolation": sub_isolation,
+                            "round": round_no,
+                        })
+                        # 推送 tool_call 事件 + 写 JSONL
                         tool_call_payload = {
                             'tool_call_id': tool_id,
                             'tool_name': tool_name,
@@ -591,81 +699,14 @@ async def stream_agent_mode(
                         reasoning_text = logger.write_tool_call(tool_id, tool_name, args)
                         if segment_sink and reasoning_text:
                             await segment_sink.on_reasoning(reasoning_text)
-
-                        # 2. 主 Agent JSONL 写一条 sub_agent 块（status=running）
                         logger.write_subagent_block(
                             tool_call_id=tool_id,
                             subagent_name=sub_name,
-                            task=sub_desc or sub_task,
+                            task=sub_desc or sub_task_text,
                             status="running",
                         )
-
-                        # 3. 启动子 Agent 任务，并在等待期间持续 drain 事件队列
-                        sub_task_obj = asyncio.create_task(run_subagent(
-                            subagent_name=sub_name,
-                            task=sub_task,
-                            context=sub_context,
-                            work_dir=work_dir,
-                            cancel_event=cancel_event,
-                            on_event=_on_subagent_event,
-                        ))
-                        while not sub_task_obj.done():
-                            try:
-                                await asyncio.wait_for(asyncio.shield(sub_task_obj), timeout=0.5)
-                            except asyncio.TimeoutError:
-                                pass
-                            for ev_str in await _drain_subagent_events():
-                                yield ev_str
-                            if await _should_stop_stream(cancel_event, disconnect_check):
-                                sub_task_obj.cancel()
-                                break
-                        # 兜底再 drain 一次
-                        for ev_str in await _drain_subagent_events():
-                            yield ev_str
-
-                        try:
-                            sub_result = await sub_task_obj
-                        except asyncio.CancelledError:
-                            sub_result = {
-                                "error": "用户取消了子 Agent 任务",
-                                "status": "cancelled",
-                                "log_path": "",
-                            }
-                        except Exception as exc:
-                            sub_result = {
-                                "error": f"子 Agent 异常：{exc}",
-                                "status": "failed",
-                                "log_path": "",
-                            }
-
-                        # 4. 收尾：把结果写回 JSONL 的 sub_agent 块（最终状态）
-                        final_status = "success" if "result" in sub_result else sub_result.get("status", "failed")
-                        logger.write_subagent_block(
-                            tool_call_id=tool_id,
-                            subagent_name=sub_name,
-                            task=sub_desc or sub_task,
-                            status=final_status,
-                            log_path=str(sub_result.get("log_path") or ""),
-                            final_output=str(sub_result.get("result") or ""),
-                            error=str(sub_result.get("error") or ""),
-                        )
-
-                        # 5. 给主 Agent 的 tool 返回：极简（result/error + log_path）
-                        tool_results.append({
-                            "tool_call_id": tool_id,
-                            "role": "tool",
-                            "content": json.dumps(sub_result, ensure_ascii=False),
-                        })
-                        logger.write_tool_result(
-                            tool_id, tool_name,
-                            "completed" if final_status == "success" else "error",
-                            result=json.dumps(sub_result, ensure_ascii=False),
-                            error=str(sub_result.get("error") or ""),
-                        )
-                        # 推 tool_result 事件给前端
-                        yield f"data: {json.dumps({'tool_result': {'tool_name': tool_name, 'tool_call_id': tool_id, 'status': 'completed' if final_status == 'success' else 'error', 'output': sub_result.get('result') or sub_result.get('error') or '', 'round': round_no}}, ensure_ascii=False)}\n\n"
                         continue
-                    # ===== 委派子 Agent 分支结束 =====
+                    # ===== delegate_to_subagent 收集结束 =====
 
                     terminal_session_id = ""
                     if tool_name == "cli_executor":
@@ -698,16 +739,17 @@ async def stream_agent_mode(
                         await segment_sink.on_tool_start(tool_name)
 
                     # 执行工具（注入 session 的工作目录）
-                    # 使用 run_in_executor 避免阻塞事件循环，使前端 WebSocket/PTY 输出能正常工作
-                    loop = asyncio.get_running_loop()
+                    # 使用 execute_async 异步执行，支持用户点击"后台运行"/"停止服务"时立即中断
                     invocation_id = f"{session_id}:{tool_id}"
                     try:
                         result = await asyncio.wait_for(
-                            loop.run_in_executor(
-                                None,
-                                lambda tn=tool_name, a=args, wd=work_dir, sid=session_id, iid=invocation_id: execute_tool(
-                                    tn, a, work_dir=wd, session_id=sid, invocation_id=iid
-                                ),
+                            execute_tool(
+                                tool_name,
+                                args,
+                                work_dir=work_dir,
+                                session_id=session_id,
+                                invocation_id=invocation_id,
+                                cancel_event=cancel_event,
                             ),
                             timeout=TOOL_EXECUTION_TIMEOUT_SECONDS,
                         )
@@ -759,11 +801,13 @@ async def stream_agent_mode(
                             if terminal_session_id:
                                 retry_payload['session_id'] = terminal_session_id
                             yield f"data: {json.dumps({'tool_call': retry_payload}, ensure_ascii=False)}\n\n"
-                            result = await loop.run_in_executor(
-                                None,
-                                lambda tn=tool_name, a=retry_args, wd=work_dir, sid=session_id, iid=invocation_id: execute_tool(
-                                    tn, a, work_dir=wd, session_id=sid, invocation_id=iid
-                                ),
+                            result = await execute_tool(
+                                tool_name,
+                                retry_args,
+                                work_dir=work_dir,
+                                session_id=session_id,
+                                invocation_id=invocation_id,
+                                cancel_event=cancel_event,
                             )
 
                     tool_results.append({
@@ -810,8 +854,139 @@ async def stream_agent_mode(
                         final_content = full_content
                         break
 
+                # ===== 并行执行 delegate_to_subagent 调用 =====
+                if delegate_items and not cancelled:
+                    from utils.subagent_runtime import run_subagent
+
+                    # 共享事件队列：所有并行子 Agent 的事件都推到这里
+                    parallel_event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+                    async def _on_parallel_subagent_event(payload: dict[str, Any]) -> None:
+                        await parallel_event_queue.put(payload)
+
+                    # 启动所有子 Agent 任务
+                    sub_futures: dict[asyncio.Task, dict[str, Any]] = {}
+                    for item in delegate_items:
+                        run_kwargs: dict[str, Any] = dict(
+                            subagent_name=item["sub_name"],
+                            task=item["sub_task"],
+                            context=item["sub_context"],
+                            work_dir=work_dir,
+                            cancel_event=cancel_event,
+                            on_event=_on_parallel_subagent_event,
+                        )
+                        if item.get("sub_isolation"):
+                            run_kwargs["isolation"] = item["sub_isolation"]
+                        task_obj = asyncio.create_task(run_subagent(**run_kwargs))
+                        sub_futures[task_obj] = item
+
+                    # 等待所有子 Agent 完成，期间持续 drain 事件
+                    pending_tasks = set(sub_futures.keys())
+                    while pending_tasks:
+                        if await _should_stop_stream(cancel_event, disconnect_check):
+                            for t in pending_tasks:
+                                t.cancel()
+                            break
+                        done, pending_tasks = await asyncio.wait(pending_tasks, timeout=0.5)
+                        # Drain 事件
+                        while True:
+                            try:
+                                ev = parallel_event_queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
+                            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+                    # 兜底再 drain 一次
+                    while True:
+                        try:
+                            ev = parallel_event_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+                    # 收集结果（保持原始 tool_call 顺序）
+                    for task_obj, item in sub_futures.items():
+                        tool_id = item["tool_id"]
+                        tool_name = item["tool_name"]
+                        sub_name = item["sub_name"]
+                        sub_desc = item["sub_desc"]
+                        sub_task_text = item["sub_task"]
+
+                        try:
+                            sub_result = task_obj.result()
+                        except asyncio.CancelledError:
+                            sub_result = {
+                                "error": "用户取消了子 Agent 任务",
+                                "status": "cancelled",
+                                "log_path": "",
+                            }
+                        except Exception as exc:
+                            sub_result = {
+                                "error": f"子 Agent 异常：{exc}",
+                                "status": "failed",
+                                "log_path": "",
+                            }
+
+                        final_status = "success" if "result" in sub_result else sub_result.get("status", "failed")
+                        logger.write_subagent_block(
+                            tool_call_id=tool_id,
+                            subagent_name=sub_name,
+                            task=sub_desc or sub_task_text,
+                            status=final_status,
+                            log_path=str(sub_result.get("log_path") or ""),
+                            final_output=str(sub_result.get("result") or ""),
+                            error=str(sub_result.get("error") or ""),
+                        )
+
+                        tool_results.append({
+                            "tool_call_id": tool_id,
+                            "role": "tool",
+                            "content": json.dumps(sub_result, ensure_ascii=False),
+                        })
+                        logger.write_tool_result(
+                            tool_id, tool_name,
+                            "completed" if final_status == "success" else "error",
+                            result=json.dumps(sub_result, ensure_ascii=False),
+                            error=str(sub_result.get("error") or ""),
+                        )
+                        yield f"data: {json.dumps({'tool_result': {'tool_name': tool_name, 'tool_call_id': tool_id, 'status': 'completed' if final_status == 'success' else 'error', 'output': sub_result.get('result') or sub_result.get('error') or '', 'round': round_no}}, ensure_ascii=False)}\n\n"
+                # ===== 并行执行 delegate_to_subagent 调用结束 =====
+
                 if cancelled:
                     break
+
+                # 连续相同工具调用检测：防止 AI 卡在循环里反复调同一个工具
+                # 本轮调用的工具名集合（去重，因为一轮可能调多个工具）
+                round_tool_names = set()
+                for tc in tool_calls_buffer:
+                    fn = tc.get("function", {}).get("name", "")
+                    if fn:
+                        round_tool_names.add(fn)
+                # 如果本轮只调了一种工具，且和上一轮相同，累加计数
+                if len(round_tool_names) == 1:
+                    single_tool = next(iter(round_tool_names))
+                    if single_tool == last_tool_name:
+                        repeat_count += 1
+                    else:
+                        last_tool_name = single_tool
+                        repeat_count = 1
+                else:
+                    # 多种工具或无工具，重置
+                    last_tool_name = ""
+                    repeat_count = 0
+
+                if repeat_count >= REPEAT_TOOL_LIMIT:
+                    repeat_hint = (
+                        f"【系统提醒】检测到连续 {repeat_count} 轮调用相同工具「{last_tool_name}」，"
+                        "可能陷入了循环。请停止重复调用，总结当前进度和遇到的问题，"
+                        "告知用户需要什么信息或帮助来继续。"
+                    )
+                    current_messages.append({"role": "system", "content": repeat_hint})
+                    yield f"data: {json.dumps({'hint': f'检测到重复调用 {last_tool_name}，正在整理进度…'}, ensure_ascii=False)}\n\n"
+                    # 下一轮让 AI 总结（不再发 system hint，和 step_limit 一样的策略）
+                    # 重置计数，避免下一轮又被触发
+                    repeat_count = 0
+                    last_tool_name = ""
 
                 # 构建下一轮的消息
                 assistant_msg = {
@@ -827,18 +1002,66 @@ async def stream_agent_mode(
                         "tool_call_id": tr["tool_call_id"],
                         "content": tr["content"]
                     })
+
+                # ===== 实时上下文压缩 =====
+                # 100 轮工具调用会累积大量历史，每轮检测并在超阈值时同步压缩。
+                # 压缩策略：保留 system prompt + 最近窗口，旧消息替换为摘要。
+                try:
+                    from memory.compaction import should_compact, split_messages_for_compaction, build_session_summary
+                    from utils.token_counter import estimate_message_tokens
+                    if should_compact(current_messages):
+                        to_compact, to_keep = split_messages_for_compaction(current_messages)
+                        if to_compact and len(to_compact) > 4:
+                            # 生成摘要
+                            summary = build_session_summary(to_compact)
+                            # 构建压缩后的消息列表：system + 摘要 + 近期窗口
+                            system_msgs = [m for m in current_messages if m.get("role") == "system"]
+                            compacted = system_msgs + [
+                                {
+                                    "role": "system",
+                                    "content": f"## 之前的对话摘要\n\n{summary}\n\n---\n以上是之前对话的摘要，以下是最近的对话内容："
+                                }
+                            ] + to_keep
+                            old_count = len(current_messages)
+                            old_tokens = sum(estimate_message_tokens(m) for m in current_messages)
+                            current_messages[:] = compacted
+                            new_tokens = sum(estimate_message_tokens(m) for m in current_messages)
+                            if logger:
+                                logger.write_info_event(
+                                    "context_compacted",
+                                    f"工具循环中压缩上下文：{old_count} → {len(current_messages)} 条消息，"
+                                    f"约 {old_tokens} → {new_tokens} tokens",
+                                    details=json.dumps({"old_count": old_count, "new_count": len(current_messages), "old_tokens": old_tokens, "new_tokens": new_tokens}, ensure_ascii=False),
+                                )
+                            # 推送 hint 给前端
+                            yield f"data: {json.dumps({'hint': '上下文已自动压缩，继续执行…'}, ensure_ascii=False)}\n\n"
+                except Exception:
+                    pass
             else:
-                error_msg = f"工具/模型续跑达到上限（{MAX_TOOL_ROUNDS} 轮），已停止以避免无限循环。"
+                # 达到工具调用上限（第 25 轮）。
+                # 由于第 24 轮已提醒 AI 总结进度，这里不再弹丑陋的系统警告，
+                # 只清理临时提示并静默结束，让 AI 上一次返回的内容作为最终结果。
+                _pop_limit_hint_message(current_messages)
                 if logger:
-                    logger.write_error_event("step_limit_exceeded", error_msg)
-                yield f"data: {json.dumps({'error': error_msg}, ensure_ascii=False)}\n\n"
+                    logger.write_error_event(
+                        "step_limit_exceeded",
+                        f"工具调用达到上限（{MAX_TOOL_ROUNDS} 轮），已在前一轮引导 AI 总结进度。"
+                    )
     finally:
         # 用户主动中断时不再终止 PTY / ps1 调度进程：
         # 控制台会话（包括正在运行的开发服务器、长任务）保留可见、可回放。
         # 兜底清理只在软件关闭时由 main.py 的 lifespan 统一处理。
         if assistant_message_id is not None and logger is not None:
-            # 保存到数据库（即使中途暂停/异常也要保存已有内容）
+            # 记录中断事件到日志（如果是因为中断而非正常结束）
+            if cancelled:
+                logger.write_info_event(
+                    "stream_interrupted",
+                    "用户中断或连接断开，正在保存已有进度到数据库",
+                )
+            # 刷新所有未写入的缓冲
             reasoning_text, assistant_text = logger.flush_assistant_round()
+            # 清理临时 system hint 消息
+            _pop_limit_hint_message(current_messages)
             if segment_sink:
                 from services.platform_segment import emit_logger_segments
                 await emit_logger_segments(
@@ -846,14 +1069,25 @@ async def stream_agent_mode(
                     reasoning=reasoning_text,
                     assistant=assistant_text,
                 )
+            # 构建数据库内容：优先用 assistant 文本，
+            # 如果为空（被打断在工具执行中间），用最近一轮的 reasoning + 工具摘要
             db_content = logger.build_db_content() or final_content or ""
+            if not db_content and cancelled:
+                # 被中断且没有 assistant 文本：用 reasoning 和工具摘要作为内容
+                db_reasoning = logger.build_db_reasoning()
+                if db_reasoning:
+                    db_content = db_reasoning
             if db_content:
                 set_summary_block(snapshot, db_content)
                 finalize_snapshot(snapshot)
             elif cancelled:
                 logger.flush_reasoning_segment()
 
-            stop_note = "（用户中断）" if cancelled and not db_content else ""
+            stop_note = ""
+            if cancelled and not db_content:
+                stop_note = "（用户中断，任务未完成。请发送「继续」以恢复执行。）"
+            elif cancelled and db_content:
+                stop_note = ""
             update_message(
                 assistant_message_id,
                 content=db_content or stop_note or "（无响应）",

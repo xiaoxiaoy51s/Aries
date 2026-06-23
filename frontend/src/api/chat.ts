@@ -11,7 +11,7 @@ export interface ChatMessage {
 }
 
 export interface StreamEvent {
-  type: 'content' | 'reasoning' | 'tool_call' | 'tool_result' | 'confirmation_required' | 'error' | 'context_usage' | 'meta' | 'subagent_event' | 'subagent_reasoning' | 'subagent_content' | 'subagent_tool_call' | 'subagent_tool_result'
+  type: 'content' | 'reasoning' | 'tool_call' | 'tool_result' | 'confirmation_required' | 'error' | 'context_usage' | 'meta' | 'intent' | 'hint' | 'subagent_event' | 'subagent_reasoning' | 'subagent_content' | 'subagent_tool_call' | 'subagent_tool_result'
   data: any
   meta?: { session_id?: string }
 }
@@ -26,6 +26,12 @@ export function jsonToStreamEvent(json: Record<string, unknown>): StreamEvent | 
   }
   if (json.meta) {
     return { type: 'meta', data: json.meta }
+  }
+  if (json.intent) {
+    return { type: 'intent', data: json.intent }
+  }
+  if (json.hint) {
+    return { type: 'hint', data: json.hint }
   }
   if (json.tool_call) {
     return { type: 'tool_call', data: json.tool_call }
@@ -149,6 +155,48 @@ export async function stopChat(sessionId: string): Promise<void> {
     })
   } catch (e) {
     console.error('stopChat error', e)
+  }
+}
+
+export async function checkChatStatus(sessionId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${getBaseUrl()}/chat/status/${sessionId}`)
+    const data = await res.json()
+    return !!data.running
+  } catch {
+    return false
+  }
+}
+
+export async function* resumeChat(sessionId: string): AsyncGenerator<StreamEvent> {
+  const res = await fetch(`${getBaseUrl()}/chat/resume/${sessionId}`, {
+    headers: { Accept: 'text/event-stream' },
+  })
+  if (!res.ok) return
+  const reader = res.body?.getReader()
+  if (!reader) return
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const data = line.slice(6)
+      if (data === '[DONE]') return
+      try {
+        const json = JSON.parse(data) as Record<string, unknown>
+        if (json.resumed_done) return
+        if (json.resumed === false) return
+        const event = jsonToStreamEvent(json)
+        if (event) yield event
+      } catch {
+        // ignore invalid json
+      }
+    }
   }
 }
 
