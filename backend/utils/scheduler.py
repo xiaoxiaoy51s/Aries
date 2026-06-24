@@ -12,6 +12,7 @@ import uuid
 
 from db.scheduled_task import (
     SCHEDULE_ONCE,
+    delete_task,
     get_pending_tasks,
     infer_notify_type,
     infer_platform,
@@ -133,18 +134,37 @@ async def _push_task_reply(task_id, push_platform, reply, push_message_to_platfo
 def _handle_post_execution(task: dict, task_id: int, *, session_id: str) -> None:
     executed_at = local_now_iso()
     schedule_type = (task.get("schedule_type") or SCHEDULE_ONCE).strip()
+    auto_delete = bool(task.get("auto_delete", False))
 
     if not is_recurring(schedule_type):
-        update_task_status(task_id, "completed", executed_at=executed_at)
-        print(f"[Scheduler] 任务 {task_id} 完成", flush=True)
+        if auto_delete:
+            delete_task(task_id)
+            print(f"[Scheduler] 任务 {task_id} 已执行并自动删除（auto_delete）", flush=True)
+        else:
+            update_task_status(task_id, "completed", executed_at=executed_at)
+            print(f"[Scheduler] 任务 {task_id} 完成", flush=True)
         return
 
-    update_task_status(task_id, "completed", executed_at=executed_at)
+    # 循环任务：先生成下一条，再处理原记录
+    next_id = None
     try:
         next_id = insert_next_recurring_task(task, executed_at, session_id=session_id)
-        print(
-            f"[Scheduler] 任务 {task_id} 完成，已插入下次任务 #{next_id} ({schedule_type})",
-            flush=True,
-        )
     except ValueError as e:
         print(f"[Scheduler] 任务 {task_id} 无法生成下次任务: {e}", flush=True)
+
+    if auto_delete:
+        delete_task(task_id)
+        if next_id:
+            print(
+                f"[Scheduler] 任务 {task_id} 已执行并自动删除，下次任务 #{next_id} ({schedule_type})",
+                flush=True,
+            )
+        else:
+            print(f"[Scheduler] 任务 {task_id} 已执行并自动删除（无下次任务）", flush=True)
+    else:
+        update_task_status(task_id, "completed", executed_at=executed_at)
+        if next_id:
+            print(
+                f"[Scheduler] 任务 {task_id} 完成，已插入下次任务 #{next_id} ({schedule_type})",
+                flush=True,
+            )

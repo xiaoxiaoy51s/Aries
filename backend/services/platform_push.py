@@ -55,22 +55,24 @@ def push_wechat_message(text: str) -> bool:
         _log.warning("[Push/微信] 缺少 bot_token")
         return False
 
-    context_token = (wechat.get("context_token") or "").strip()
-    recipient = (
+    config_recipient = (
         (wechat.get("last_from_user_id") or "").strip()
         or (wechat.get("to_user_id") or "").strip()
     )
-    if not recipient:
-        _log.warning("[Push/微信] 缺少收消息用户，请先用手机给 bot 发一条消息")
-        return False
+    config_context_token = (wechat.get("context_token") or "").strip()
 
     segments = _split_text(text)
 
-    # 优先使用运行中的 bot 客户端
+    # 优先使用运行中的 bot 客户端（其 last_from_user_id / context_token 为实时值）
     try:
         from services.wechat_bot import _runner
 
         if _runner and _runner.client:
+            recipient = (_runner.client.last_from_user_id or "").strip() or config_recipient
+            context_token = (_runner.client.context_token or "").strip() or config_context_token
+            if not recipient:
+                _log.warning("[Push/微信] 缺少收消息用户，请先用手机给 bot 发一条消息")
+                return False
             _runner.client._running = True
             try:
                 for seg in segments:
@@ -85,6 +87,13 @@ def push_wechat_message(text: str) -> bool:
                 _log.warning("[Push/微信] 运行中 bot 推送失败: %s", e)
     except Exception as e:
         _log.warning("[Push/微信] 运行中 bot 不可用: %s", e)
+
+    # 回退到配置文件中的值
+    recipient = config_recipient
+    context_token = config_context_token
+    if not recipient:
+        _log.warning("[Push/微信] 缺少收消息用户，请先用手机给 bot 发一条消息")
+        return False
 
     try:
         from services.wechat_bot import WeChatBotClient
@@ -122,8 +131,14 @@ async def push_feishu_message(text: str) -> bool:
         from services.feishu_bot import _runner
 
         if _runner and _runner._channel and _runner._loop and _runner._loop.is_running():
+            # 优先用运行中 bot 的实时 chat_id（收到消息时更新），配置文件可能未持久化
+            effective_chat_id = (_runner.last_chat_id or "").strip() or chat_id
+            if not effective_chat_id:
+                _log.warning("[Push/飞书] 缺少 chat_id（请先用飞书给 bot 发一条消息以记录会话）")
+                return False
+
             async def _send_via_channel() -> bool:
-                await _runner._channel.send(chat_id, {"text": text})
+                await _runner._channel.send(effective_chat_id, {"text": text})
                 return True
 
             future = asyncio.run_coroutine_threadsafe(_send_via_channel(), _runner._loop)
@@ -134,6 +149,9 @@ async def push_feishu_message(text: str) -> bool:
         _log.warning("[Push/飞书] Channel 推送失败，尝试 REST: %s", e)
 
     # REST API 兜底
+    if not chat_id:
+        _log.warning("[Push/飞书] REST 推送缺少 chat_id（请先用飞书给 bot 发一条消息以记录会话）")
+        return False
     try:
         import lark_oapi as lark
         from lark_oapi.api.im.v1.model.create_message_request import CreateMessageRequest

@@ -171,6 +171,26 @@ async def delete_file(req: DeleteRequest) -> dict[str, Any]:
         return {"error": str(e)}
 
 
+class RevertFileRequest(BaseModel):
+    file_path: str
+    content: str  # 要恢复的内容（previous_content）
+
+
+@router.post("/revert")
+async def revert_file(req: RevertFileRequest) -> dict[str, Any]:
+    """将文件内容恢复到指定内容（用于产物区域的回退功能）。"""
+    if not req.file_path:
+        return {"error": "file_path 不能为空"}
+    try:
+        target = Path(req.file_path)
+        if not target.exists():
+            return {"error": f"文件不存在: {target}"}
+        target.write_text(req.content, encoding="utf-8")
+        return {"ok": True, "file_path": str(target)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ─── 语法诊断（对齐 VS Code MarkerService / Monaco setModelMarkers） ───
 
 _DIAGNOSTIC_LANGUAGES = {

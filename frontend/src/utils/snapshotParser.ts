@@ -24,6 +24,13 @@ export interface SnapshotEvent {
   finalOutput?: string
   rounds?: number
   durationMs?: number
+  // tool_result 中的文件变更信息
+  fileChange?: {
+    file_path: string
+    operation: string
+    previous_content: string
+    new_content: string
+  }
 }
 
 /**
@@ -96,7 +103,8 @@ function convertEvent(json: any): SnapshotEvent | null {
         toolCallId: json.tool_call_id,
         sessionId: json.session_id || '',
         status: json.status,
-        timestamp: json.ended_at
+        timestamp: json.ended_at,
+        fileChange: json.file_change || undefined,
       }
 
     case 'assistant_text':

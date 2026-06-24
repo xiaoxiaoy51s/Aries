@@ -81,10 +81,13 @@
               :reasoning="msg.reasoning || []"
               :tools="msg.tools || []"
               :blocks="msg.blocks || []"
+              :artifacts="msg.artifacts || []"
               :is-loading="msg.isLoading"
               :text-color="textColor"
               :font-size="fontSize"
               :meta="msg.meta"
+              @revert="(idx: number) => revertArtifact(index, idx)"
+              @view-artifact="(idx: number) => viewArtifact(index, idx)"
             />
           </div>
         </div>
@@ -134,6 +137,7 @@
       :visible="rightPanelVisible"
       :session-id="currentSessionId"
       :work-dir="workDir"
+      :inline-diff="inlineDiffData"
       @close="rightPanelVisible = false"
     />
 
@@ -186,6 +190,7 @@ const pluginMenuOpen = ref(false)
 const activeSlashCommand = ref<SlashCommandDef | null>(null)
 const commandObjective = ref('')
 const selectedModel = ref('')
+const inlineDiffData = ref<{ path: string; original: string; modified: string; key: number } | null>(null)
 const hasActiveChat = ref(false)
 const isSending = ref(false)
 const rightPanelVisible = ref(false)
@@ -232,8 +237,17 @@ function startChatWs() {
     try {
       const data = JSON.parse(ev.data)
       if (data.type === 'stream_event') {
-        // 平台 AI 流式事件 - 实时更新 UI
-        handlePlatformStreamEvent(data.event)
+        const event = data.event
+        if (event.meta) {
+          // 实时 meta 更新（duration + token_usage），更新最后一条 assistant 消息
+          const lastAssistant = [...messages.value].reverse().find((m) => m.role === 'assistant')
+          if (lastAssistant) {
+            lastAssistant.meta = event.meta
+          }
+        } else {
+          // 平台 AI 流式事件 - 实时更新 UI
+          handlePlatformStreamEvent(event)
+        }
       } else if (data.type === 'new_message') {
         // 平台用户消息到达 - 创建 assistant 占位消息并进入 loading
         await loadNewMessages()
@@ -451,6 +465,16 @@ interface MessageMeta {
   }
 }
 
+interface FileChangeArtifact {
+  file_path: string
+  operation: string  // "create" | "modify"
+  previous_content: string
+  new_content: string
+  tool_name: string
+  tool_call_id: string
+  reverted?: boolean
+}
+
 interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
@@ -461,6 +485,7 @@ interface ChatMessage {
   reasoning?: string[]
   tools?: ToolInfo[]
   blocks?: MessageBlock[]
+  artifacts?: FileChangeArtifact[]
   isLoading?: boolean
   messageSnapshotJson?: string
   hasSnapshot?: boolean
@@ -785,8 +810,7 @@ async function tryResumeSession(sessionId: string) {
   try {
     const running = await checkChatStatus(sessionId)
     if (!running) return
-    // 有运行中的后台任务，复用最后一条 assistant 消息（从数据库加载的占位）
-    // 不创建新消息，避免重复
+    // 有运行中的后台任务，复用最后一条 assistant 消息
     let assistantIdx = -1
     for (let i = messages.value.length - 1; i >= 0; i--) {
       if (messages.value[i].role === 'assistant') {
@@ -795,7 +819,6 @@ async function tryResumeSession(sessionId: string) {
       }
     }
     if (assistantIdx < 0) {
-      // 没有 assistant 消息，才创建占位
       messages.value.push({
         role: 'assistant',
         content: '',
@@ -807,15 +830,15 @@ async function tryResumeSession(sessionId: string) {
       })
       assistantIdx = messages.value.length - 1
     }
-    // 重置该消息为 loading 状态，清空旧内容（将从 queue 重新接收事件）
+    // 清空旧内容（resume 端点会先推送全部历史事件，避免逐条闪动）
     const msg = messages.value[assistantIdx]
     msg.content = ''
     msg.reasoning = []
     msg.tools = []
     msg.blocks = []
+    msg.artifacts = []
     msg.isLoading = true
-    messages.value[assistantIdx] = { ...msg }
-
+    // 静默更新，等历史事件全部接收后再触发渲染
     isSending.value = true
     streamAbortController = new AbortController()
     try {
@@ -829,6 +852,44 @@ async function tryResumeSession(sessionId: string) {
   } catch {
     // 恢复失败时静默处理，用户可以重新发送消息
   }
+}
+
+async function revertArtifact(msgIdx: number, artifactIdx: number) {
+  const msg = messages.value[msgIdx]
+  if (!msg?.artifacts?.[artifactIdx]) return
+  const artifact = msg.artifacts[artifactIdx]
+  try {
+    const baseUrl = modelStore.getBaseUrl()
+    const res = await fetch(`${baseUrl}/files/revert`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        file_path: artifact.file_path,
+        content: artifact.previous_content,
+      }),
+    })
+    const data = await res.json()
+    if (data.ok) {
+      artifact.reverted = true
+      messages.value[msgIdx] = { ...msg, artifacts: [...msg.artifacts!] }
+    }
+  } catch {
+    // 静默处理
+  }
+}
+
+let inlineDiffCounter = 0
+function viewArtifact(msgIdx: number, artifactIdx: number) {
+  const msg = messages.value[msgIdx]
+  if (!msg?.artifacts?.[artifactIdx]) return
+  const artifact = msg.artifacts[artifactIdx]
+  inlineDiffData.value = {
+    path: artifact.file_path,
+    original: artifact.previous_content,
+    modified: artifact.new_content,
+    key: ++inlineDiffCounter,
+  }
+  rightPanelVisible.value = true
 }
 
 async function onLoadSession(e: Event) {
@@ -1010,7 +1071,20 @@ async function loadMessageSnapshot(
     const answerText = parsed.filter(e => e.type === 'assistant_text').map(e => e.content).join('')
     const errorText = parsed.find(e => e.type === 'error')?.content || ''
 
-    console.log(`[snapshot] 消息 ${messageId} 构建了 ${blocks.length} 个 blocks（${reasoningSegments.length} 段思考）`)
+    // 从 tool_result 事件中收集文件变更产物
+    const artifacts = parsed
+      .filter(e => e.type === 'tool_result' && e.fileChange)
+      .map(e => ({
+        file_path: e.fileChange!.file_path || '',
+        operation: e.fileChange!.operation || 'modify',
+        previous_content: e.fileChange!.previous_content || '',
+        new_content: e.fileChange!.new_content || '',
+        tool_name: e.toolName || '',
+        tool_call_id: e.toolCallId || '',
+        reverted: false,
+      }))
+
+    console.log(`[snapshot] 消息 ${messageId} 构建了 ${blocks.length} 个 blocks（${reasoningSegments.length} 段思考，${artifacts.length} 个产物）`)
 
     messages.value[msgIndex] = {
       ...prev,
@@ -1038,6 +1112,7 @@ async function loadMessageSnapshot(
       content: answerText || errorText || prev.content,
       hasSnapshot: true,
       meta: snapshotMeta || prev.meta,
+      artifacts,
     }
   } catch (err) {
     console.error('加载快照失败:', err)
@@ -1345,6 +1420,18 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
       _msg += ': ' + (_output.length > 150 ? _output.slice(0, 150) + '…' : _output)
     }
     sendPetStatus(_msg)
+    // 收集 file_change 到 artifacts
+    if (evt.data.file_change) {
+      if (!assistantMsg.artifacts) assistantMsg.artifacts = []
+      assistantMsg.artifacts.push({
+        file_path: evt.data.file_change.file_path || '',
+        operation: evt.data.file_change.operation || 'modify',
+        previous_content: evt.data.file_change.previous_content || '',
+        new_content: evt.data.file_change.new_content || '',
+        tool_name: _toolName,
+        tool_call_id: String(evt.data.tool_call_id || ''),
+      })
+    }
     const lastTool = assistantMsg.tools[assistantMsg.tools.length - 1]
     if (lastTool && lastTool.name === evt.data.tool_name) {
       lastTool.status = evt.data.status || 'completed'

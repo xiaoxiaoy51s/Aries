@@ -25,7 +25,7 @@ PLATFORM_SESSION_MAP = {
 _TASK_COLUMNS = (
     "id, title, task_content, scheduled_at, session_id, status, "
     "task_type, interval_seconds, interval_minutes, schedule_type, schedule_config, "
-    "notify_type, notify_config, created_at, updated_at, executed_at"
+    "notify_type, notify_config, auto_delete, created_at, updated_at, executed_at"
 )
 
 
@@ -113,6 +113,7 @@ def normalize_task_create_payload(
     schedule_type: str = SCHEDULE_ONCE,
     interval_minutes: int | None = None,
     notify_type: str | None = None,
+    auto_delete: bool = False,
     default_session_id: str | None = None,
 ) -> dict:
     """规范化创建定时任务的字段，供 API 与 agent 工具共用。"""
@@ -153,6 +154,10 @@ def normalize_task_create_payload(
         if not scheduled_at:
             raise ValueError("单次任务必须提供 scheduled_at")
 
+    # 平台会话（手机推送）自动强制 auto_delete=True，执行后不留痕迹
+    if session_id and infer_platform(session_id):
+        auto_delete = True
+
     return {
         "title": (title or "").strip(),
         "scheduled_at": normalize_local_iso(scheduled_at),
@@ -160,6 +165,7 @@ def normalize_task_create_payload(
         "session_id": session_id,
         "schedule_type": schedule_type,
         "interval_minutes": stored_interval,
+        "auto_delete": bool(auto_delete),
     }
 
 
@@ -172,6 +178,7 @@ def create_task(
     schedule_type: str = SCHEDULE_ONCE,
     interval_minutes: int | None = None,
     notify_type: str | None = None,
+    auto_delete: bool = False,
 ) -> int:
     if schedule_type not in SCHEDULE_TYPES:
         raise ValueError(f"schedule_type 必须是 {SCHEDULE_TYPES} 之一")
@@ -203,8 +210,8 @@ def create_task(
         """
         INSERT INTO scheduled_tasks
             (title, task_content, scheduled_at, session_id, status,
-             interval_minutes, schedule_type, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+             interval_minutes, schedule_type, auto_delete, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
         """,
         (
             title,
@@ -213,6 +220,7 @@ def create_task(
             session_id,
             stored_interval,
             schedule_type,
+            1 if auto_delete else 0,
             now,
             now,
         ),
@@ -238,6 +246,7 @@ def insert_next_recurring_task(task: dict, executed_at: str, session_id: str | N
         session_id=effective_session,
         schedule_type=(task.get("schedule_type") or SCHEDULE_ONCE).strip(),
         interval_minutes=task.get("interval_minutes"),
+        auto_delete=bool(task.get("auto_delete", False)),
     )
 
 
@@ -397,6 +406,10 @@ def _row_to_dict(row) -> dict:
 
     notify_type = infer_notify_type(session_id, legacy_notify)
 
+    auto_delete = 0
+    if "auto_delete" in row.keys() and row["auto_delete"] is not None:
+        auto_delete = int(row["auto_delete"])
+
     return {
         "id": row["id"],
         "title": row["title"] or "",
@@ -407,6 +420,7 @@ def _row_to_dict(row) -> dict:
         "schedule_type": schedule_type,
         "interval_minutes": interval_minutes,
         "notify_type": notify_type,
+        "auto_delete": bool(auto_delete),
         "created_at": row["created_at"] or "",
         "updated_at": row["updated_at"] or "",
         "executed_at": row["executed_at"] or "",

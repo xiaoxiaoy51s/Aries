@@ -20,6 +20,40 @@
         </button>
       </div>
       <div class="top-actions">
+        <button
+          v-if="activeTab === 'skills'"
+          type="button"
+          class="recommend-link"
+          title="ModelScope 技能市场"
+          @click="openUrl('https://www.modelscope.cn/skills')"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+            <path d="M2 17l10 5 10-5"/>
+            <path d="M2 12l10 5 10-5"/>
+          </svg>
+          <span>技能市场</span>
+          <svg class="recommend-link-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M7 17l9-9M7 8h9v9"/>
+          </svg>
+        </button>
+        <button
+          v-else
+          type="button"
+          class="recommend-link"
+          title="ModelScope MCP 广场"
+          @click="openUrl('https://www.modelscope.cn/mcp')"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/>
+            <path d="M2 12h20"/>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          </svg>
+          <span>MCP 广场</span>
+          <svg class="recommend-link-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M7 17l9-9M7 8h9v9"/>
+          </svg>
+        </button>
         <button type="button" class="icon-action" title="添加" @click="showAddDialog = true">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 5v14M5 12h14"/>
@@ -77,16 +111,23 @@
             v-for="item in visibleItems"
             :key="item.key"
             class="item-row"
+            :class="{ 'item-row-error': item.hasError }"
             @click="openDetail(item)"
           >
             <div class="item-icon" :class="`kind-${item.kind}`">
               {{ item.icon }}
             </div>
             <div class="item-body">
-              <div class="item-name">{{ item.name }}</div>
-              <div class="item-desc">
+              <div class="item-name">
+                {{ item.name }}
+                <span v-if="item.hasError" class="item-error-hint">
+                  <svg t="1782291804558" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="4969" width="12" height="12"><path d="M512 1024c-281.6 0-512-230.4-512-512s230.4-512 512-512 512 230.4 512 512-230.4 512-512 512z m0-938.666667c-234.666667 0-426.666667 192-426.666667 426.666667s192 426.666667 426.666667 426.666667 426.666667-192 426.666667-426.666667-192-426.666667-426.666667-426.666667z m0 725.333334c-25.6 0-42.666667-17.066667-42.666667-42.666667v-298.666667c0-25.6 17.066667-42.666667 42.666667-42.666666s42.666667 17.066667 42.666667 42.666666v298.666667c0 21.333333-17.066667 42.666667-42.666667 42.666667z m0-567.466667c25.6 0 46.933333 21.333333 46.933333 46.933333s-21.333333 46.933333-46.933333 46.933334-46.933333-21.333333-46.933333-46.933334 21.333333-46.933333 46.933333-46.933333z" fill="#d81e06" p-id="4970"></path></svg>
+                  {{ item.errorHint }}
+                </span>
+                <span v-if="item.toolCount && !item.hasError" class="tool-count">{{ item.toolCount }} 个工具</span>
+              </div>
+              <div v-if="!item.hasError" class="item-desc">
                 {{ item.description || '无描述' }}
-                <span v-if="item.toolCount" class="tool-count">{{ item.toolCount }} 个工具</span>
               </div>
             </div>
           </li>
@@ -100,7 +141,7 @@
           查看 {{ hiddenPreview }} 等另外 {{ hiddenCount }} 项
         </button>
       </section>
-    </div>
+      </div>
 
     <div v-if="showAddDialog" class="modal-overlay" @click.self="showAddDialog = false">
       <div class="modal-card modal-card-wide">
@@ -250,6 +291,12 @@ import { getPluginDetail, importPlugins, listPlugins, refreshPlugins, type Plugi
 import { openPath } from '@/api/system'
 import { useModelStore } from '@/stores/model'
 
+function openUrl(url: string) {
+  import('@/api/system').then(({ openUrl: apiOpenUrl }) => {
+    apiOpenUrl(url)
+  })
+}
+
 type TabKind = 'plugins' | 'skills'
 
 interface ListItem {
@@ -261,6 +308,8 @@ interface ListItem {
   enabled: boolean
   icon: string
   toolCount?: number
+  hasError?: boolean
+  errorHint?: string
 }
 
 const SECTION_LIMIT = 5
@@ -317,18 +366,21 @@ function mapSkills(): ListItem[] {
 }
 
 function mapPlugins(): ListItem[] {
-  return plugins.value.map((plugin) => ({
-    key: `plugin:${plugin.id}`,
-    kind: 'plugins',
-    id: plugin.id,
-    name: plugin.id,
-    description: plugin.last_error
-      ? `连接异常：${plugin.last_error}`
-      : plugin.description,
-    enabled: true,
-    icon: pluginIcon(plugin.id),
-    toolCount: plugin.tool_count,
-  }))
+  return plugins.value.map((plugin) => {
+    const hasError = !!plugin.last_error
+    return {
+      key: `plugin:${plugin.id}`,
+      kind: 'plugins',
+      id: plugin.id,
+      name: plugin.id,
+      description: plugin.description,
+      enabled: true,
+      icon: pluginIcon(plugin.id),
+      toolCount: plugin.tool_count,
+      hasError,
+      errorHint: hasError ? plugin.last_error : undefined,
+    }
+  })
 }
 
 const currentItems = computed(() => {
@@ -549,7 +601,34 @@ onMounted(fetchAll)
 
 .top-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+.recommend-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.recommend-link:hover {
+  background: #eef4ff;
+  border-color: #c8d9f8;
+  color: #3b5bdb;
+}
+
+.recommend-link-arrow {
+  opacity: 0.6;
 }
 
 .icon-action {
@@ -728,6 +807,9 @@ onMounted(fetchAll)
 }
 
 .item-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 15px;
   font-weight: 600;
   margin-bottom: 2px;
@@ -742,6 +824,24 @@ onMounted(fetchAll)
   line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.item-row-error {
+  background: rgba(220, 38, 38, 0.04);
+}
+
+.item-row-error:hover {
+  background: rgba(220, 38, 38, 0.08);
+}
+
+.item-error-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #dc2626;
+  line-height: 1.45;
 }
 
 .status-btn {
@@ -1197,4 +1297,5 @@ onMounted(fetchAll)
   opacity: 0.5;
   cursor: not-allowed;
 }
+
 </style>

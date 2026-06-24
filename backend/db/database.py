@@ -108,6 +108,10 @@ def init_database():
         cursor.execute(
             "ALTER TABLE scheduled_tasks ADD COLUMN notify_config TEXT"
         )
+    if "auto_delete" not in cols:
+        cursor.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN auto_delete INTEGER NOT NULL DEFAULT 0"
+        )
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sessions (

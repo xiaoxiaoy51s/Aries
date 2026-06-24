@@ -1,0 +1,18 @@
+{
+  "type": "function",
+  "function": {
+    "name": "send_file_to_user",
+    "description": "将本地文件发送给当前对话的用户（通过用户正在使用的平台：飞书/QQ）。用户在飞书或QQ上跟你对话时要求发送文件，调用此工具即可将文件直接推送到用户的手机/客户端。支持图片（png/jpg/gif等）和各类文档（pdf/docx/xlsx/txt/zip等）。\n\n注意：\n- 此工具仅在平台会话（飞书/QQ）中有效，网页会话无法使用。\n- 文件路径支持相对路径（工作目录）或绝对路径。\n- 微信平台暂不支持发送文件。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "要发送的文件路径。支持相对路径（工作目录）或绝对路径。"
+        }
+      },
+      "required": ["file_path"],
+      "additionalProperties": false
+    }
+  }
+}

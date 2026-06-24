@@ -113,6 +113,7 @@ class SessionLogger:
         error: str = "",
         ended_at: str | None = None,
         session_id: str = "",
+        file_change: dict[str, Any] | None = None,
     ) -> None:
         ts = ended_at or _utc_now()
         for entry in self._tool_log:
@@ -131,6 +132,8 @@ class SessionLogger:
         }
         if session_id:
             event["session_id"] = session_id
+        if file_change:
+            event["file_change"] = file_change
         _append_event(self.path, event)
 
     def record_assistant_content(self, text: str) -> None:

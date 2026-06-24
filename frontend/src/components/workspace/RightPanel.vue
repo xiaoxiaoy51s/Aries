@@ -45,7 +45,7 @@
 
       <GitPanel v-show="activeTab === 'git'" :visible="activeTab === 'git'" @show-diff="onShowDiff" @show-commit-diff="onShowCommitDiff" />
 
-      <DiffPanel v-show="activeTab === 'diff'" :visible="activeTab === 'diff'" :file-path="diffFilePath" :commit-hash="diffCommitHash" />
+      <DiffPanel v-show="activeTab === 'diff'" :visible="activeTab === 'diff'" :file-path="diffFilePath" :commit-hash="diffCommitHash" :inline-original="inlineDiff?.original" :inline-modified="inlineDiff?.modified" :inline-path="inlineDiff?.path" :inline-key="inlineDiff?.key" />
 
       <ExplorerPanel v-show="activeTab === 'explorer'" :visible="activeTab === 'explorer'" />
 
@@ -74,7 +74,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import ConsolePanel from '@/components/workspace/ConsolePanel.vue'
 import BrowserPanel from '@/components/workspace/BrowserPanel.vue'
 import GitPanel from '@/components/workspace/GitPanel.vue'
@@ -89,6 +89,7 @@ const props = defineProps<{
   visible: boolean
   sessionId?: string
   workDir?: string
+  inlineDiff?: { path: string; original: string; modified: string; key: number } | null
 }>()
 
 const emit = defineEmits<{
@@ -191,6 +192,14 @@ function onShowCommitDiff(filePath: string, hash: string) {
   diffCommitHash.value = hash
   activeTab.value = 'diff'
 }
+
+watch(() => props.inlineDiff, (val) => {
+  if (val) {
+    diffFilePath.value = val.path
+    diffCommitHash.value = null
+    activeTab.value = 'diff'
+  }
+})
 
 // 监听外部的 focus-console 事件（从 ToolBlock 的「查看终端」按钮触发）
 function onFocusConsole() {

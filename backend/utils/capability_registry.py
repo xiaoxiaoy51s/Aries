@@ -259,55 +259,25 @@ def execute_capability_search(arguments: dict[str, Any]) -> dict[str, Any]:
 def get_delegate_to_subagent_tool_definition() -> dict[str, Any]:
     """主 Agent 用来委派任务给子 Agent 的工具。
 
-    重要约束写在 description 里，让模型自然遵守：
-    - 子 Agent 看不到主对话历史
-    - 子 Agent 一次性返回最终结果
-    - 同一轮 tool_calls 中可以并发委派多个子 Agent
+    schema 从 backend/tools/delegate_to_subagent.json 加载，便于统一管理。
     """
+    from tools import get_tool_by_name
+    tool = get_tool_by_name(DELEGATE_TO_SUBAGENT_TOOL_NAME)
+    if tool:
+        return tool
+    # JSON 加载失败时的兜底
     return {
         "type": "function",
         "function": {
             "name": DELEGATE_TO_SUBAGENT_TOOL_NAME,
-            "description": (
-                "委派任务给一个独立的子 Agent。子 Agent 拥有独立上下文窗口和工具集，"
-                "适合复杂多步任务或保护主上下文不被淹没的场景。\n\n"
-                "重要约束：\n"
-                "- 子 Agent 看不到当前对话历史，你必须在 task 中提供完成任务所需的全部信息\n"
-                "- 子 Agent 一次性返回最终结果，不能交互式追问\n"
-                "- 同一轮 tool_calls 中可以并发委派多个不同子 Agent\n\n"
-                "何时使用：复杂多步任务、需要独立上下文窗口、可并行的独立查询。\n"
-                "何时不要使用：简单任务、答案已知、必须串行依赖前序结果的任务。"
-            ),
+            "description": "委派任务给一个独立的子 Agent。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "subagent_name": {
-                        "type": "string",
-                        "description": "目标子 Agent 名称（来自 Available Subagents 路由表中的 name）",
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "3-5 字的任务短描述，用于 UI 展示",
-                    },
-                    "task": {
-                        "type": "string",
-                        "description": "完整任务描述，必须详尽，包含子 Agent 完成任务所需的全部上下文",
-                    },
-                    "context": {
-                        "type": "string",
-                        "description": "（可选）追加给子 Agent 的背景信息",
-                    },
-                    "isolation": {
-                        "type": "string",
-                        "enum": ["", "worktree"],
-                        "description": (
-                            "（可选）工作空间隔离模式。"
-                            "默认空字符串=共享工作目录；"
-                            "'worktree'=创建 git worktree 隔离工作空间（适合并行修改文件的场景，避免写入冲突）"
-                        ),
-                    },
+                    "subagent_name": {"type": "string", "description": "子 Agent 名称"},
+                    "task": {"type": "string", "description": "任务描述"},
                 },
-                "required": ["subagent_name", "description", "task"],
+                "required": ["subagent_name", "task"],
             },
         },
     }

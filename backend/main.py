@@ -28,10 +28,58 @@ from utils.scheduler import run_scheduler
 init_database()
 
 
+_PROXY_ENV_KEYS = (
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "all_proxy",
+)
+
+
+def _check_and_cleanup_proxy():
+    """启动时检测系统代理端口是否可达，不可达则全局清除代理环境变量。
+
+    清除后整个进程（含 MCP 子进程、httpx 等）都不会走死掉的代理，
+    避免子进程卡在连接代理端口。network_manager 的按域名/命令注入不受影响。
+    """
+    import socket
+    from urllib.parse import urlparse
+
+    proxy_urls: list[str] = []
+    for key in _PROXY_ENV_KEYS:
+        val = (os.environ.get(key) or "").strip()
+        if val:
+            proxy_urls.append(val)
+
+    if not proxy_urls:
+        print("[Proxy] 系统未设置代理环境变量")
+        return
+
+    proxy_reachable = False
+    for url in proxy_urls:
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname or "127.0.0.1"
+            port = parsed.port or 8080
+            with socket.create_connection((host, port), timeout=2):
+                proxy_reachable = True
+                break
+        except (OSError, ValueError):
+            continue
+
+    if proxy_reachable:
+        print(f"[Proxy] 代理可用，保持环境变量（{proxy_urls[0]}）")
+    else:
+        for key in _PROXY_ENV_KEYS:
+            os.environ.pop(key, None)
+        os.environ["NO_PROXY"] = "*"
+        print(f"[Proxy] 代理端口不可达，已清除全部代理环境变量（原: {proxy_urls[0]}）")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from db.scheduled_task import reset_stale_running_tasks
     from utils.mcp_runtime import get_mcp_pool
+
+    _check_and_cleanup_proxy()
 
     stale = reset_stale_running_tasks()
     if stale:
@@ -39,15 +87,20 @@ async def lifespan(app: FastAPI):
 
     mcp_pool = get_mcp_pool()
     mcp_pool.start()
-    try:
-        mcp_pool.rebuild()
-        print("[MCP] 连接池已初始化")
-    except Exception as exc:
-        print(f"[MCP] 连接池初始化失败: {exc}")
+
+    # MCP 连接池在后台初始化，不阻塞 FastAPI 启动
+    # 某个 MCP 服务器连不上（如 npx 下载慢、代理未开）时不会卡住整个应用
+    def _init_mcp():
+        try:
+            mcp_pool.rebuild()
+            print("[MCP] 连接池已初始化")
+        except Exception as exc:
+            print(f"[MCP] 连接池初始化失败: {exc}")
+
+    threading.Thread(target=_init_mcp, daemon=True, name="McpInit").start()
 
     scheduler_task = asyncio.create_task(run_scheduler())
 
-    import threading
     from services.bot_manager import start_all_bots
 
     def _boot_bots():

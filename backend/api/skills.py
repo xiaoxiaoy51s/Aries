@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 import shutil
 
-from utils.skills_manager import discover_skills, get_skill_by_folder_name, SKILLS_ROOT
+from utils.skills_manager import discover_skills, get_skill_by_folder_name
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 

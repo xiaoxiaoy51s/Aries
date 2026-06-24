@@ -1,0 +1,31 @@
+{
+  "type": "function",
+  "function": {
+    "name": "replace_string",
+    "description": "精确替换文件中的文本片段。old_text 必须包含 3-5 行上下文（前后各几行未改动的代码），确保在文件中唯一匹配。\n\n【适用场景】\n- 修改变量名、函数参数、条件判断等小范围修改（<30行）\n- 精准定位修改位置，不需要行号\n\n【规则】\n- old_text 必须和文件实际内容完全匹配（包括缩进、空格、换行）\n- 如果 old_text 在文件中出现多次，会报错，需要增加上下文行使其唯一\n- 不要用此工具替换大段代码（>30行），改用 apply_patch\n- 一次只做一处替换，多处修改用 multi_replace_string",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "目标文件路径。支持相对路径（默认在工作目录）或绝对路径。"
+        },
+        "old_text": {
+          "type": "string",
+          "description": "要替换的原始文本。必须包含 3-5 行上下文确保唯一匹配。"
+        },
+        "new_text": {
+          "type": "string",
+          "description": "替换后的文本。"
+        },
+        "encoding": {
+          "type": "string",
+          "description": "文本编码，默认 utf-8。",
+          "default": "utf-8"
+        }
+      },
+      "required": ["file_path", "old_text", "new_text"],
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "type": "function",
+  "function": {
+    "name": "apply_patch",
+    "description": "应用 unified diff 格式的补丁修改文件。适合新增整个函数/类、删除大段代码、跨多文件重构。\n\n【适用场景】\n- 新增超过 20 行代码\n- 删除超过 10 行代码\n- 修改散布在文件各处且每处改动较大\n- 需要标准 diff 格式供 review\n\n【格式】\n标准 unified diff：\n  --- a/path/to/file\n  +++ b/path/to/file\n  @@ -10,5 +10,8 @@\n   unchanged line\n  -removed line\n  +added line\n   unchanged line\n\n【规则】\n- patch 中的行号必须基于文件当前状态（先 read_file 确认）\n- 上下文行（空格开头的行）必须和文件完全匹配\n- 一次只改一个文件",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "目标文件路径。"
+        },
+        "patch": {
+          "type": "string",
+          "description": "unified diff 格式的补丁内容。"
+        },
+        "encoding": {
+          "type": "string",
+          "description": "文本编码，默认 utf-8。",
+          "default": "utf-8"
+        }
+      },
+      "required": ["file_path", "patch"],
+      "additionalProperties": false
+    }
+  }
+}

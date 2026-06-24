@@ -1,0 +1,24 @@
+{
+  "type": "function",
+  "function": {
+    "name": "list_files",
+    "description": "列出目录下的文件和子目录（底层使用 ripgrep 高性能引擎）。支持相对路径或电脑任意位置的绝对路径，可按文件名模式过滤。\n\n【适用场景】\n- 浏览项目结构、查找特定类型的文件\n- 支持 glob 模式匹配（如 *.py、**/*.ts）\n- 大型代码库也能快速响应",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "subdir": {
+          "type": "string",
+          "description": "要列出的目录路径（可选）。支持相对路径或绝对路径，默认列出用户工作目录。",
+          "default": ""
+        },
+        "pattern": {
+          "type": "string",
+          "description": "文件名匹配模式（如 *.md、*.py）。默认 *（所有文件）。注意拼写是 pattern，不是 pattenrn。",
+          "default": "*"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  }
+}

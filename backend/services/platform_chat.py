@@ -4,10 +4,8 @@ import asyncio
 import json
 import logging
 import os
-import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 
@@ -177,32 +175,11 @@ def run_agent_sync(platform: str, text: str) -> str:
         return f"（Agent 执行失败: {e}）"
 
 
-def extract_files_from_reply(reply: str) -> list[str]:
-    if not reply:
-        return []
-    home = Path.home() / ".Aries"
-    found: list[str] = []
-    pattern = re.compile(
-        r"[`\"']?([^\s`\"'<>|]+\.(?:txt|md|pdf|docx|xlsx|csv|json|png|jpg|jpeg))[`\"']?",
-        re.I,
-    )
-    for match in pattern.finditer(reply):
-        raw = match.group(1).strip().strip("`'\"")
-        for cand in (Path(raw), home / raw):
-            try:
-                if cand.is_file():
-                    found.append(str(cand.resolve()))
-                    break
-            except Exception:
-                pass
-    return list(dict.fromkeys(found))
-
-
 async def process_inbound_message_async(
     platform: str,
     text: str,
     send_segment: Optional[SendSegmentFn] = None,
-) -> tuple[str, list[str]]:
+) -> str:
     """处理平台消息 - 自动取消同平台上一轮对话。
 
     当同一平台的新消息到达时，会先取消正在进行的对话任务，
@@ -210,7 +187,7 @@ async def process_inbound_message_async(
     """
     text = (text or "").strip()
     if not text:
-        return "", []
+        return ""
 
     sid = session_id_for(platform)
 
@@ -251,7 +228,7 @@ async def process_inbound_message_async(
                 await send_segment("（上一轮对话已取消，正在处理新消息）")
             except Exception:
                 pass
-        return "", []
+        return ""
     except Exception as e:
         _log.error("[平台 %s] agent 调用失败: %s", platform, e)
         reply = f"（Agent 执行失败: {e}）"
@@ -268,13 +245,12 @@ async def process_inbound_message_async(
         if _platform_cancel_events.get(platform) is cancel_event:
             _platform_cancel_events.pop(platform, None)
 
-    files = extract_files_from_reply(reply)
     # 已分段推送时不再重复发送完整回复
     if send_segment:
-        return "", files
-    return reply, files
+        return ""
+    return reply
 
 
-def process_inbound_message(platform: str, text: str) -> tuple[str, list[str]]:
+def process_inbound_message(platform: str, text: str) -> str:
     """同步入口（向后兼容）。"""
     return asyncio.run(process_inbound_message_async(platform, text))

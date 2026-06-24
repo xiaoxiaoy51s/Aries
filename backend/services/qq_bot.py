@@ -126,7 +126,7 @@ class NonoQQBot(botpy.Client if BOTPY_AVAILABLE else object):
             async def _send_segment(seg: str):
                 await _reply_qq_message(message, seg)
 
-            reply, files = await process_inbound_message_async(
+            reply = await process_inbound_message_async(
                 "qq", content, send_segment=_send_segment
             )
         except asyncio.CancelledError:
@@ -139,9 +139,6 @@ class NonoQQBot(botpy.Client if BOTPY_AVAILABLE else object):
             raise
         if reply:
             await _reply_qq_message(message, reply)
-        if files:
-            from services.qq_file import send_files_to_qq
-            await send_files_to_qq(message, files)
 
 
 class _QQRunner:

@@ -44,6 +44,7 @@ def register_bg_session(session_id: str) -> asyncio.Queue:
             "queue": asyncio.Queue(),
             "task": None,
             "done": False,
+            "history": [],  # 已发送的事件快照（resume 时先推送这些，避免闪动）
         }
     return _bg_sessions[session_id]["queue"]
 
@@ -52,6 +53,19 @@ def get_bg_queue(session_id: str) -> asyncio.Queue | None:
     """获取后台 session 的队列（不存在返回 None）。"""
     entry = _bg_sessions.get(session_id)
     return entry["queue"] if entry else None
+
+
+def append_bg_history(session_id: str, event: str) -> None:
+    """将已发送事件追加到 history（供 resume 时重播）。"""
+    entry = _bg_sessions.get(session_id)
+    if entry is not None:
+        entry["history"].append(event)
+
+
+def get_bg_history(session_id: str) -> list[str] | None:
+    """获取后台 session 的历史事件列表。"""
+    entry = _bg_sessions.get(session_id)
+    return entry["history"] if entry else None
 
 
 def set_bg_task(session_id: str, task: asyncio.Task) -> None:

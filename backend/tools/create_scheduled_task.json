@@ -1,0 +1,40 @@
+{
+  "type": "function",
+  "function": {
+    "name": "create_scheduled_task",
+    "description": "创建定时任务。到达 scheduled_at 后，系统按 task_content 自动运行 AI，并将结果推送到 session_id 对应的会话。不传 session_id 时默认使用当前会话（即 system prompt 中的 session_id）。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "任务名称。"
+        },
+        "task_content": {
+          "type": "string",
+          "description": "确定ai运行执行的指令内容。"
+        },
+        "schedule_type": {
+          "type": "string",
+          "enum": ["once", "daily", "interval"],
+          "default": "once",
+          "description": "执行类型：once=单次，daily=每天，interval=间隔重复。"
+        },
+        "scheduled_at": {
+          "type": "string",
+          "description": "执行时间，本地 ISO 格式如 2026-06-14T15:30:00。单次/每天必填；interval 可省略（默认当前时间 + interval_minutes）。"
+        },
+        "interval_minutes": {
+          "type": "integer",
+          "description": "间隔分钟数，schedule_type=interval 时必填。"
+        },
+        "session_id": {
+          "type": "string",
+          "description": "结果推送会话 ID。网页会话填 UUID；手机推送填 __wechat__/__qq__/__feishu__。不传则默认当前会话。当值为 __wechat__/__qq__/__feishu__ 时，系统自动通过对应平台推送结果并在执行后自动删除任务记录。"
+        }
+      },
+      "required": ["title", "task_content"],
+      "additionalProperties": false
+    }
+  }
+}

@@ -62,293 +62,6 @@ class FileManagerTool:
                     logger.warning(f"初始化 ripgrep 失败，将使用 Python 原生搜索: {e}")
         return self._ripgrep_service
 
-    def get_tool_definitions(self) -> list[dict[str, Any]]:
-        """Return all tool definitions for file operations."""
-        return [
-            self._get_read_file_definition(),
-            self._get_write_file_definition(),
-            self._get_edit_file_definition(),
-            self._get_list_files_definition(),
-            self._get_search_file_definition(),
-        ]
-
-    def _get_read_file_definition(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": "read_file",
-                "description": (
-                    "读取本地文本文件内容。"
-                    "支持相对路径（默认在用户工作目录）或电脑任意位置的绝对路径。"
-                    "支持模糊匹配文件名。"
-                    "\n\n【读取方式】"
-                    "- 完整读取：默认行为"
-                    "- 区间读取：指定 start_line 和 end_line，只读取特定行（适合大文件）"
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "要读取的文件路径。支持相对路径或电脑任意位置的绝对路径。支持模糊匹配文件名。",
-                        },
-                        "encoding": {
-                            "type": "string",
-                            "description": "文本编码，默认 utf-8。",
-                            "default": "utf-8",
-                        },
-                        "max_chars": {
-                            "type": "integer",
-                            "description": "最多返回的字符数上限，防止一次性载入过大文件。默认 20000。",
-                            "default": 20000,
-                        },
-                        "start_line": {
-                            "type": "integer",
-                            "description": "起始行号（从 1 开始）。与 end_line 配合使用，只读取特定行范围。",
-                        },
-                        "end_line": {
-                            "type": "integer",
-                            "description": "结束行号（包含）。与 start_line 配合使用，只读取特定行范围。",
-                        },
-                        "fuzzy_search": {
-                            "type": "boolean",
-                            "description": "是否启用模糊匹配。当文件路径不完全匹配时，搜索相似文件名。默认 true。",
-                            "default": True,
-                        },
-                        "use_today": {
-                            "type": "boolean",
-                            "description": "是否在今天的日期目录中查找文件。默认 false（不再使用日期子目录）。",
-                            "default": False,
-                        },
-                    },
-                    "required": ["file_path"],
-                    "additionalProperties": False,
-                },
-            },
-        }
-
-    def _get_write_file_definition(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": "write_file",
-                "description": (
-                    "将内容写入本地文件。"
-                    "支持相对路径（默认保存到用户工作目录）或电脑任意位置的绝对路径。"
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "目标文件路径。支持相对路径或电脑任意位置的绝对路径。",
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "要写入的完整文本内容。",
-                        },
-                        "append": {
-                            "type": "boolean",
-                            "description": "是否以追加模式写入。默认 false（覆盖写入）。",
-                            "default": False,
-                        },
-                        "create_dirs": {
-                            "type": "boolean",
-                            "description": "目标目录不存在时是否自动创建。默认 true。",
-                            "default": True,
-                        },
-                        "encoding": {
-                            "type": "string",
-                            "description": "文本编码，默认 utf-8。",
-                            "default": "utf-8",
-                        },
-                        "use_today": {
-                            "type": "boolean",
-                            "description": "是否使用今天的日期目录。默认 false（不再使用日期子目录）。",
-                            "default": False,
-                        },
-                    },
-                    "required": ["file_path", "content"],
-                    "additionalProperties": False,
-                },
-            },
-        }
-
-    def _get_edit_file_definition(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": "edit_file",
-                "description": (
-                    "编辑本地文件的特定部分。"
-                    "适合修改代码文件、配置文件等文本文件。"
-                    "支持按行号范围编辑或关键词替换，避免重复读取整个文件。"
-                    "\n\n【使用场景】"
-                    "- 修改代码的特定行（如修复 bug、调整逻辑）"
-                    "- 替换特定文本（如修改变量名、更新配置）"
-                    "- 插入/删除代码块"
-                    "\n\n【编辑方式】"
-                    "- line_range: 指定行号范围 [start, end]，替换这些行的内容"
-                    "- search_replace: 搜索特定文本并替换"
-                    "- insert_line: 在指定行号前插入内容"
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "要编辑的文件路径。支持相对路径（默认相对于用户邮箱目录）或绝对路径。",
-                        },
-                        "edit_type": {
-                            "type": "string",
-                            "description": "编辑方式：line_range（按行号范围替换）, search_replace（搜索替换）, insert_line（插入行）。",
-                            "enum": ["line_range", "search_replace", "insert_line"],
-                        },
-                        "new_content": {
-                            "type": "string",
-                            "description": "新的内容或替换内容。",
-                        },
-                        "start_line": {
-                            "type": "integer",
-                            "description": "起始行号（从 1 开始）。用于 line_range 或 insert_line。",
-                        },
-                        "end_line": {
-                            "type": "integer",
-                            "description": "结束行号（包含）。仅用于 line_range。",
-                        },
-                        "search_text": {
-                            "type": "string",
-                            "description": "要搜索的文本。用于 search_replace。",
-                        },
-                        "use_regex": {
-                            "type": "boolean",
-                            "description": "是否将 search_text 作为正则表达式。默认 false。",
-                            "default": False,
-                        },
-                        "occurrence": {
-                            "type": "integer",
-                            "description": "替换第几次出现（1=第一次，-1=最后一次）。默认 -1（替换所有）。",
-                            "default": -1,
-                        },
-                        "encoding": {
-                            "type": "string",
-                            "description": "文本编码，默认 utf-8。",
-                            "default": "utf-8",
-                        },
-                        "use_today": {
-                            "type": "boolean",
-                            "description": "是否在今天的日期目录中查找文件。默认 false（不再使用日期子目录）。",
-                            "default": False,
-                        },
-                    },
-                    "required": ["file_path", "edit_type", "new_content"],
-                    "additionalProperties": False,
-                },
-            },
-        }
-
-    def _get_list_files_definition(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": "list_files",
-                "description": (
-                    "列出目录下的文件和子目录（底层使用 ripgrep 高性能引擎）。"
-                    "支持相对路径或电脑任意位置的绝对路径，可按文件名模式过滤。"
-                    "\n\n【适用场景】"
-                    "- 浏览项目结构、查找特定类型的文件"
-                    "- 支持 glob 模式匹配（如 *.py、**/*.ts）"
-                    "- 大型代码库也能快速响应"
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "subdir": {
-                            "type": "string",
-                            "description": "要列出的目录路径（可选）。支持相对路径或绝对路径，默认列出用户工作目录。",
-                            "default": "",
-                        },
-                        "pattern": {
-                            "type": "string",
-                            "description": "文件名匹配模式（如 *.md、*.py）。默认 *（所有文件）。注意拼写是 pattern，不是 pattenrn。",
-                            "default": "*",
-                        },
-                    },
-                    "required": [],
-                    "additionalProperties": False,
-                },
-            },
-        }
-
-    def _get_search_file_definition(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": "search_file",
-                "description": (
-                    "在指定目录或整个代码库中搜索文件内容（底层使用 ripgrep 高性能引擎）。"
-                    "支持关键字/正则表达式搜索，返回匹配的文件路径、行号和上下文内容。"
-                    "\n\n【适用场景】"
-                    "- 查找函数定义、变量使用、特定代码模式"
-                    "- 理解代码库结构、追踪调用关系"
-                    "- 大型代码库也能快速响应，适合频繁调用"
-                    "\n\n【搜索范围】"
-                    "- 可以搜索单个文件、整个目录（递归）"
-                    "- 可以按文件类型过滤（如 *.py, *.js）"
-                    "\n\n【返回结果】"
-                    "- 匹配的文件路径、行号、匹配行及上下文内容"
-                    "- 总匹配数统计"
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "keyword": {
-                            "type": "string",
-                            "description": "要搜索的关键字或正则表达式。",
-                        },
-                        "directory": {
-                            "type": "string",
-                            "description": "搜索的目录路径。默认为用户邮箱目录（搜索整个代码库）。支持相对路径或绝对路径。",
-                            "default": "",
-                        },
-                        "pattern": {
-                            "type": "string",
-                            "description": "文件匹配模式，如 *.py, *.js, **/*.ts 等。默认为 *（所有文件）。",
-                            "default": "*",
-                        },
-                        "context_lines": {
-                            "type": "integer",
-                            "description": "返回匹配行前后各多少行作为上下文。默认 2。",
-                            "default": 2,
-                        },
-                        "max_results": {
-                            "type": "integer",
-                            "description": "最多返回多少处匹配。默认 50。",
-                            "default": 50,
-                        },
-                        "use_regex": {
-                            "type": "boolean",
-                            "description": "是否将 keyword 作为正则表达式。默认 false。",
-                            "default": False,
-                        },
-                        "case_sensitive": {
-                            "type": "boolean",
-                            "description": "是否区分大小写。默认 false。",
-                            "default": False,
-                        },
-                        "exclude_dirs": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "要排除的目录名列表，如 ['__pycache__', '.git', 'node_modules']。默认排除常见目录。",
-                            "default": ["__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build"],
-                        },
-                    },
-                    "required": ["keyword"],
-                    "additionalProperties": False,
-                },
-            },
-        }
-
     def execute_read_file(
         self,
         *,
@@ -455,6 +168,25 @@ class FileManagerTool:
             if not create_dirs:
                 return self._error_response(f"目录不存在: {parent}", normalized_path)
             parent.mkdir(parents=True, exist_ok=True)
+
+        # 记录变更前的内容（用于产物区域 diff 和回退）
+        file_change = None
+        if not append:
+            previous_content = ""
+            operation = "create"
+            if target.exists():
+                try:
+                    previous_content = target.read_text(encoding=encoding)
+                    operation = "modify"
+                except Exception:
+                    previous_content = ""
+            file_change = {
+                "file_path": str(target),
+                "operation": operation,
+                "previous_content": previous_content,
+                "new_content": text,
+            }
+
         mode = "a" if append else "w"
         try:
             with open(target, mode, encoding=encoding) as f:
@@ -462,13 +194,16 @@ class FileManagerTool:
         except Exception as exc:
             return self._error_response(f"写入失败: {exc}", normalized_path)
         action = "追加到" if append else "写入"
-        return {
+        result = {
             "success": True,
             "error": "",
             "output": f"成功{action}文件\n{target}",
             "file_path": str(target),
             "working_dir": str(self.base_dir),
         }
+        if file_change:
+            result["file_change"] = file_change
+        return result
 
     def execute_edit_file(
         self,
@@ -503,6 +238,7 @@ class FileManagerTool:
                 lines = f.readlines()
         except Exception as exc:
             return self._error_response(f"读取失败: {exc}", normalized_path)
+        _original_content = "".join(lines)
         if edit_type == "line_range":
             if start_line is None or end_line is None:
                 return self._error_response("line_range 需要 start_line 和 end_line 参数", normalized_path)
@@ -555,18 +291,26 @@ class FileManagerTool:
         else:
             return self._error_response(f"未知的 edit_type: {edit_type}", normalized_path)
         new_content_str = "".join(lines)
+        # 记录变更前的内容（用于产物区域 diff 和回退）
         try:
             with open(target, "w", encoding=encoding) as f:
                 f.write(new_content_str)
         except Exception as exc:
             return self._error_response(f"写入失败: {exc}", normalized_path)
-        return {
+        result = {
             "success": True,
             "error": "",
             "output": f"成功编辑文件\n{target}\n修改类型: {edit_type}",
             "file_path": str(target),
             "working_dir": str(self.base_dir),
         }
+        result["file_change"] = {
+            "file_path": str(target),
+            "operation": "modify",
+            "previous_content": _original_content,
+            "new_content": new_content_str,
+        }
+        return result
 
     def execute_list_files(
         self,

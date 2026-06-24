@@ -30,164 +30,6 @@ class EditTools:
         self._work_dir = work_dir or ""
 
     # ------------------------------------------------------------------
-    # 工具定义（OpenAI function calling 格式）
-    # ------------------------------------------------------------------
-
-    def get_tool_definitions(self) -> list[dict[str, Any]]:
-        """返回所有多策略编辑工具的定义。"""
-        return [
-            self._get_replace_string_definition(),
-            self._get_multi_replace_string_definition(),
-            self._get_apply_patch_definition(),
-        ]
-
-    def _get_replace_string_definition(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": "replace_string",
-                "description": (
-                    "精确替换文件中的文本片段。"
-                    "old_text 必须包含 3-5 行上下文（前后各几行未改动的代码），确保在文件中唯一匹配。"
-                    "\n\n【适用场景】"
-                    "- 修改变量名、函数参数、条件判断等小范围修改（<30行）"
-                    "- 精准定位修改位置，不需要行号"
-                    "\n\n【规则】"
-                    "- old_text 必须和文件实际内容完全匹配（包括缩进、空格、换行）"
-                    "- 如果 old_text 在文件中出现多次，会报错，需要增加上下文行使其唯一"
-                    "- 不要用此工具替换大段代码（>30行），改用 apply_patch"
-                    "- 一次只做一处替换，多处修改用 multi_replace_string"
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "目标文件路径。支持相对路径（默认在工作目录）或绝对路径。",
-                        },
-                        "old_text": {
-                            "type": "string",
-                            "description": "要替换的原始文本。必须包含 3-5 行上下文确保唯一匹配。",
-                        },
-                        "new_text": {
-                            "type": "string",
-                            "description": "替换后的文本。",
-                        },
-                        "encoding": {
-                            "type": "string",
-                            "description": "文本编码，默认 utf-8。",
-                            "default": "utf-8",
-                        },
-                    },
-                    "required": ["file_path", "old_text", "new_text"],
-                    "additionalProperties": False,
-                },
-            },
-        }
-
-    def _get_multi_replace_string_definition(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": "multi_replace_string",
-                "description": (
-                    "批量替换同一文件中的多处文本。所有替换在同一事务中执行，任一失败则全部回滚。"
-                    "\n\n【适用场景】"
-                    "- 同一文件需要修改 3 处以上时，必须用此工具而不是多次 replace_string"
-                    "- 减少 LLM 往返次数，降低 token 消耗"
-                    "\n\n【规则】"
-                    "- 每条 replacement 的 old_text 必须包含足够上下文确保唯一"
-                    "- 各 replacement 的 old_text 互不重叠"
-                    "- 所有替换原子性：要么全部成功，要么全部回滚"
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "目标文件路径。",
-                        },
-                        "replacements": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "old_text": {
-                                        "type": "string",
-                                        "description": "要替换的原始文本（含上下文）。",
-                                    },
-                                    "new_text": {
-                                        "type": "string",
-                                        "description": "替换后的文本。",
-                                    },
-                                },
-                                "required": ["old_text", "new_text"],
-                            },
-                            "description": "替换列表，每项含 old_text 和 new_text。",
-                        },
-                        "encoding": {
-                            "type": "string",
-                            "description": "文本编码，默认 utf-8。",
-                            "default": "utf-8",
-                        },
-                    },
-                    "required": ["file_path", "replacements"],
-                    "additionalProperties": False,
-                },
-            },
-        }
-
-    def _get_apply_patch_definition(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": "apply_patch",
-                "description": (
-                    "应用 unified diff 格式的补丁修改文件。"
-                    "适合新增整个函数/类、删除大段代码、跨多文件重构。"
-                    "\n\n【适用场景】"
-                    "- 新增超过 20 行代码"
-                    "- 删除超过 10 行代码"
-                    "- 修改散布在文件各处且每处改动较大"
-                    "- 需要标准 diff 格式供 review"
-                    "\n\n【格式】"
-                    "标准 unified diff：\n"
-                    "  --- a/path/to/file\n"
-                    "  +++ b/path/to/file\n"
-                    "  @@ -10,5 +10,8 @@\n"
-                    "   unchanged line\n"
-                    "  -removed line\n"
-                    "  +added line\n"
-                    "   unchanged line\n"
-                    "\n【规则】"
-                    "- patch 中的行号必须基于文件当前状态（先 read_file 确认）"
-                    "- 上下文行（空格开头的行）必须和文件完全匹配"
-                    "- 一次只改一个文件"
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "目标文件路径。",
-                        },
-                        "patch": {
-                            "type": "string",
-                            "description": "unified diff 格式的补丁内容。",
-                        },
-                        "encoding": {
-                            "type": "string",
-                            "description": "文本编码，默认 utf-8。",
-                            "default": "utf-8",
-                        },
-                    },
-                    "required": ["file_path", "patch"],
-                    "additionalProperties": False,
-                },
-            },
-        }
-
-    # ------------------------------------------------------------------
     # 执行逻辑
     # ------------------------------------------------------------------
 
@@ -258,6 +100,12 @@ class EditTools:
             "output": f"成功替换文件内容\n{target}\n替换位置: 第 {_get_line_number(content, old_text)} 行附近",
             "file_path": str(target),
             "working_dir": str(self._fm.base_dir),
+            "file_change": {
+                "file_path": str(target),
+                "operation": "modify",
+                "previous_content": content,
+                "new_content": new_content,
+            },
         }
 
     def execute_multi_replace_string(
@@ -348,6 +196,12 @@ class EditTools:
             "file_path": str(target),
             "working_dir": str(self._fm.base_dir),
             "replacement_count": len(applied),
+            "file_change": {
+                "file_path": str(target),
+                "operation": "modify",
+                "previous_content": content,
+                "new_content": new_content,
+            },
         }
 
     def execute_apply_patch(
@@ -405,6 +259,12 @@ class EditTools:
             "output": f"成功应用补丁\n{target}",
             "file_path": str(target),
             "working_dir": str(self._fm.base_dir),
+            "file_change": {
+                "file_path": str(target),
+                "operation": "modify",
+                "previous_content": original,
+                "new_content": new_content,
+            },
         }
 
     # ------------------------------------------------------------------

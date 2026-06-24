@@ -39,6 +39,8 @@ from services.chat_stream_manager import (
     request_cancel as request_chat_cancel,
     register_bg_session,
     get_bg_queue,
+    get_bg_history,
+    append_bg_history,
     set_bg_task,
     mark_bg_done,
     is_bg_running,
@@ -481,11 +483,14 @@ async def stream_chat(request: ChatRequest, http_request: Request) -> AsyncGener
                 disconnect_check=None,
             ):
                 await bg_queue.put(event)
+                append_bg_history(session_id, event)
             mark_bg_done(session_id)
         except Exception as e:
             print(f"[background_runner] error: {e}")
             error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
-            await bg_queue.put(f"data: {error_data}\n\n")
+            error_event = f"data: {error_data}\n\n"
+            await bg_queue.put(error_event)
+            append_bg_history(session_id, error_event)
             mark_bg_done(session_id)
         finally:
             unregister_chat_stream(session_id)
@@ -564,8 +569,14 @@ async def _empty_stream():
 
 
 async def _resume_stream(session_id: str, bg_queue: asyncio.Queue, http_request: Request):
-    """从 session queue 中读取剩余事件并推送给前端。"""
+    """从 session queue 中读取剩余事件并推送给前端。先重播历史事件，再读取新事件。"""
     try:
+        # 1. 先一次性推送所有已累计的历史事件（避免前端逐条闪动）
+        history = get_bg_history(session_id)
+        if history:
+            for event in history:
+                yield event
+        # 2. 继续从 queue 读取新事件
         while True:
             if await http_request.is_disconnected():
                 break
@@ -576,9 +587,7 @@ async def _resume_stream(session_id: str, bg_queue: asyncio.Queue, http_request:
                     break
                 yield event
             except asyncio.TimeoutError:
-                # 检查任务是否已完成
                 if not is_bg_running(session_id):
-                    # 任务已完成，排空剩余事件
                     while not bg_queue.empty():
                         event = bg_queue.get_nowait()
                         if event is None:

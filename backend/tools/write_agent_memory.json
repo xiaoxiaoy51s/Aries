@@ -1,0 +1,18 @@
+{
+  "type": "function",
+  "function": {
+    "name": "write_agent_memory",
+    "description": "写入当前工作目录的 Agent 记忆。用于保存对当前代码库结构、开发命令、编码约定、测试方式等内容的总结，文件实际存放在 ~/.Aries/memory/{work_dir}/agent.md，不写入项目根目录。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "description": "完整的 Markdown 记忆内容，建议标题为 Repository Guidelines。"
+        }
+      },
+      "required": ["content"],
+      "additionalProperties": false
+    }
+  }
+}

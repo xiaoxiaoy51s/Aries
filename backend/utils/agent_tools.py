@@ -22,163 +22,22 @@ from utils.time_utils import local_iso_to_display
 
 
 def get_tool_definitions() -> list[dict]:
-    """返回核心基础工具的 OpenAI 风格 function calling 定义列表。"""
-    definitions: list[dict] = []
+    """返回核心基础工具的 OpenAI 风格 function calling 定义列表。
 
+    所有工具 schema 统一管理在 backend/tools/*.json 文件中，
+    通过 tools 包自动加载。delegate_to_subagent 由 skills_manager.py 单独注入。
+    """
     try:
-        from utils.file_manager import FileManagerTool
-        fm = FileManagerTool()
-        definitions.extend(fm.get_tool_definitions())
+        from tools import get_tool_definitions as load_tool_defs
+        all_defs = load_tool_defs()
+        # 过滤掉 delegate_to_subagent（由 skills_manager.py 单独注入）
+        return [
+            d for d in all_defs
+            if d.get("function", {}).get("name") != "delegate_to_subagent"
+        ]
     except Exception as exc:
-        print(f"Failed to load file_manager tool definitions: {exc}")
-
-    # 多策略编辑工具（#4）：replace_string / multi_replace_string / apply_patch
-    try:
-        from utils.edit_tools import EditTools
-        et = EditTools()
-        definitions.extend(et.get_tool_definitions())
-    except Exception as exc:
-        print(f"Failed to load edit_tools definitions: {exc}")
-
-    try:
-        from utils.cli_executor import CLIExecutor
-        executor = CLIExecutor()
-        definitions.append(executor.get_tool_definition())
-    except Exception as exc:
-        print(f"Failed to load cli_executor tool definition: {exc}")
-
-    try:
-        from utils.skills_manager import get_skill_by_name
-        definitions.append(_build_read_skill_file_definition())
-    except Exception:
-        pass
-
-    definitions.append(_build_write_agent_memory_definition())
-    definitions.append(_build_create_scheduled_task_definition())
-
-    return definitions
-
-
-def _build_write_agent_memory_definition() -> dict[str, Any]:
-    return {
-        "type": "function",
-        "function": {
-            "name": "write_agent_memory",
-            "description": (
-                "写入当前 work_dir 的 Agent 记忆。"
-                "用于保存对当前代码库结构、开发命令、编码约定、测试方式等内容的总结，"
-                "文件实际存放在 ~/.Aries/memory/{work_dir}/agent.md，不写入项目根目录。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "content": {
-                        "type": "string",
-                        "description": "完整的 Markdown 记忆内容，建议标题为 Repository Guidelines。",
-                    },
-                },
-                "required": ["content"],
-                "additionalProperties": False,
-            },
-        },
-    }
-
-
-def _build_read_skill_file_definition() -> dict[str, Any]:
-    return {
-        "type": "function",
-        "function": {
-            "name": "read_skill_file",
-            "description": (
-                "读取指定技能目录中的文件内容。"
-                "当技能 SKILL.md 引用了其他文件（如 prompt 模板、脚本、说明文档）时使用。"
-                "路径相对于技能目录。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "skill_name": {
-                        "type": "string",
-                        "description": "技能目录名（与 ~/.Aries/skills/available/ 下的子目录名一致）。",
-                    },
-                    "file_path": {
-                        "type": "string",
-                        "description": "技能目录内的相对文件路径，例如 'templates/prompt.md'。",
-                    },
-                    "encoding": {
-                        "type": "string",
-                        "default": "utf-8",
-                    },
-                },
-                "required": ["skill_name", "file_path"],
-                "additionalProperties": False,
-            },
-        },
-    }
-
-
-def _build_create_scheduled_task_definition() -> dict[str, Any]:
-    return {
-        "type": "function",
-        "function": {
-            "name": "create_scheduled_task",
-            "description": (
-                "创建定时任务。字段与 scheduled_tasks 表一致。"
-                "到达 scheduled_at 后，系统按 task_content 自动运行 AI，"
-                "结果写入 session_id 对应会话（网页 UUID 或 __wechat__/__qq__/__feishu__）。"
-                "notify_type 仅在未传 session_id 时用于指定手机推送平台；"
-                "均未指定时默认使用 system prompt 中的当前 session_id。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": "任务名称（对应 title 字段）。",
-                    },
-                    "task_content": {
-                        "type": "string",
-                        "description": "要求说明（对应 task_content 字段），到时后 AI 执行的指令。",
-                    },
-                    "schedule_type": {
-                        "type": "string",
-                        "enum": [SCHEDULE_ONCE, SCHEDULE_DAILY, SCHEDULE_INTERVAL],
-                        "default": SCHEDULE_ONCE,
-                        "description": "执行类型（对应 schedule_type）：once=单次，daily=每天，interval=间隔重复。",
-                    },
-                    "scheduled_at": {
-                        "type": "string",
-                        "description": (
-                            "执行时间（对应 scheduled_at），本地 ISO 格式如 2026-06-14T15:30:00。"
-                            "单次/每天必填；interval 可省略（默认当前时间 + interval_minutes）。"
-                        ),
-                    },
-                    "interval_minutes": {
-                        "type": "integer",
-                        "description": "间隔分钟数（对应 interval_minutes），schedule_type=interval 时必填。",
-                    },
-                    "session_id": {
-                        "type": "string",
-                        "description": (
-                            "结果推送会话 ID（对应 session_id）。"
-                            "网页会话填 UUID；手机推送填 __wechat__/__qq__/__feishu__。"
-                            "不传则默认当前会话。"
-                        ),
-                    },
-                    "notify_type": {
-                        "type": "string",
-                        "enum": ["wechat", "qq", "feishu"],
-                        "description": (
-                            "手机推送平台。用户明确指定微信/QQ/飞书回复时填写；"
-                            "仅在未传 session_id 时生效，会自动映射为 __wechat__ 等。"
-                        ),
-                    },
-                },
-                "required": ["title", "task_content"],
-                "additionalProperties": False,
-            },
-        },
-    }
+        print(f"Failed to load tool definitions from tools/: {exc}")
+        return []
 
 
 def _schedule_type_label(schedule_type: str) -> str:
@@ -210,7 +69,6 @@ def _handle_create_scheduled_task(
             session_id=arguments.get("session_id"),
             schedule_type=str(arguments.get("schedule_type") or SCHEDULE_ONCE),
             interval_minutes=arguments.get("interval_minutes"),
-            notify_type=arguments.get("notify_type"),
             default_session_id=session_id,
         )
     except ValueError as exc:
@@ -237,6 +95,7 @@ def _handle_create_scheduled_task(
             lines.append(f"interval_minutes：{interval_mins}")
         lines.append(f"session_id：{effective_session or '（新建网页会话）'}")
         lines.append(f"结果推送：{_notify_label(resolved_notify)}")
+        lines.append(f"执行后自动删除：{'是' if payload.get('auto_delete') else '否'}")
         output = "\n".join(lines)
 
         return {
@@ -311,6 +170,66 @@ def _handle_read_skill_file(arguments: dict[str, Any]) -> dict[str, Any]:
         }
 
 
+async def _handle_send_file_to_user(
+    kwargs: dict,
+    work_dir: str = "",
+    session_id: str | None = None,
+) -> dict:
+    """将文件发送到用户当前使用的平台（飞书/QQ）。
+
+    根据 session_id 判断平台：
+    - __feishu__ → 飞书文件发送
+    - __qq__ → QQ 文件发送
+    - __wechat__ → 微信暂不支持
+    - 其他 → 网页会话不支持
+    """
+    from pathlib import Path
+
+    file_path = str(kwargs.get("file_path") or "").strip()
+    if not file_path:
+        return {"success": False, "error": "缺少 file_path 参数", "output": "缺少 file_path 参数"}
+
+    # 解析文件路径（支持相对路径）
+    raw_path = Path(file_path)
+    if not raw_path.is_absolute() and work_dir:
+        raw_path = Path(work_dir) / raw_path
+    resolved = str(raw_path.expanduser())
+
+    if not Path(resolved).is_file():
+        return {"success": False, "error": f"文件不存在: {resolved}", "output": f"文件不存在: {resolved}"}
+
+    # 判断平台
+    sid = (session_id or "").strip()
+    platform = None
+    if sid == "__feishu__":
+        platform = "feishu"
+    elif sid == "__qq__":
+        platform = "qq"
+    elif sid == "__wechat__":
+        platform = "wechat"
+    elif sid.startswith("__"):
+        platform = sid.strip("__")
+
+    if platform == "feishu":
+        from services.feishu_file import send_file_to_feishu
+        ok = send_file_to_feishu(resolved)
+        if ok:
+            return {"success": True, "error": "", "output": f"已通过飞书发送文件: {Path(resolved).name}"}
+        return {"success": False, "error": "飞书文件发送失败", "output": "飞书文件发送失败，请检查 bot 是否在线及文件大小"}
+
+    if platform == "qq":
+        from services.qq_file import send_file_to_qq
+        ok = await send_file_to_qq(resolved)
+        if ok:
+            return {"success": True, "error": "", "output": f"已通过QQ发送文件: {Path(resolved).name}"}
+        return {"success": False, "error": "QQ文件发送失败", "output": "QQ文件发送失败，请检查 bot 是否在线及文件大小"}
+
+    if platform == "wechat":
+        return {"success": False, "error": "微信暂不支持发送文件", "output": "微信平台暂不支持发送文件功能"}
+
+    return {"success": False, "error": "当前会话不支持发送文件", "output": "网页会话不支持发送文件，请在飞书/QQ对话中使用"}
+
+
 def execute(tool: str = "", work_dir: str = "", session_id: str | None = None, invocation_id: str | None = None, **kwargs) -> dict:
     """执行核心基础工具（同步入口，保持兼容）。"""
     try:
@@ -358,6 +277,11 @@ async def execute_async(
                 cli_kwargs["invocation_id"] = invocation_id
             cli_kwargs["cancel_event"] = cancel_event
             return await executor.execute_async(**cli_kwargs)
+
+        if tool == "send_file_to_user":
+            merged_kwargs = dict(args) if args else {}
+            merged_kwargs.update(kwargs)
+            return await _handle_send_file_to_user(merged_kwargs, work_dir=work_dir, session_id=session_id)
 
         loop = asyncio.get_running_loop()
         merged_kwargs = dict(args) if args else {}

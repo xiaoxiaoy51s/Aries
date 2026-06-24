@@ -820,11 +820,13 @@ async def stream_agent_mode(
                     status = "completed" if not isinstance(result, dict) or not result.get("error") else "error"
                     error_msg = result.get("error", "") if isinstance(result, dict) else ""
                     output = result.get("output", "") if isinstance(result, dict) else str(result)
+                    _file_change = result.get("file_change") if isinstance(result, dict) else None
                     logger.write_tool_result(
                         tool_id, tool_name, status,
                         result=json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result),
                         error=error_msg,
                         session_id=result.get("session_id", "") if isinstance(result, dict) else "",
+                        file_change=_file_change,
                     )
                     if segment_sink:
                         await segment_sink.on_tool_done(tool_name, status, output)
@@ -847,7 +849,20 @@ async def stream_agent_mode(
                         result_event["pid"] = result_pid
                     if isinstance(result, dict) and result.get("auto_detached"):
                         result_event["auto_detached"] = True
+                    # 透传 file_change（用于产物区域显示 diff 和回退）
+                    _file_change = result.get("file_change") if isinstance(result, dict) else None
+                    if _file_change:
+                        result_event["file_change"] = _file_change
                     yield f"data: {json.dumps({'tool_result': result_event}, ensure_ascii=False)}\n\n"
+
+                    # 通过 WebSocket 推送实时 meta（duration + token_usage）
+                    try:
+                        from services.chat_ws import broadcast_stream_event
+                        await broadcast_stream_event(session_id, {
+                            "meta": logger.get_run_metadata(),
+                        })
+                    except Exception:
+                        pass
 
                     if stream_stopped:
                         cancelled = True

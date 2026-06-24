@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sys
+import tempfile
 import threading
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
+from pathlib import Path
 from typing import Any
 
 from datetime import timedelta
@@ -21,7 +24,7 @@ from utils.plugins_manager import (
     resolve_mcp_transport,
 )
 
-DEFAULT_TIMEOUT_MS = 30_000
+DEFAULT_TIMEOUT_MS = 120_000
 
 
 @dataclass(frozen=True)
@@ -217,6 +220,102 @@ def _timeout_seconds(server: dict[str, Any]) -> float:
     return DEFAULT_TIMEOUT_MS / 1000.0
 
 
+def _is_proxy_port_reachable(proxy_url: str, timeout: float = 2.0) -> bool:
+    """检测代理端口是否可达。"""
+    import socket
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(proxy_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 8080
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+def _build_stdio_env(server: dict[str, Any]) -> dict[str, str] | None:
+    """构建 stdio 子进程环境变量。
+
+    优先使用 network.json 中配置的代理（设置面板），而非系统环境变量。
+    代理端口不可达时不注入，避免子进程卡在连接代理端口。
+    """
+    import os
+
+    # 基础环境：继承父进程（已被 main.py 清理过死代理）
+    env_dict = dict(os.environ)
+
+    # 注入 network.json 中配置的代理（需验证端口可达）
+    try:
+        from utils.network_manager import load_network_config
+
+        net_config = load_network_config()
+        if net_config.get("enabled") and net_config.get("proxy_url"):
+            proxy_url = str(net_config["proxy_url"]).strip()
+            if _is_proxy_port_reachable(proxy_url):
+                for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                            "http_proxy", "https_proxy", "all_proxy"):
+                    env_dict[key] = proxy_url
+                # npm/npx 专用代理变量（Node.js MCP 子进程会用）
+                env_dict["npm_config_proxy"] = proxy_url
+                env_dict["npm_config_https_proxy"] = proxy_url
+                env_dict.pop("NO_PROXY", None)
+            else:
+                # 代理不可达：清除所有代理变量（含 npm），避免子进程卡在连接代理端口
+                # npm 的代理配置存在 .npmrc 文件中，pop 环境变量后 npm 会回退读 .npmrc，
+                # 必须显式设空字符串覆盖，让 npm 不使用代理
+                for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                            "http_proxy", "https_proxy", "all_proxy"):
+                    env_dict.pop(key, None)
+                env_dict["npm_config_proxy"] = ""
+                env_dict["npm_config_https_proxy"] = ""
+                env_dict["NO_PROXY"] = "*"
+                print(f"[mcp] 代理端口不可达（{proxy_url}），MCP 子进程不走代理")
+        else:
+            # 代理未启用：清除所有代理变量（含 npm 全局配置）
+            for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                        "http_proxy", "https_proxy", "all_proxy"):
+                env_dict.pop(key, None)
+            env_dict["npm_config_proxy"] = ""
+            env_dict["npm_config_https_proxy"] = ""
+            env_dict["NO_PROXY"] = "*"
+    except Exception:
+        pass
+
+    # 合并用户在 mcp.json 中为该 server 单独配置的 env（最高优先级）
+    user_env = server.get("env")
+    if isinstance(user_env, dict):
+        env_dict.update({str(k): str(v) for k, v in user_env.items()})
+
+    return env_dict
+
+
+def _prepare_npx_args(arg_list: list[str], env_dict: dict[str, str]) -> list[str]:
+    """对 npx 命令准备参数：使用临时 .npmrc 忽略用户 .npmrc 中的代理配置。
+
+    当子进程不需要代理时（代理未启用或端口不可达），npx 仍会读取用户 ~/.npmrc
+    中的 proxy/https-proxy 并尝试连接死端口，导致启动卡住。通过 --userconfig
+    指定一个干净的 .npmrc 可避免此问题。
+    """
+    if not arg_list or arg_list[0] not in ("-y", "--yes"):
+        return arg_list
+
+    # 仅在明确清除代理时（NO_PROXY=* 且 npm_config_proxy 为空）注入干净 npmrc
+    if env_dict.get("NO_PROXY") != "*":
+        return arg_list
+    if env_dict.get("npm_config_proxy") not in ("", None):
+        return arg_list
+
+    cache_dir = Path(tempfile.gettempdir()) / "aries_mcp_npmrc"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    npmrc_path = cache_dir / "clean.npmrc"
+    if not npmrc_path.exists():
+        npmrc_path.write_text("registry=https://registry.npmmirror.com\n", encoding="utf-8")
+
+    return ["--userconfig", str(npmrc_path), *arg_list]
+
+
 def _stdio_server_params(server: dict[str, Any]):
     from mcp import StdioServerParameters
 
@@ -226,9 +325,13 @@ def _stdio_server_params(server: dict[str, Any]):
 
     args = server.get("args")
     arg_list = [str(item) for item in args] if isinstance(args, list) else []
+    command_str = command.strip().lower()
 
-    env = server.get("env")
-    env_dict = {str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else None
+    env_dict = _build_stdio_env(server)
+
+    # npx 命令需要特殊处理 .npmrc 代理配置
+    if command_str in ("npx",):
+        arg_list = _prepare_npx_args(arg_list, env_dict)
 
     return StdioServerParameters(
         command=command.strip(),
@@ -333,8 +436,11 @@ class McpConnectionPool:
             )
 
         session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        live_tools = await _list_all_tools(session, timeout)
+        # 用 anyio.fail_after 而非 asyncio.wait_for，避免与 anyio cancel scope 跨 task 冲突
+        from anyio import fail_after
+        with fail_after(timeout):
+            await session.initialize()
+            live_tools = await _list_all_tools(session, timeout)
         _cache_server_tools(server_id, live_tools)
         schemas = [_tool_schema_dict(tool) for tool in live_tools if getattr(tool, "name", None)]
         fingerprint = _catalog_fingerprint([s["name"] for s in schemas])
@@ -385,7 +491,11 @@ class McpConnectionPool:
                 )
                 print(f"[mcp] 已连接 {server_id}，{len(conn.tools)} 个工具")
             except Exception as exc:
-                message = str(exc)
+                exc_type = type(exc).__name__
+                message = str(exc) or exc_type
+                # 超时类错误补充提示
+                if exc_type in ("TimeoutError", "TimeoutCancellationError"):
+                    message = f"连接超时（可能需要网络代理或服务未启动）"
                 cached = _load_cached_tool_schemas(server_id)
                 self._diagnostics.append(
                     McpServerDiagnostic(

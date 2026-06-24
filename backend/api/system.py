@@ -1,7 +1,8 @@
-"""系统级操作：调出原生文件夹选择对话框、打开路径。"""
+"""系统级操作：调出原生文件夹选择对话框、打开路径、打开网址。"""
 import os
 import subprocess
 import sys
+import webbrowser
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +25,16 @@ class OpenPathRequest(BaseModel):
 class OpenPathResponse(BaseModel):
     ok: bool
     path: str
+    error: Optional[str] = None
+
+
+class OpenUrlRequest(BaseModel):
+    url: str
+
+
+class OpenUrlResponse(BaseModel):
+    ok: bool
+    url: str
     error: Optional[str] = None
 
 
@@ -55,6 +66,19 @@ def open_path(body: OpenPathRequest) -> OpenPathResponse:
     except Exception as exc:
         return OpenPathResponse(ok=False, path=raw, error=str(exc))
     return OpenPathResponse(ok=True, path=raw)
+
+
+@router.post("/open-url", response_model=OpenUrlResponse)
+def open_url(body: OpenUrlRequest) -> OpenUrlResponse:
+    """在系统默认浏览器中打开网址。"""
+    url = (body.url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL 不能为空")
+    try:
+        webbrowser.open(url)
+    except Exception as exc:
+        return OpenUrlResponse(ok=False, url=url, error=str(exc))
+    return OpenUrlResponse(ok=True, url=url)
 
 
 @router.post("/select-directory", response_model=SelectDirectoryResponse)

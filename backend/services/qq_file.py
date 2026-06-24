@@ -221,17 +221,70 @@ async def _send_one_file(message, file_ref: str, msg_seq: int) -> bool:
     return ok
 
 
-async def send_files_to_qq(message, files: list[str]) -> None:
-    """将本地路径或 http(s) URL 的文件发送到 QQ（C2C / 群聊）。"""
-    if not files:
-        return
+async def send_file_to_qq(file_path: str) -> bool:
+    """主动发送文件到 QQ（不依赖 message 对象，使用运行中 bot 的上下文）。
 
-    for i, file_ref in enumerate(files):
-        file_ref = (file_ref or "").strip()
-        if not file_ref:
-            continue
-        msg_seq = int(time.time() * 1000) % 1000000 + random.randint(1, 1000) + i
-        try:
-            await _send_one_file(message, file_ref, msg_seq)
-        except Exception as e:
-            _log.error("[QQ] 发送文件异常 %s: %s", file_ref, e)
+    从运行中的 NonoQQBot 读取 last_chat_type / last_user_openid / last_group_openid，
+    上传文件后以 msg_type=7 发送。
+    """
+    from services.qq_bot import _runner
+
+    if not (_runner and _runner._client):
+        _log.warning("[Push/QQ文件] 运行中 bot 不可用")
+        return False
+
+    client = _runner._client
+    api = getattr(client, "api", None)
+    if not api:
+        _log.warning("[Push/QQ文件] 缺少 API 对象")
+        return False
+
+    chat_type = client.last_chat_type or "c2c"
+    is_group = chat_type == "group"
+    chat_id = (client.last_group_openid if is_group else client.last_user_openid or "").strip()
+    if not chat_id:
+        _log.warning("[Push/QQ文件] 缺少 %s", "group_openid" if is_group else "user_openid")
+        return False
+
+    file_ref = (file_path or "").strip()
+    if not file_ref:
+        return False
+
+    path = Path(file_ref).expanduser()
+    if not path.is_file():
+        _log.warning("[QQ文件] 文件不存在: %s", file_path)
+        return False
+
+    msg_seq = int(time.time() * 1000) % 1000000 + random.randint(1, 1000)
+    filename = path.name
+
+    file_data, file_name = await _read_local_file(str(path))
+    if not file_data:
+        return False
+    filename = file_name or filename
+    file_type = _guess_file_type(filename)
+    file_data_b64 = base64.b64encode(file_data).decode("ascii")
+
+    media = await _upload_base64(
+        api,
+        is_group=is_group,
+        chat_id=chat_id,
+        file_type=file_type,
+        file_data_b64=file_data_b64,
+        file_name=filename,
+    )
+    if not media:
+        _log.error("[QQ文件] 上传失败: %s", filename)
+        return False
+
+    ok = await _send_rich_media(
+        api,
+        is_group=is_group,
+        chat_id=chat_id,
+        media=media,
+        msg_id=None,
+        msg_seq=msg_seq,
+    )
+    if ok:
+        _log.info("[QQ文件] 已发送 %s (%s)", filename, "群聊" if is_group else "单聊")
+    return ok

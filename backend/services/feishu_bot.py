@@ -97,7 +97,7 @@ class _FeishuRunner:
             async def _send_segment(seg: str):
                 await self._channel.send(chat_id, {"text": seg})
 
-            reply, _files = await process_inbound_message_async(
+            reply = await process_inbound_message_async(
                 "feishu", text, send_segment=_send_segment
             )
             _log.info("[飞书] Agent 分段推送完成, chat_id=%s", chat_id)
