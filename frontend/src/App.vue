@@ -22,15 +22,20 @@ import { onMounted } from 'vue'
 import { RouterView } from 'vue-router'
 import { useSidebar } from '@/composables/useSidebar'
 import { useModelStore } from '@/stores/model'
+import { useWorkspaceStore } from '@/stores/workspace'
+import { initPaths } from '@/utils/paths'
 
 const { sidebarOpen, toggleSidebar } = useSidebar()
 
 const modelStore = useModelStore()
+const workspaceStore = useWorkspaceStore()
 const BACKEND_PORT = 30000
 modelStore.setBackendPort(BACKEND_PORT)
 
-onMounted(() => {
+onMounted(async () => {
   modelStore.loadModels().catch(() => {})
+  await initPaths().catch(() => {})
+  workspaceStore.initWorkDir().catch(() => {})
 })
 </script>
 

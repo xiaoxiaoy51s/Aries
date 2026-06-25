@@ -1,10 +1,10 @@
-from typing import Any
+﻿from typing import Any
 
 from fastapi import APIRouter, HTTPException
 import shutil
 
-from utils.skills_manager import discover_skills, get_skill_by_folder_name
-from utils.plugin_manager import discover_plugins
+from engine.skills_manager import discover_skills, get_skill_by_folder_name
+from engine.plugin_manager import discover_plugins
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
@@ -55,7 +55,7 @@ async def get_skill_detail(folder_name: str):
     # 查找内置插件 skill
     try:
         from pathlib import Path
-        from utils.skills_manager import parse_skill_markdown
+        from engine.skills_manager import parse_skill_markdown
         for plugin in discover_plugins():
             if plugin.kind == "skills" and plugin.name == folder_name:
                 target = Path(plugin.target_path)

@@ -51,3 +51,21 @@ export async function selectDirectory(): Promise<SelectDirectoryResult> {
   }
   return res.json()
 }
+
+export interface HomePathInfo {
+  home: string
+  pets_dir: string
+  work_dir: string
+}
+
+let _homePathCache: HomePathInfo | null = null
+
+export async function getHomePath(): Promise<HomePathInfo> {
+  if (_homePathCache) return _homePathCache
+  const res = await fetch(`${getBaseUrl()}/system/home-path`)
+  if (!res.ok) {
+    throw new Error('获取用户目录失败')
+  }
+  _homePathCache = await res.json()
+  return _homePathCache
+}

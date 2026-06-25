@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, screen } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, screen, dialog } = require('electron')
 const path = require('path')
 const { spawn, spawnSync } = require('child_process')
 const http = require('http')
@@ -356,6 +356,41 @@ ipcMain.on('pet:focus-main', () => {
     mainWindow.show()
     mainWindow.focus()
   }
+})
+
+// IPC: 重启应用
+ipcMain.on('app:relaunch', () => {
+  // 1. 先杀掉后端进程（同步阻塞）
+  killBackend()
+  // 2. 再重启 Electron 主进程（新实例会在 whenReady 后自动 startBackend）
+  app.relaunch()
+  app.exit(0)
+})
+
+// IPC: 系统原生文件/文件夹选择对话框
+ipcMain.handle('dialog:select-directory', async (event, opts = {}) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: opts.title || '选择文件夹',
+    defaultPath: opts.defaultPath || undefined,
+    properties: ['openDirectory'],
+  })
+  if (result.canceled || result.filePaths.length === 0) {
+    return { path: null, cancelled: true }
+  }
+  return { path: result.filePaths[0], cancelled: false }
+})
+
+ipcMain.handle('dialog:select-file', async (event, opts = {}) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: opts.title || '选择文件',
+    defaultPath: opts.defaultPath || undefined,
+    filters: opts.filters || undefined,
+    properties: ['openFile'],
+  })
+  if (result.canceled || result.filePaths.length === 0) {
+    return { path: null, cancelled: true }
+  }
+  return { path: result.filePaths[0], cancelled: false }
 })
 
 app.whenReady().then(async () => {

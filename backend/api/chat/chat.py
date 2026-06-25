@@ -9,14 +9,14 @@ from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from utils.url_utils import normalize_base_url
-from utils.skills_manager import execute_tool
+from engine.skills_manager import execute_tool
 from utils.session_logger import SessionLogger
 from models.model_manager import resolve_active_model_config
 from db.sessions import upsert_session, get_session
 from db.chat import save_message, update_message, get_memory_aware_context_messages
 from utils.token_counter import build_token_usage_info, extract_usage_from_response
 
-from api.modes import (
+from api.engine import (
     build_agent_system_prompt,
     get_agent_skills_and_tools,
     stream_agent_mode,

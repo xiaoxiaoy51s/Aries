@@ -20,3 +20,4 @@ from api.pets_api import router as pets_router
 from api.network_api import router as network_router
 from api.main_agent_api import router as main_agent_router
 from api.plugins_builtin import router as plugins_builtin_router
+from api.dev_env import router as dev_env_router

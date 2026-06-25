@@ -16,12 +16,19 @@ from contextlib import asynccontextmanager
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+# 最早期：加载 env.json，把配置的 node/python/git 路径加到 PATH 最前面
+# 这样所有子进程（Node.js CLI Server、cli_executor、MCP）都自动使用配置的版本
+from utils.env_config import apply_env_to_path
+_env_applied = apply_env_to_path()
+if _env_applied:
+    print(f"[Startup] env.json 运行时配置已加载: {_env_applied}")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-from api import config_router, chat_router, upload_router, skills_router, plugins_router, subagents_router, sessions_router, work_dirs_router, debug_router, scheduled_tasks_router, platforms_router, system_router, path_permissions_router, terminal_router, git_router, files_router, chat_ws_router, memory_router, pets_router, network_router, main_agent_router, plugins_builtin_router
+from api import config_router, chat_router, upload_router, skills_router, plugins_router, subagents_router, sessions_router, work_dirs_router, debug_router, scheduled_tasks_router, platforms_router, system_router, path_permissions_router, terminal_router, git_router, files_router, chat_ws_router, memory_router, pets_router, network_router, main_agent_router, plugins_builtin_router, dev_env_router
 from db.database import init_database
 from utils.scheduler import run_scheduler
 
@@ -77,13 +84,13 @@ def _check_and_cleanup_proxy():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from db.scheduled_task import reset_stale_running_tasks
-    from utils.mcp_runtime import get_mcp_pool
+    from mcp.runtime import get_mcp_pool
 
     _check_and_cleanup_proxy()
 
     # 同步内置插件到 ~/.Aries/plugins/
     try:
-        from utils.plugin_manager import sync_plugins
+        from engine.plugin_manager import sync_plugins
         counts = sync_plugins()
         if any(counts.values()):
             print(f"[Plugins] 同步完成: {counts}")
@@ -209,6 +216,7 @@ app.include_router(pets_router)
 app.include_router(network_router)
 app.include_router(main_agent_router)
 app.include_router(plugins_builtin_router)
+app.include_router(dev_env_router)
 
 
 @app.get("/")

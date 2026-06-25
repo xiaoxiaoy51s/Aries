@@ -134,8 +134,8 @@ def _check_model_available(model: str) -> bool:
 def _check_skill_exists(skill_name: str) -> bool:
     """检查 skill 是否在用户目录或内置插件中存在。"""
     try:
-        from utils.skills_manager import get_skill_by_folder_name
-        from utils.plugin_manager import get_plugin_skill_dirs
+        from engine.skills_manager import get_skill_by_folder_name
+        from engine.plugin_manager import get_plugin_skill_dirs
 
         # 用户 skills
         if get_skill_by_folder_name(skill_name) is not None:
@@ -153,7 +153,7 @@ def _check_skill_exists(skill_name: str) -> bool:
 def _check_mcp_exists(mcp_name: str) -> bool:
     """检查 mcp 是否在 ~/.Aries/mcp.json 中配置。"""
     try:
-        from utils.mcp_config import load_mcp_config
+        from mcp.config import load_mcp_config
 
         config = load_mcp_config()
         servers = config.get("mcpServers") or {}
@@ -233,7 +233,7 @@ def discover_subagents() -> list[SubagentEntry]:
 
     # 加载内置插件 agents
     try:
-        from utils.plugin_manager import get_plugin_agent_configs
+        from engine.plugin_manager import get_plugin_agent_configs
         for raw in get_plugin_agent_configs():
             name = str(raw.get("name") or "").strip()
             if not name or name in seen_names:
@@ -363,8 +363,8 @@ def build_subagent_router_section(entries: list[SubagentEntry] | None = None) ->
 
 def _load_skill_entry_anywhere(skill_name: str):
     """加载 skill 完整信息（用户 skills 优先，其次内置插件 skills）。"""
-    from utils.skills_manager import get_skill_by_name
-    from utils.plugin_manager import discover_plugins
+    from engine.skills_manager import get_skill_by_name
+    from engine.plugin_manager import discover_plugins
 
     entry = get_skill_by_name(skill_name)
     if entry is not None:
@@ -375,7 +375,7 @@ def _load_skill_entry_anywhere(skill_name: str):
         for plugin in discover_plugins():
             if plugin.kind == "skills" and (plugin.name == skill_name or plugin.display_name == skill_name):
                 from dataclasses import dataclass
-                from utils.skills_manager import SkillEntry
+                from engine.skills_manager import SkillEntry
                 from pathlib import Path
 
                 target = Path(plugin.target_path)
@@ -385,7 +385,7 @@ def _load_skill_entry_anywhere(skill_name: str):
                 if not skill_md.is_file():
                     continue
                 try:
-                    from utils.skills_manager import parse_skill_markdown
+                    from engine.skills_manager import parse_skill_markdown
                     parsed = parse_skill_markdown(skill_md, default_name=plugin.name)
                     return SkillEntry(
                         name=parsed["name"],
@@ -407,7 +407,7 @@ def _load_skill_entry_anywhere(skill_name: str):
 
 def _build_subagent_skills_context(skill_names: list[str]) -> str:
     """拼接 subagent 持有的所有 skill 的 SKILL.md 内容（去重，含 COMMON_SKILLS）。"""
-    from utils.skills_manager import build_skills_context_from_entries
+    from engine.skills_manager import build_skills_context_from_entries
 
     seen: set[str] = set()
     entries = []
@@ -449,7 +449,7 @@ def build_subagent_runtime(name: str) -> dict[str, Any]:
             skill_entries.append(sk)
 
     # 2. 检查 mcp 配置存在性（不要求 enabled）
-    from utils.mcp_config import load_mcp_config
+    from mcp.config import load_mcp_config
 
     mcp_servers_cfg = load_mcp_config().get("mcpServers") or {}
     for mcp_name in entry.allowed_mcps:

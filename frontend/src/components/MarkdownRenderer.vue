@@ -2,6 +2,7 @@
   <div class="markdown-content">
     <!-- 渲染后的 Markdown（带有 github-markdown-css 的 markdown-body 类） -->
     <div
+      ref="markdownContainer"
       class="markdown-body"
       :style="{
         fontSize: fontSize + 'px',
@@ -13,15 +14,15 @@
     <!-- 操作按钮区域 -->
     <div v-if="showActions && content && !isStreaming" class="action-buttons">
       <button class="action-btn" @click="copyAllContent" title="复制">
-        <svg v-if="copiedAll" t="1780846687143" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="6050" width="12" height="12"><path d="M896 288a32 32 0 0 0-54.656-22.592L418.656 688.096 184.992 396l-0.112 0.08a31.872 31.872 0 1 0-49.76 39.824l-0.112 0.096 256 320 0.112-0.08a31.872 31.872 0 0 0 47.52 2.688l447.952-447.952c5.824-5.808 9.408-13.808 9.408-22.656z" fill="#231815" p-id="6051"></path></svg>
-        <svg v-else t="1780846643473" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="5009" width="12" height="12"><path d="M761.344 867.328H157.696v-604.16h603.648v604.16zM209.92 814.592h498.688V315.904H209.92v498.688z" fill="#000000" p-id="5010"></path><path d="M875.52 745.984h-52.736V220.672H297.984V168.448H875.52z" fill="#000000" p-id="5011"></path></svg>
+        <svg v-if="copiedAll" t="1782397384882" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="" p-id="19463" width="12" height="12"><path d="M833.33 767.96h-91.9c-21.73 0-39.34-17.6-39.34-39.34s17.62-39.34 39.34-39.34h91.9c8.82 0 15.98-7.18 15.98-15.98V193.8c0-8.8-7.17-15.98-15.98-15.98H353.84c-8.82 0-15.98 7.18-15.98 15.98v90.86c0 21.75-17.62 39.34-39.34 39.34s-39.34-17.6-39.34-39.34V193.8c0-52.21 42.47-94.67 94.67-94.67h479.49c52.19 0 94.67 42.45 94.67 94.67v479.49c-0.01 52.21-42.49 94.67-94.68 94.67z" fill="#333333" p-id="19464"></path><path d="M675.96 925.33H196.47c-52.19 0-94.67-42.45-94.67-94.67V351.17c0-52.21 42.47-94.67 94.67-94.67h479.49c52.19 0 94.67 42.45 94.67 94.67v479.49c-0.01 52.22-42.48 94.67-94.67 94.67zM196.47 335.19c-8.82 0-15.98 7.18-15.98 15.98v479.49c0 8.8 7.17 15.98 15.98 15.98h479.49c8.82 0 15.98-7.18 15.98-15.98V351.17c0-8.8-7.17-15.98-15.98-15.98H196.47z" fill="#333333" p-id="19465"></path></svg>
+        <svg v-else <svg t="1782397489476" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="20511" width="12" height="12"><path d="M896 288a32 32 0 0 0-54.656-22.592L418.656 688.096 184.992 396l-0.112 0.08a31.872 31.872 0 1 0-49.76 39.824l-0.112 0.096 256 320 0.112-0.08a31.872 31.872 0 0 0 47.52 2.688l447.952-447.952c5.824-5.808 9.408-13.808 9.408-22.656z" fill="#231815" p-id="20512"></path></svg>
       </button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onBeforeUnmount } from 'vue'
+import { ref, computed, onBeforeUnmount, onMounted, watch, nextTick } from 'vue'
 import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
@@ -57,16 +58,19 @@ const md = new MarkdownIt({
   typographer: true,
   breaks: true,
   highlight(str: string, lang: string): string {
+    const codeContent = md.utils.escapeHtml(str)
+    const langLabel = md.utils.escapeHtml(lang || 'code')
+    const copyBtn = `<button class="copy-btn" data-copy-btn title="复制" style="display:flex;align-items:center;justify-content:center;padding:4px;background:none;border:none;cursor:pointer;font-size:13px;color:inherit"><svg t="1780846643473" class="icon" viewBox="0 0 1024 1024" width="11" height="11"><path d="M761.344 867.328H157.696v-604.16h603.648v604.16zM209.92 814.592h498.688V315.904H209.92v498.688z" fill="#000000"></path></svg></button>`
     if (lang && hljs.getLanguage(lang)) {
       try {
         const highlighted = hljs.highlight(str, {
           language: lang,
           ignoreIllegals: true,
         }).value
-        return `<div class="code-block-wrapper"><div class="code-header"><span class="code-lang">${md.utils.escapeHtml(lang)}</span><button class="copy-btn" onclick="(function(btn){var code=btn.closest('.code-block-wrapper').querySelector('code').textContent;navigator.clipboard.writeText(code);btn.innerHTML='✓';setTimeout(function(){btn.innerHTML=\\'<svg t=\\"1780846643473\\" class=\\"icon\\" viewBox=\\"0 0 1024 1024\\" width=\\"11\\" height=\\"11\\"><path d=\\"M761.344 867.328H157.696v-604.16h603.648v604.16zM209.92 814.592h498.688V315.904H209.92v498.688z\\" fill=\\"#000000\\"></path></svg>\\'},2000)})(this)" title="复制" style="display:flex;align-items:center;justify-content:center;padding:4px;background:none;border:none;cursor:pointer;font-size:13px;color:inherit"><svg t="1780846643473" class="icon" viewBox="0 0 1024 1024" width="11" height="11"><path d="M761.344 867.328H157.696v-604.16h603.648v604.16zM209.92 814.592h498.688V315.904H209.92v498.688z" fill="#000000"></path></svg></button></div><pre class="hljs"><code>${highlighted}</code></pre></div>`
+        return `<div class="code-block-wrapper"><div class="code-header"><span class="code-lang">${langLabel}</span>${copyBtn}</div><pre class="hljs"><code>${highlighted}</code></pre></div>`
       } catch (_) {}
     }
-    return `<div class="code-block-wrapper"><div class="code-header"><span class="code-lang">${md.utils.escapeHtml(lang) || 'code'}</span><button class="copy-btn" onclick="(function(btn){var code=btn.closest('.code-block-wrapper').querySelector('code').textContent;navigator.clipboard.writeText(code);btn.innerHTML='✓';setTimeout(function(){btn.innerHTML=\\'<svg t=\\"1780846643473\\" class=\\"icon\\" viewBox=\\"0 0 1024 1024\\" width=\\"11\\" height=\\"11\\"><path d=\\"M761.344 867.328H157.696v-604.16h603.648v604.16zM209.92 814.592h498.688V315.904H209.92v498.688z\\" fill=\\"#000000\\"></path></svg>\\'},2000)})(this)" title="复制" style="display:flex;align-items:center;justify-content:center;padding:4px;background:none;border:none;cursor:pointer;font-size:13px;color:inherit"><svg t="1780846643473" class="icon" viewBox="0 0 1024 1024" width="11" height="11"><path d="M761.344 867.328H157.696v-604.16h603.648v604.16zM209.92 814.592h498.688V315.904H209.92v498.688z" fill="#000000"></path></svg></button></div><pre class="hljs"><code>${md.utils.escapeHtml(str)}</code></pre></div>`
+    return `<div class="code-block-wrapper"><div class="code-header"><span class="code-lang">${langLabel}</span>${copyBtn}</div><pre class="hljs"><code>${codeContent}</code></pre></div>`
   },
 })
 
@@ -130,12 +134,72 @@ function renderMarkdownToHtml(raw: string): string {
 
   // DOMPurify 过滤 XSS
   return DOMPurify.sanitize(rendered, {
-    ADD_ATTR: ['target', 'rel', 'onclick'],
+    ADD_ATTR: ['target', 'rel'],
     ADD_TAGS: ['use'],
   })
 }
 
 const sanitizedHtml = computed(() => renderMarkdownToHtml(props.content))
+
+// 代码块复制：用事件委托绑定，避免 inline onclick 被转义
+const markdownContainer = ref<HTMLElement | null>(null)
+const copiedCodeBtn = ref<HTMLElement | null>(null)
+let codeCopyResetTimer: ReturnType<typeof setTimeout> | null = null
+
+async function onCopyCodeClick(e: Event) {
+  const path = (e as any).composedPath ? (e as any).composedPath() : []
+  const btn = path.find((el: any) => el instanceof Element && el.hasAttribute && el.hasAttribute('data-copy-btn')) as HTMLElement | null
+  if (!btn || !markdownContainer.value) return
+  const wrapper = btn.closest('.code-block-wrapper')
+  const code = wrapper?.querySelector('code')
+  if (!code) return
+  e.preventDefault()
+  e.stopPropagation()
+  const text = code.textContent || ''
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
+    btn.innerHTML = '✓'
+    copiedCodeBtn.value = btn
+    if (codeCopyResetTimer) clearTimeout(codeCopyResetTimer)
+    codeCopyResetTimer = setTimeout(() => {
+      if (copiedCodeBtn.value) {
+        copiedCodeBtn.value.innerHTML = '<svg t="1780846643473" class="icon" viewBox="0 0 1024 1024" width="11" height="11"><path d="M761.344 867.328H157.696v-604.16h603.648v604.16zM209.92 814.592h498.688V315.904H209.92v498.688z" fill="#000000"></path></svg>'
+        copiedCodeBtn.value = null
+      }
+    }, 2000)
+  } catch (err) {
+    console.error('Copy code failed:', err)
+  }
+}
+
+onMounted(() => {
+  nextTick(() => {
+    markdownContainer.value?.addEventListener('click', onCopyCodeClick)
+  })
+})
+
+onBeforeUnmount(() => {
+  markdownContainer.value?.removeEventListener('click', onCopyCodeClick)
+  if (codeCopyResetTimer) clearTimeout(codeCopyResetTimer)
+})
+
+watch(sanitizedHtml, () => {
+  nextTick(() => {
+    markdownContainer.value?.removeEventListener('click', onCopyCodeClick)
+    markdownContainer.value?.addEventListener('click', onCopyCodeClick)
+  })
+})
 
 function copyAllContent() {
   if (!props.content) return
@@ -217,11 +281,11 @@ function copyAllContent() {
 
 /* 代码块样式 */
 .markdown-body :deep(.code-block-wrapper) {
-  background-color: var(--bg-panel);
+  background-color: #f4f4f5;
   border-radius: 8px;
   margin: 8px 0;
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: none;
 }
 
 .markdown-body :deep(.code-header) {
@@ -229,14 +293,13 @@ function copyAllContent() {
   justify-content: space-between;
   align-items: center;
   padding: 3px 10px;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
+  background-color: #e4e4e7;
   min-height: 24px;
 }
 
 .markdown-body :deep(.code-lang) {
   font-size: 11px;
-  color: var(--text-secondary);
+  color: #71717a;
   text-transform: lowercase;
 }
 
@@ -249,7 +312,11 @@ function copyAllContent() {
   border: none;
   cursor: pointer;
   font-size: 13px;
-  color: inherit;
+  color: #52525b;
+}
+
+.markdown-body :deep(.copy-btn:hover) {
+  color: #18181b;
 }
 
 .markdown-body :deep(pre) {
@@ -268,6 +335,7 @@ function copyAllContent() {
   font-feature-settings: 'liga' 0;
   background: transparent !important;
   padding: 0;
+  color: #27272a;
 }
 
 .markdown-body :deep(code:not(pre code)) {

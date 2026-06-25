@@ -59,7 +59,7 @@ class CLIExecutor:
 
     @property
     def allowed_dir(self) -> Path:
-        from utils.file_manager import UserFileManager
+        from engine.file_manager import UserFileManager
         manager = UserFileManager(work_dir=self._work_dir)
         return manager.get_user_dir()
 

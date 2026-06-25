@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron')
+const os = require('os')
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  /** 系统用户主目录 */
+  homePath: os.homedir(),
   /**
    * 显示宠物。
    *  - 传统调用 showPet(url, name)：仍兼容（按 GIF/单图模式渲染）
@@ -23,4 +26,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   isPetVisible: () => ipcRenderer.invoke('pet:is-visible'),
   /** 切换宠物动画状态：idle / running-right / running-left / waving / jumping / failed / waiting / running / review */
   setPetState: (state) => ipcRenderer.send('pet:set-state', { state }),
+
+  /** 弹出系统原生文件/文件夹选择对话框（带地址栏，可粘贴路径） */
+  selectDirectory: (opts) => ipcRenderer.invoke('dialog:select-directory', opts),
+  selectFile: (opts) => ipcRenderer.invoke('dialog:select-file', opts),
+
+  /** 重启应用 */
+  relaunch: () => ipcRenderer.send('app:relaunch'),
 })

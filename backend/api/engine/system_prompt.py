@@ -1,8 +1,8 @@
-"""系统提示词构建 + 技能/工具解析。"""
+﻿"""系统提示词构建 + 技能/工具解析。"""
 import platform
 from datetime import datetime
 
-from utils.skills_manager import (
+from engine.skills_manager import (
     discover_skills,
     get_all_tool_definitions,
     build_skills_context_from_entries,
@@ -130,7 +130,7 @@ def build_agent_system_prompt_parts(
     # 内置插件简短列表
     plugins_section = ""
     try:
-        from utils.plugin_manager import build_plugins_context
+        from engine.plugin_manager import build_plugins_context
         plugins_ctx = build_plugins_context()
         if plugins_ctx:
             plugins_section = "\n" + plugins_ctx
@@ -167,8 +167,8 @@ def build_agent_system_prompt(
 
 
 def get_agent_skills_and_tools():
-    from utils.mcp_runtime import build_mcp_prompt_context
-    from utils.subagent_manager import build_subagent_router_section
+    from mcp.runtime import build_mcp_prompt_context
+    from engine.subagent_manager import build_subagent_router_section
     from utils.main_agent_config import get_main_agent_allowed_skills
 
     allowed_skills = get_main_agent_allowed_skills()

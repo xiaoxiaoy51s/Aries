@@ -11,7 +11,7 @@ from typing import Optional
 
 import httpx
 
-from api.modes.agent_mode import (
+from api.engine.agent_mode import (
     build_agent_system_prompt,
     get_agent_skills_and_tools,
     stream_agent_mode,
@@ -42,7 +42,27 @@ def session_id_for(platform: str) -> str:
     return f"__{platform}__"
 
 
+def _load_platform_config(platform: str) -> dict:
+    """从 bot_config.json 读取指定平台的配置。"""
+    import json
+    from pathlib import Path
+    config_path = Path.home() / ".Aries" / "bot_config.json"
+    if not config_path.exists():
+        return {}
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        return config.get(platform, {})
+    except Exception:
+        return {}
+
+
 def _platform_system_extra(platform: str) -> str:
+    # 优先使用用户在 bot_config.json 中配置的自定义系统提示词
+    pconf = _load_platform_config(platform)
+    custom = (pconf.get("system_prompt") or "").strip()
+    if custom:
+        return "\n" + custom
+    # 回退到默认文案
     names = {"qq": "QQ", "wechat": "微信", "feishu": "飞书"}
     label = names.get(platform, platform)
     return (
@@ -86,6 +106,7 @@ async def run_agent_in_session(
     segment_sink: Optional[PlatformStreamSink] = None,
     cancel_event: Optional[asyncio.Event] = None,
     skip_save_user: bool = False,
+    platform: Optional[str] = None,
 ) -> str:
     """在指定 session 中以 agent 模式跑一轮对话，返回最终助手回复。
 
@@ -99,6 +120,12 @@ async def run_agent_in_session(
 
     _meta = get_session(session_id) or {}
     work_dir = (_meta.get("work_dir") or "").strip() or None
+    # bot_config.json 中平台级 work_dir 优先
+    if platform:
+        pconf = _load_platform_config(platform)
+        bot_work_dir = (pconf.get("work_dir") or "").strip()
+        if bot_work_dir:
+            work_dir = bot_work_dir
 
     if not skip_save_user:
         save_message(session_id, "user", text, mode="agent")
@@ -113,13 +140,15 @@ async def run_agent_in_session(
     )
 
     # 平台会话追加额外提示
-    if session_id in (session_id_for("wechat"), session_id_for("qq"), session_id_for("feishu")):
-        platform = (
+    if platform and platform in PLATFORMS:
+        system_prompt += _platform_system_extra(platform)
+    elif session_id in (session_id_for("wechat"), session_id_for("qq"), session_id_for("feishu")):
+        detected = (
             "wechat" if session_id == session_id_for("wechat")
             else "qq" if session_id == session_id_for("qq")
             else "feishu"
         )
-        system_prompt += _platform_system_extra(platform)
+        system_prompt += _platform_system_extra(detected)
 
     from db.chat import build_agent_reasoning_context
 
@@ -216,6 +245,7 @@ async def process_inbound_message_async(
             segment_sink=segment_sink,
             cancel_event=cancel_event,
             skip_save_user=True,
+            platform=platform,
         )
         # 通知前端：AI 回复已完成
         await notify_session_update(sid)

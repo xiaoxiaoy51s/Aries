@@ -52,74 +52,56 @@
         </button>
       </div>
 
-      <div class="sidebar-section">
+      <div class="sidebar-section projects-section">
         <div class="section-label">项目</div>
         <div v-if="projects.length === 0" class="project-empty">暂无项目</div>
-        <div
-          v-for="project in projects"
-          :key="project.work_dir"
-          class="project-item"
-          :class="{ active: currentProject?.work_dir === project.work_dir }"
-        >
-          <button type="button" class="project-row" @click="selectProject(project)">
-            <span class="project-expand">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpanded(project.work_dir) }">
-                <path d="m9 18 6-6-6-6"/>
-              </svg>
-            </span>
-            <span class="project-icon">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-              </svg>
-            </span>
-            <span class="project-name" :title="project.name">{{ project.name }}</span>
-            <span class="project-actions">
-              <span class="project-btn" title="新建对话" @click.stop="createNewChatInProject(project)">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 5v14M5 12h14"/>
+        <div v-else class="projects-scroll">
+          <div
+            v-for="project in projects"
+            :key="project.work_dir"
+            class="project-item"
+            :class="{ active: currentProject?.work_dir === project.work_dir }"
+          >
+            <button type="button" class="project-row" @click="selectProject(project)">
+              <span class="project-expand">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpanded(project.work_dir) }">
+                  <path d="m9 18 6-6-6-6"/>
                 </svg>
               </span>
-              <span class="project-btn" title="打开文件夹" @click.stop="openProjectDir(project)">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <span class="project-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
                 </svg>
               </span>
-            </span>
-          </button>
-          <ul v-if="project.sessions?.length && isExpanded(project.work_dir)" class="session-list project-sessions">
-            <li
-              v-for="session in project.sessions"
-              :key="session.session_id"
-              class="session-item session-sub"
-              :class="{ active: currentSessionId === session.session_id }"
-              :title="session.title"
-              @click="selectSession(session.session_id)"
-              @contextmenu.prevent="onSessionContextMenu($event, session)"
-            >
-              <span class="session-title">{{ session.title || '空对话' }}</span>
-            </li>
-          </ul>
+              <span class="project-name" :title="project.name">{{ project.name }}</span>
+              <span class="project-actions">
+                <span class="project-btn" title="新建对话" @click.stop="createNewChatInProject(project)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 5v14M5 12h14"/>
+                  </svg>
+                </span>
+                <span class="project-btn" title="打开文件夹" @click.stop="openProjectDir(project)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                  </svg>
+                </span>
+              </span>
+            </button>
+            <ul v-if="project.sessions?.length && isExpanded(project.work_dir)" class="session-list project-sessions">
+              <li
+                v-for="session in project.sessions"
+                :key="session.session_id"
+                class="session-item session-sub"
+                :class="{ active: currentSessionId === session.session_id }"
+                :title="session.title"
+                @click="selectSession(session.session_id)"
+                @contextmenu.prevent="onSessionContextMenu($event, session)"
+              >
+                <span class="session-title">{{ session.title || '空对话' }}</span>
+              </li>
+            </ul>
+          </div>
         </div>
-      </div>
-
-      <div class="sidebar-section">
-        <div class="section-label">对话</div>
-        <ul class="session-list">
-          <li
-            v-for="p in platformSessions"
-            :key="p.id"
-            class="session-item platform-item"
-            :class="{ active: currentSessionId === p.id }"
-            @click="selectSession(p.id)"
-          >
-            <span class="platform-icon" :class="`platform-${p.platform}`">
-              <img v-if="p.platform === 'feishu'" src="@/assets/feishu.svg" alt="飞书" />
-              <img v-else-if="p.platform === 'qq'" src="@/assets/qq.svg" alt="QQ" />
-              <img v-else src="@/assets/weixin.svg" alt="微信" />
-            </span>
-            <span class="platform-name">{{ p.name }}</span>
-          </li>
-        </ul>
       </div>
 
       <div class="sidebar-footer">
@@ -234,7 +216,6 @@ import SubagentsPage from './SubagentsPage.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import SearchDialog from '@/components/SearchDialog.vue'
 import { listProjects, updateSessionMeta, deleteSession } from '@/api/sessions'
-import { listActivePlatforms } from '@/api/platform'
 import { useModelStore } from '@/stores/model'
 import { useSidebar } from '@/composables/useSidebar'
 
@@ -312,23 +293,6 @@ function ctxDelete() {
   if (s) deleteSessionItem(s)
 }
 
-// 平台会话列表（根据 chat_messages 表中是否有对应 session_id 动态显示）
-const platformSessions = ref<{ id: string; name: string; platform: string }[]>([])
-
-async function loadActivePlatforms() {
-  try {
-    const data = await listActivePlatforms()
-    platformSessions.value = (data.platforms || []).map((p: any) => ({
-      id: p.session_id,
-      name: p.name,
-      platform: p.platform,
-    }))
-  } catch (e) {
-    console.error('加载活跃平台失败', e)
-    platformSessions.value = []
-  }
-}
-
 function isPlatformId(id: string) {
   return id === '__feishu__' || id === '__qq__' || id === '__wechat__'
 }
@@ -353,7 +317,6 @@ async function loadProjects(retries = 5, delay = 1500) {
 
 function onRefreshProjects() {
   void loadProjects()
-  void loadActivePlatforms()
 }
 
 function onGlobalCloseCtxMenu(e: MouseEvent | KeyboardEvent) {
@@ -363,7 +326,7 @@ function onGlobalCloseCtxMenu(e: MouseEvent | KeyboardEvent) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadProjects(), modelStore.loadModels(), loadActivePlatforms()])
+  await Promise.all([loadProjects(), modelStore.loadModels()])
   window.addEventListener('aries:refresh-sessions', onRefreshProjects)
   window.addEventListener('aries:workdir-changed', onRefreshProjects)
   window.addEventListener('aries:open-session', onOpenSession)
@@ -449,7 +412,10 @@ async function selectSession(id: string) {
 
 function onOpenSession(e: Event) {
   const id = (e as CustomEvent<string>).detail
-  if (id) void selectSession(id)
+  if (id) {
+    showSettings.value = false
+    void selectSession(id)
+  }
 }
 
 function onSearchSelect(sessionId: string) {
@@ -591,6 +557,20 @@ function cancelDelete() {
 
 .sidebar-section {
   margin-top: 8px;
+}
+
+.projects-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.projects-scroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 2px;
 }
 
 .section-label {

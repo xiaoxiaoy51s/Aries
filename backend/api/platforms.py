@@ -10,8 +10,8 @@ from pydantic import BaseModel
 from services.qq_bot import start_qq_bot, stop_qq_bot
 from services.feishu_bot import start_feishu_bot, stop_feishu_bot
 from services.wechat_bot import start_wechat_bot, stop_wechat_bot
-from utils.wechat_link import generate_qrcode, poll_qrcode_status
-from utils.feishu_link import (
+from services.wechat_link import generate_qrcode, poll_qrcode_status
+from services.feishu_link import (
     generate_qrcode as generate_feishu_qrcode,
     poll_auth_status as poll_feishu_auth_status,
     cancel_registration as cancel_feishu_registration,
@@ -90,6 +90,8 @@ class QQConfigRequest(BaseModel):
     app_id: str = ""
     app_secret: str = ""
     mode: str = "agent"
+    work_dir: str = ""
+    system_prompt: str = ""
 
 
 class FeishuConfigRequest(BaseModel):
@@ -97,11 +99,15 @@ class FeishuConfigRequest(BaseModel):
     app_id: str = ""
     app_secret: str = ""
     mode: str = "agent"
+    work_dir: str = ""
+    system_prompt: str = ""
 
 
 class WeChatConfigRequest(BaseModel):
     enabled: bool = False
     mode: str = "agent"
+    work_dir: str = ""
+    system_prompt: str = ""
 
 
 class WeChatQRCodePollRequest(BaseModel):
@@ -201,15 +207,20 @@ def get_platform(platform: str):
 def save_qq_config(body: QQConfigRequest):
     config = _load_config()
     existing = config.get("qq", {})
+    # app_id/app_secret 为空时保留原值（配置弹窗只改 work_dir/system_prompt 的场景）
+    app_id = body.app_id or existing.get("app_id", "")
+    app_secret = body.app_secret or existing.get("app_secret", "")
     existing.update({
         "enabled": body.enabled,
-        "app_id": body.app_id,
-        "app_secret": body.app_secret,
+        "app_id": app_id,
+        "app_secret": app_secret,
         "mode": body.mode,
+        "work_dir": body.work_dir,
+        "system_prompt": body.system_prompt,
     })
     config["qq"] = existing
     _save_config(config)
-    if body.enabled and body.app_id and body.app_secret:
+    if body.enabled and app_id and app_secret:
         _restart_platform("qq")
     elif not body.enabled:
         _stop_platform("qq")
@@ -239,6 +250,8 @@ def save_feishu_config(body: FeishuConfigRequest):
         existing.update({
             "enabled": body.enabled,
             "mode": body.mode,
+            "work_dir": body.work_dir,
+            "system_prompt": body.system_prompt,
         })
         config["feishu"] = existing
         _save_config(config)
@@ -248,6 +261,8 @@ def save_feishu_config(body: FeishuConfigRequest):
         existing.update({
             "enabled": body.enabled,
             "mode": body.mode,
+            "work_dir": body.work_dir,
+            "system_prompt": body.system_prompt,
         })
         config["feishu"] = existing
         _save_config(config)
@@ -295,6 +310,8 @@ def save_wechat_config(body: WeChatConfigRequest):
     existing.update({
         "enabled": body.enabled,
         "mode": body.mode,
+        "work_dir": body.work_dir,
+        "system_prompt": body.system_prompt,
     })
     config["wechat"] = existing
     _save_config(config)

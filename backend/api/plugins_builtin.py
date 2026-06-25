@@ -6,7 +6,7 @@ PUT    /api/plugins/toggle   开关某个插件
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from utils.plugin_manager import discover_plugins, set_plugin_enabled, sync_plugins
+from engine.plugin_manager import discover_plugins, set_plugin_enabled, sync_plugins
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
 

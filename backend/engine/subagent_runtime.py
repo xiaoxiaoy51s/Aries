@@ -140,7 +140,7 @@ def _filter_mcp_tools(all_tools: list[dict[str, Any]], allowed_mcps: list[str]) 
     """按 server_id 过滤 MCP 工具定义。MCP 工具名约定为 `mcp_{server_id}_{tool}`。"""
     if not allowed_mcps:
         return []
-    from utils.mcp_runtime import _slug  # type: ignore
+    from mcp.runtime import _slug  # type: ignore
 
     allowed_slugs = {_slug(m) for m in allowed_mcps}
     result: list[dict[str, Any]] = []
@@ -168,7 +168,7 @@ def _build_skill_tool_definitions(
         tool_table: {tool_name: skill_module} 供子 Agent 执行时直接调用，
                     避开 skills_manager.execute_tool 的 enabled-only 限制
     """
-    from utils.skills_manager import CORE_TOOL_NAMES
+    from engine.skills_manager import CORE_TOOL_NAMES
 
     def _load_skill_module(entry):
         """优先用 importlib 从 skill_path 加载（支持内置插件 skills）。"""
@@ -183,7 +183,7 @@ def _build_skill_tool_definitions(
                 spec.loader.exec_module(mod)
                 return mod
         # 回退到常规 skills.{folder_name}
-        from utils.skills_manager import skill_import_path
+        from engine.skills_manager import skill_import_path
         return __import__(
             skill_import_path(entry.folder_name),
             fromlist=["get_tool_definition", "get_tool_definitions", "execute"],
@@ -241,7 +241,7 @@ def _execute_skill_tool(module: Any, tool_name: str, args: dict[str, Any]) -> di
 def _build_core_tool_definitions() -> list[dict[str, Any]]:
     """加载 file_io / cli 等核心公共工具。"""
     try:
-        from utils.agent_tools import get_tool_definitions
+        from engine.tool_definitions import get_tool_definitions
 
         return list(get_tool_definitions() or [])
     except Exception as exc:
@@ -401,7 +401,7 @@ async def run_subagent(
 
     # 1. 加载 subagent 运行时配置
     try:
-        from utils.subagent_manager import build_subagent_runtime
+        from engine.subagent_manager import build_subagent_runtime
 
         runtime = build_subagent_runtime(subagent_name)
     except ValueError as exc:
@@ -448,7 +448,7 @@ async def run_subagent(
     core_tools = _build_core_tool_definitions()
     skill_tools, skill_tool_table = _build_skill_tool_definitions(skill_entries)
     try:
-        from utils.mcp_runtime import get_mcp_tool_definitions
+        from mcp.runtime import get_mcp_tool_definitions
 
         all_mcp_tools = get_mcp_tool_definitions()
     except Exception:
@@ -588,7 +588,7 @@ async def _run_subagent_loop(
     sub_logger: SessionLogger,
 ) -> dict[str, Any]:
     """子 Agent 的多轮工具循环（精简版）。"""
-    from utils.skills_manager import execute_tool as execute_global_tool
+    from engine.skills_manager import execute_tool as execute_global_tool
 
     headers = {
         "Content-Type": "application/json",

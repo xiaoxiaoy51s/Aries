@@ -176,7 +176,7 @@ def get_all_tool_definitions() -> list[dict]:
     tools = []
 
     try:
-        from utils.agent_tools import get_tool_definitions as get_agent_tool_definitions
+        from engine.tool_definitions import get_tool_definitions as get_agent_tool_definitions
         agent_tools = get_agent_tool_definitions()
         if agent_tools:
             tools.extend(agent_tools)
@@ -213,7 +213,7 @@ def get_all_tool_definitions() -> list[dict]:
             print(f"Failed to load tool definition for {entry.name}: {e}")
 
     try:
-        from utils.mcp_runtime import get_mcp_tool_definitions
+        from mcp.runtime import get_mcp_tool_definitions
         mcp_tools = get_mcp_tool_definitions(allowed_mcp_ids=get_main_agent_allowed_mcps())
         if mcp_tools:
             tools.extend(mcp_tools)
@@ -222,7 +222,7 @@ def get_all_tool_definitions() -> list[dict]:
 
     # 加载内置插件工具（tools 类型：web_fetch 等纯 JSON 工具）
     try:
-        from utils.plugin_manager import get_plugin_tool_definitions
+        from engine.plugin_manager import get_plugin_tool_definitions
         plugin_tools = get_plugin_tool_definitions()
         if plugin_tools:
             existing_names = {
@@ -237,7 +237,7 @@ def get_all_tool_definitions() -> list[dict]:
 
     # 加载内置插件技能（skills 类型：web_search 等带 Python 代码的技能）
     try:
-        from utils.plugin_manager import get_plugin_skill_tool_definitions
+        from engine.plugin_manager import get_plugin_skill_tool_definitions
         plugin_skill_tools = get_plugin_skill_tool_definitions()
         if plugin_skill_tools:
             existing_names = {
@@ -277,7 +277,7 @@ def execute_tool(
         pass
 
     try:
-        from utils.mcp_runtime import execute_mcp_tool
+        from mcp.runtime import execute_mcp_tool
         mcp_result = execute_mcp_tool(tool_name, arguments)
         if mcp_result is not None:
             return mcp_result
@@ -286,7 +286,7 @@ def execute_tool(
 
     if tool_name in CORE_TOOL_NAMES:
         try:
-            from utils.agent_tools import execute as execute_agent_tool
+            from engine.tool_definitions import execute as execute_agent_tool
             return execute_agent_tool(tool=tool_name, work_dir=work_dir, session_id=session_id, invocation_id=invocation_id, **arguments)
         except Exception as e:
             return {"success": False, "error": str(e), "output": f"执行 {tool_name} 失败: {str(e)}"}
@@ -321,7 +321,7 @@ def execute_tool(
 
     # 查找内置插件技能（skills 类型：web_search 等）
     try:
-        from utils.plugin_manager import execute_plugin_skill_tool
+        from engine.plugin_manager import execute_plugin_skill_tool
         result = execute_plugin_skill_tool(tool_name, dict(arguments))
         if result is not None:
             return result
@@ -330,7 +330,7 @@ def execute_tool(
 
     # 查找内置插件工具（tools 类型：web_fetch 等）
     try:
-        from utils.plugin_manager import execute_plugin_tool
+        from engine.plugin_manager import execute_plugin_tool
         result = execute_plugin_tool(tool_name, dict(arguments))
         if result is not None:
             return result

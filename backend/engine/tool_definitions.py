@@ -118,7 +118,7 @@ def _handle_create_scheduled_task(
 
 
 def _get_file_manager(work_dir: str | None) -> Any:
-    from utils.file_manager import FileManagerTool
+    from engine.file_manager import FileManagerTool
     return FileManagerTool(work_dir=work_dir)
 
 
@@ -360,7 +360,7 @@ def _execute_sync(tool: str, work_dir: str, session_id: str | None, invocation_i
 
         # 多策略编辑工具（#4）
         if tool in ("multi_replace_string", "apply_patch"):
-            from utils.edit_tools import EditTools
+            from engine.edit_tools import EditTools
             et = EditTools(work_dir=work_dir)
             return et.execute(tool, kwargs)
 
@@ -381,7 +381,7 @@ def _execute_sync(tool: str, work_dir: str, session_id: str | None, invocation_i
             return fm.execute_delete_file(**kwargs)
 
         # 非核心工具：转发到 skills_manager 执行（如 playwright、web_search 等 skill 工具）
-        from utils.skills_manager import execute_tool as execute_skill_tool
+        from engine.skills_manager import execute_tool as execute_skill_tool
         result = execute_skill_tool(tool, kwargs, work_dir=work_dir, session_id=session_id, invocation_id=invocation_id)
         if result is not None:
             return result

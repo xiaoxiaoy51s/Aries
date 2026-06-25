@@ -1,4 +1,4 @@
-"""工具执行逻辑：单工具执行、子 Agent 并行委派。"""
+﻿"""工具执行逻辑：单工具执行、子 Agent 并行委派。"""
 import json
 import asyncio
 from typing import Any, Optional, TYPE_CHECKING
@@ -6,7 +6,7 @@ from typing import Any, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from services.platform_segment import PlatformStreamSink
 
-from utils.agent_tools import execute_async as execute_tool
+from engine.tool_definitions import execute_async as execute_tool
 from .confirmation import (
     CONFIRMATION_TIMEOUT_SECONDS,
     register_confirmation_wait,
@@ -188,7 +188,7 @@ async def run_delegate_items(
     if not delegate_items:
         return []
 
-    from utils.subagent_runtime import run_subagent
+    from engine.subagent_runtime import run_subagent
 
     parallel_event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 

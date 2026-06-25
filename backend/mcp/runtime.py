@@ -16,7 +16,7 @@ from typing import Any
 
 from datetime import timedelta
 
-from utils.mcp_config import (
+from mcp.config import (
     build_mcp_http_headers,
     discover_plugins,
     get_all_servers,
@@ -329,12 +329,49 @@ def _stdio_server_params(server: dict[str, Any]):
 
     env_dict = _build_stdio_env(server)
 
+    # 当系统没有 node/python 时，自动替换为内置运行时
+    resolved_command = command.strip()
+    if command_str in ("node", "npx", "npm"):
+        from utils.runtime_manager import get_runtime_exe
+        node_exe = get_runtime_exe("node")
+        if node_exe:
+            node_dir = str(Path(node_exe).parent)
+            # npx/npm → node.exe + npx-cli.js / npm-cli.js
+            if command_str == "node":
+                resolved_command = node_exe
+            elif command_str == "npx":
+                npx_cli = str(Path(node_exe).parent / "node_modules" / "npm" / "bin" / "npx-cli.js")
+                if Path(npx_cli).exists():
+                    resolved_command = node_exe
+                    arg_list = [npx_cli] + arg_list
+                else:
+                    # 回退到 npx.cmd
+                    npx_cmd = str(Path(node_exe).parent / "npx.cmd")
+                    if Path(npx_cmd).exists():
+                        resolved_command = npx_cmd
+            elif command_str == "npm":
+                npm_cli = str(Path(node_exe).parent / "node_modules" / "npm" / "bin" / "npm-cli.js")
+                if Path(npm_cli).exists():
+                    resolved_command = node_exe
+                    arg_list = [npm_cli] + arg_list
+                else:
+                    npm_cmd = str(Path(node_exe).parent / "npm.cmd")
+                    if Path(npm_cmd).exists():
+                        resolved_command = npm_cmd
+            # 确保内置 node 目录在 PATH 最前
+            env_dict["PATH"] = node_dir + os.pathsep + env_dict.get("PATH", "")
+    elif command_str in ("python", "python3"):
+        from utils.runtime_manager import get_runtime_exe
+        python_exe = get_runtime_exe("python")
+        if python_exe:
+            resolved_command = python_exe
+
     # npx 命令需要特殊处理 .npmrc 代理配置
     if command_str in ("npx",):
         arg_list = _prepare_npx_args(arg_list, env_dict)
 
     return StdioServerParameters(
-        command=command.strip(),
+        command=resolved_command,
         args=arg_list,
         env=env_dict,
     )

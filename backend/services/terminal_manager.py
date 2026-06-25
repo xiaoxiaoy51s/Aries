@@ -43,10 +43,24 @@ def find_cli_dir() -> Path:
 
 
 def find_node() -> str:
-    """查找 node 可执行文件"""
+    """查找 node 可执行文件。
+
+    优先级：
+        1. env.json 中配置的 Node.js
+        2. 环境变量 NODE_EXE
+        3. PATH 中的 node
+        4. 常见安装路径
+    """
+    from utils.runtime_manager import resolve_runtime
+
+    resolved = resolve_runtime("node")
+    if resolved.get("path"):
+        return resolved["path"]
+
     node = os.environ.get("NODE_EXE", "") or shutil_which("node")
     if node:
         return node
+
     # 尝试常见路径
     candidates = [
         r"C:\Program Files\nodejs\node.exe",
@@ -152,7 +166,7 @@ def start_cli_server(
     if not port:
         port = _find_available_port()
 
-    from utils.file_manager import UserFileManager
+    from engine.file_manager import UserFileManager
     manager = UserFileManager(work_dir=work_dir)
     allowed_dir = str(manager.get_user_dir())
 
@@ -175,7 +189,7 @@ def start_cli_server(
         )
     except FileNotFoundError:
         raise RuntimeError(
-            f"无法启动 CLI: 运行器 '{runner}' 未找到。"
+            f"无法启动 CLI: node 运行器 '{node_exe}' 未找到。"
             "请确保已安装依赖: cd backend/cli && npm install"
         )
 
@@ -271,7 +285,7 @@ class TerminalManager:
         self._loop = loop
 
     def resolve_agent_session_id(self, work_dir: str | None = None) -> str:
-        from utils.file_manager import UserFileManager
+        from engine.file_manager import UserFileManager
         manager = UserFileManager(work_dir=work_dir)
         key = str(manager.get_user_dir())
         return f"agent:{key}"

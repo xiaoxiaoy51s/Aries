@@ -1,4 +1,4 @@
-"""Subagent CRUD API
+﻿"""Subagent CRUD API
 
 提供前端 UI 与主 Agent 共用的 Subagent 管理接口。
 所有读接口返回结果中 `available` 字段表示该 subagent 当前是否可被主 Agent 路由。
@@ -12,14 +12,14 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from utils.session_logger import SUBAGENT_LOG_ROOT, read_jsonl_events
-from utils.subagent_manager import (
+from engine.subagent_manager import (
     delete_subagent,
     discover_subagents,
     get_subagent_by_name,
     save_subagent,
     set_subagent_enabled,
 )
-from utils.subagent_runtime import (
+from engine.subagent_runtime import (
     cancel_subagent as runtime_cancel_subagent,
     list_running_subagents,
 )

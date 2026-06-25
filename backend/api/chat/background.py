@@ -21,7 +21,7 @@ from services.chat_stream_manager import (
     cleanup_bg_session,
 )
 
-from api.modes import stream_agent_mode
+from api.engine import stream_agent_mode
 
 # 后台 agent 任务追踪：SSE 断开后任务继续运行，避免被 GC 回收
 _background_tasks: set[asyncio.Task] = set()

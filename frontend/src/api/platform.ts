@@ -24,6 +24,8 @@ export interface QQConfigRequest {
   app_id: string
   app_secret: string
   mode: string
+  work_dir?: string
+  system_prompt?: string
 }
 
 export interface FeishuConfigRequest {
@@ -31,11 +33,15 @@ export interface FeishuConfigRequest {
   app_id: string
   app_secret: string
   mode: string
+  work_dir?: string
+  system_prompt?: string
 }
 
 export interface WeChatConfigRequest {
   enabled: boolean
   mode: string
+  work_dir?: string
+  system_prompt?: string
 }
 
 // ---------- 列表与状态 ----------

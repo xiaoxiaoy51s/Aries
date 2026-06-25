@@ -161,7 +161,7 @@ import { streamChat, streamVision, stopChat, checkChatStatus, resumeChat, jsonTo
 import { confirmTool } from '@/api/git'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { getSessionMessages, getSession, updateSessionMeta, getSessionContextUsage } from '@/api/sessions'
-import { getLatestWorkDir, listWorkDirs, createWorkDir } from '@/api/work_dirs'
+import { listWorkDirs, createWorkDir } from '@/api/work_dirs'
 import AssistantMessage from '@/components/AssistantMessage.vue'
 import ChatComposer from '@/components/ChatComposer.vue'
 import DangerCommandConfirm from '@/components/DangerCommandConfirm.vue'
@@ -650,8 +650,8 @@ function onNewChat(e?: Event) {
 const pendingWorkDir = ref('')
 
 // 当前工作目录（用于标签显示 + 选择）
-const DEFAULT_WORK_DIR = '~/.Aries/work_dir'
-const workDir = ref(DEFAULT_WORK_DIR)
+import { defaultWorkDir } from '@/utils/paths'
+const workDir = ref(defaultWorkDir.value)
 const workDirHistory = ref<string[]>([])
 const workDirLabel = computed(() => {
   if (!workDir.value) return 'work_dir'
@@ -662,13 +662,8 @@ const workDirLabel = computed(() => {
 })
 
 async function loadWorkDir() {
-  try {
-    const data = await getLatestWorkDir()
-    workDir.value = data.work_dir || DEFAULT_WORK_DIR
-  } catch {
-    workDir.value = DEFAULT_WORK_DIR
-  }
-  workspaceStore.setWorkDir(workDir.value)
+  await workspaceStore.initWorkDir()
+  workDir.value = workspaceStore.workDir
   loadWorkDirHistory()
 }
 
@@ -694,7 +689,7 @@ function pushWorkDirHistory(path: string) {
 }
 
 function onWorkDirChanged(e: Event) {
-  workDir.value = (e as CustomEvent).detail || DEFAULT_WORK_DIR
+  workDir.value = (e as CustomEvent).detail || defaultWorkDir.value
   workspaceStore.setWorkDir(workDir.value)
   loadWorkDirHistory()
 }

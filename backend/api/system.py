@@ -81,6 +81,24 @@ def open_url(body: OpenUrlRequest) -> OpenUrlResponse:
     return OpenUrlResponse(ok=True, url=url)
 
 
+class HomePathResponse(BaseModel):
+    home: str
+    pets_dir: str
+    work_dir: str
+
+
+@router.get("/home-path", response_model=HomePathResponse)
+def home_path() -> HomePathResponse:
+    """返回系统用户主目录及常用子目录的实际路径。"""
+    home = str(Path("~").expanduser().resolve())
+    sep = "\\" if sys.platform == "win32" else "/"
+    return HomePathResponse(
+        home=home,
+        pets_dir=f"{home}{sep}.Aries{sep}pets",
+        work_dir=f"{home}{sep}.Aries{sep}work_dir",
+    )
+
+
 @router.post("/select-directory", response_model=SelectDirectoryResponse)
 def select_directory() -> SelectDirectoryResponse:
     """弹出系统原生文件夹选择对话框（Windows / macOS / Linux）。"""

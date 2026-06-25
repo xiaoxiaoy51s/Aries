@@ -217,7 +217,7 @@ def get_session_context_usage(session_id: str):
     """
     from db.chat import get_memory_aware_context_messages
     from utils.token_counter import build_context_usage_breakdown
-    from api.modes.agent_mode import (
+    from api.engine.agent_mode import (
         build_agent_system_prompt_parts,
         get_agent_skills_and_tools,
     )

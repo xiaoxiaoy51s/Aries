@@ -1,13 +1,22 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
-
-const DEFAULT_WORK_DIR = '~/.Aries/work_dir'
+import { ref, computed } from 'vue'
+import { getLatestWorkDir } from '@/api/work_dirs'
+import { defaultWorkDir } from '@/utils/paths'
 
 export const useWorkspaceStore = defineStore('workspace', () => {
-  const workDir = ref(DEFAULT_WORK_DIR)
+  const workDir = ref(defaultWorkDir.value)
 
   function setWorkDir(dir: string) {
-    workDir.value = dir?.trim() || DEFAULT_WORK_DIR
+    workDir.value = dir?.trim() || defaultWorkDir.value
+  }
+
+  async function initWorkDir() {
+    try {
+      const data = await getLatestWorkDir()
+      workDir.value = data.work_dir || defaultWorkDir.value
+    } catch {
+      workDir.value = defaultWorkDir.value
+    }
   }
 
   function focusConsole() {
@@ -17,6 +26,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   return {
     workDir,
     setWorkDir,
+    initWorkDir,
     focusConsole,
   }
 })

@@ -177,8 +177,8 @@ class FileManagerTool:
     ) -> dict[str, Any]:
         """读取技能目录内的文件（支持用户 skills 和内置插件 skills）。"""
         try:
-            from utils.skills_manager import get_skill_by_name
-            from utils.plugin_manager import discover_plugins
+            from engine.skills_manager import get_skill_by_name
+            from engine.plugin_manager import discover_plugins
             entry = get_skill_by_name(skill_name)
             if entry is None:
                 # 查找内置插件 skill
@@ -390,7 +390,7 @@ class FileManagerTool:
         new_content_str = "".join(lines)
         # 记录变更前的内容（用于产物区域 diff 和回退）
         try:
-            with open(target, "w", encoding=encoding) as f:
+            with open(target, "w", encoding="utf-8") as f:
                 f.write(new_content_str)
         except Exception as exc:
             return self._error_response(f"写入失败: {exc}", normalized_path)
