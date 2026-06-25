@@ -54,6 +54,10 @@ function sanitizeForAI(raw) {
         .replace(/\n{3,}/g, '\n\n');
     return cleaned.trim();
 }
+/** invocation_id → session_id 映射，用于通过 toolCallId 找到终端会话 */
+const invocationToSession = new Map();
+/** session_id → detach 回调，用于手动触发后台运行 */
+const detachCallbacks = new Map();
 export class TerminalManager {
     sessions = new Map();
     logger;
@@ -318,6 +322,25 @@ export class TerminalManager {
             this.closeSession(sid);
         }
     }
+    /** 通过 invocation_id 手动 detach（用户点击"后台运行"） */
+    detachByInvocation(invocationId) {
+        const sid = invocationToSession.get(invocationId);
+        if (!sid)
+            return false;
+        const cb = detachCallbacks.get(sid);
+        if (!cb)
+            return false;
+        cb();
+        return true;
+    }
+    /** 通过 session_id 手动 detach */
+    detachBySession(sessionId) {
+        const cb = detachCallbacks.get(sessionId);
+        if (!cb)
+            return false;
+        cb();
+        return true;
+    }
     /** 核心命令执行（供 AI 调用） */
     async execute(command, options = {}) {
         const normalizedCommand = command.trim();
@@ -363,12 +386,16 @@ export class TerminalManager {
                 };
             }
         }
-        // 默认按 work_dir 复用 agent session，new_terminal=true 才新建
+        // AI 指定了 session_id 则使用它，否则默认按 work_dir 复用 agent session
         const agentSessionId = `agent:${targetDir}`;
-        const sessionId = options.newTerminal ? undefined : agentSessionId;
+        const sessionId = options.sessionId || agentSessionId;
         // 复用已有 session 或创建新 session
         const sid = this.createSession(targetDir, sessionId);
         const state = this.sessions.get(sid);
+        // 注册 invocation_id → session_id 映射，用于手动 detach
+        if (options.invocationId) {
+            invocationToSession.set(options.invocationId, sid);
+        }
         // 记录本次命令开始前的输出位置
         const outputBefore = state.outputBuffer.length;
         const outputBuffer = [];
@@ -387,6 +414,11 @@ export class TerminalManager {
                 clearInterval(detachCheck);
                 clearInterval(stableCheck);
                 state.callbacks.delete(captureCb);
+                // 清理 detach 回调
+                detachCallbacks.delete(sid);
+                if (options.invocationId) {
+                    invocationToSession.delete(options.invocationId);
+                }
             };
             const finish = () => {
                 if (settled)
@@ -436,6 +468,13 @@ export class TerminalManager {
                     pid: state.pty.pid,
                 });
             };
+            // 注册手动 detach 回调（用户点击"后台运行"时触发）
+            detachCallbacks.set(sid, () => {
+                if (autoDetached || settled)
+                    return;
+                autoDetached = true;
+                finish();
+            });
             const timeoutHandle = setTimeout(() => {
                 timedOut = true;
                 this.interrupt(sid);

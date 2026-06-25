@@ -15,6 +15,9 @@
       </svg>
     </button>
 
+    <!-- 任务清单按钮 -->
+    <TodoButton class="chat-todo-button" />
+
     <div class="chat-content">
     <!-- 空状态 -->
     <div v-if="!hasActiveChat" class="chat-empty">
@@ -165,6 +168,7 @@ import DangerCommandConfirm from '@/components/DangerCommandConfirm.vue'
 import SlashComposerInput, { type ComposerImage } from '@/components/SlashComposerInput.vue'
 import UserMessageContent from '@/components/UserMessageContent.vue'
 import RightPanel from '@/components/workspace/RightPanel.vue'
+import TodoButton from '@/components/TodoButton.vue'
 import { parseSnapshotEventObjects } from '@/utils/snapshotParser'
 
 interface SlashCommandDef {
@@ -1891,6 +1895,14 @@ async function runAssistantStream(
           autoConfirmedToolIds.add(toolCallId)
         }
       }
+      if (event.type === 'todo_update' && event.data?.todos) {
+        window.dispatchEvent(new CustomEvent('aries:todo-update', {
+          detail: {
+            sessionId: currentSessionId.value || '',
+            todos: event.data.todos,
+          },
+        }))
+      }
       messages.value[assistantIdx] = { ...assistantMsg }
       await nextTick()
       scheduleScrollToBottom()
@@ -2068,7 +2080,7 @@ function scheduleScrollToBottom(force = false) {
 .right-panel-toggle {
   position: absolute;
   top: 8px;
-  right: 8px;
+  right: 48px;
   z-index: 100;
   display: flex;
   align-items: center;
@@ -2087,6 +2099,13 @@ function scheduleScrollToBottom(force = false) {
 .right-panel-toggle:hover {
   background: var(--accent-hover);
   color: var(--text);
+}
+
+.chat-todo-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 100;
 }
 
 .chat-content {

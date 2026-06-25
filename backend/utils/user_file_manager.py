@@ -118,12 +118,46 @@ class UserFileManager:
             return False
 
     def delete_file(self, file_path: str) -> bool:
+        """删除文件（移到系统回收站，非物理删除）。"""
+        result = self.move_to_trash(file_path)
+        return result["success"]
+
+    def move_to_trash(self, file_path: str) -> dict[str, Any]:
+        """将文件或目录移到系统回收站（跨平台，调用操作系统 API）。
+
+        使用 send2trash 库，底层调用：
+        - Windows: IFileOperation COM 接口
+        - macOS: NSWorkspace recycleURLs
+        - Linux: FreeDesktop.org Trash 规范
+
+        Returns:
+            dict: {success, error, previous_content, is_dir}
+        """
+        from send2trash import send2trash
+
         target = self.resolve_file_path(file_path, use_today=False)
         if not target.exists():
-            return False
-        if target.is_dir():
-            import shutil
-            shutil.rmtree(target)
-            return True
-        target.unlink()
-        return True
+            return {"success": False, "error": f"文件不存在: {target}"}
+
+        is_dir = target.is_dir()
+
+        # 删除前读取文本内容，用于日志记录和回退（仅文件，非目录）
+        previous_content = ""
+        if not is_dir and target.is_file():
+            try:
+                previous_content = target.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                previous_content = ""
+
+        # 移到系统回收站
+        try:
+            send2trash(str(target))
+        except Exception as exc:
+            return {"success": False, "error": f"移到回收站失败: {exc}"}
+
+        return {
+            "success": True,
+            "error": "",
+            "previous_content": previous_content,
+            "is_dir": is_dir,
+        }

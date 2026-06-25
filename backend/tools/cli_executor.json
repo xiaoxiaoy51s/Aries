@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "cli_executor",
-    "description": "执行本地 CLI 命令。仅用于文件操作、运行脚本、读取目录信息、安装依赖等任务。如果命令包含删除、重命名、系统级变更等危险操作，会返回需要用户确认。\n\n【重要提示】\n1. 当返回 'file is locked' 或 'Internal error' 但 exit_code=0 时，说明命令实际已成功执行，无需重试。\n2. 对于 pip install 等网络操作，建议设置 timeout 为 90 秒或更长。\n3. 执行 Python 脚本时，如果脚本路径包含空格，请使用引号包裹。\n4. 对于 npm run dev、pnpm dev、yarn dev、vite、next dev、python main.py、uvicorn 等开发服务器，系统会自动使用新终端运行（new_terminal=true），不会中断已有命令。timeout 建议 20-40 秒；服务启动成功后系统会自动转入后台。\n5. 对于其他需要长时间运行的命令（如 deno serve、rails server），请显式设置 new_terminal=true。",
+    "description": "执行本地 CLI 命令。仅用于文件操作、运行脚本、读取目录信息、安装依赖等任务。如果命令包含删除、重命名、系统级变更等危险操作，会返回需要用户确认。\n\n【重要提示】\n1. 当返回 'file is locked' 或 'Internal error' 但 exit_code=0 时，说明命令实际已成功执行，无需重试。\n2. 对于 pip install 等网络操作，建议设置 timeout 为 90 秒或更长。\n3. 执行 Python 脚本时，如果脚本路径包含空格，请使用引号包裹。\n4. 对于 npm run dev、pnpm dev、yarn dev、vite、next dev、python main.py、uvicorn 等开发服务器，系统会自动使用新终端运行，不会中断已有命令。timeout 建议 20-40 秒；服务启动成功后系统会自动转入后台。返回结果中的 session_id 可用于后续 check_command_status 查看输出或 stop_command 停止。\n5. 对于其他需要长时间运行的命令（如 deno serve、rails server），请设置 session_id 参数指定一个独立终端（如 'dev-server'），后续可用该 ID 查看/停止。",
     "parameters": {
       "type": "object",
       "properties": {
@@ -20,10 +20,10 @@
           "description": "超时时间（秒）。简单命令建议 30s；pip install 等网络操作可用 120s+；默认 300。",
           "default": 300
         },
-        "new_terminal": {
-          "type": "boolean",
-          "description": "是否新开一个独立终端会话。默认 false（复用已有终端）。",
-          "default": false
+        "session_id": {
+          "type": "string",
+          "description": "自定义终端会话 ID。传入后会创建/复用该 ID 的终端，后续可通过此 ID 用 check_command_status 查看输出或 stop_command 停止。不传时默认复用当前工作目录的终端。运行开发服务器等长命令时建议传入一个有意义的 ID（如 'dev-server'）。",
+          "default": ""
         }
       },
       "required": ["command"],

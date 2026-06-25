@@ -67,4 +67,4 @@ Commit & Pull Request Guidelines
 
 (Optional) Add other sections if relevant, such as Security & Configuration Tips, or Agent-Specific Instructions.
 
-Important: do not create AGENTS.md in the repository. After generating the Markdown content, call write_agent_memory with the complete content so Aries stores it as the current work_dir agent memory."""
+Important: do not create AGENTS.md in the repository. After generating the Markdown content, call write_file with memory=true and the complete content so Aries stores it as the current work_dir agent memory."""

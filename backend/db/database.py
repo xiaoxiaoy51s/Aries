@@ -1,17 +1,52 @@
+"""数据库连接管理。
+
+策略：线程级连接复用（thread-local）+ 健康检查。
+- 每个线程维护一个独立连接，首次使用时创建。
+- 每次返回前检查连接是否可用，失效则自动重建。
+- 开启 WAL 模式，提升并发读写性能。
+"""
 import sqlite3
-import json
+import threading
 from pathlib import Path
-from typing import Optional, List
-from datetime import datetime
 
 DATABASE_PATH = (Path.home() / ".Aries" / "sqlite" / "agent.db").resolve()
 
+_local = threading.local()
+
+
+def _create_connection() -> sqlite3.Connection:
+    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DATABASE_PATH), check_same_thread=False, timeout=10.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
 
 def get_connection() -> sqlite3.Connection:
-    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DATABASE_PATH))
-    conn.row_factory = sqlite3.Row
+    """返回当前线程的 SQLite 连接（复用，不手动关闭）。
+
+    线程级连接池：每线程一个连接，自动检测失效并重建。
+    """
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.execute("SELECT 1")
+            return conn
+        except sqlite3.Error:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    conn = _create_connection()
+    _local.conn = conn
     return conn
+
+
+def _column_exists(cursor, table: str, column: str) -> bool:
+    """检查表中是否存在某列（仅用于 init_database 迁移）。"""
+    cols = {row[1] for row in cursor.execute(f"PRAGMA table_info({table})").fetchall()}
+    return column in cols
 
 
 def init_database():
@@ -27,9 +62,16 @@ def init_database():
             reasoning_content TEXT,
             image_path TEXT,
             message_snapshot_json TEXT,
+            mode TEXT NOT NULL DEFAULT 'agent',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # 老库迁移：如果 chat_messages 已存在但缺 mode 列，补上
+    if not _column_exists(cursor, "chat_messages", "mode"):
+        cursor.execute(
+            "ALTER TABLE chat_messages ADD COLUMN mode TEXT NOT NULL DEFAULT 'agent'"
+        )
 
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id)
@@ -78,40 +120,23 @@ def init_database():
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_polling ON scheduled_tasks(status, scheduled_at)
     """)
+
     # 老库补字段：任务类型（once / recurring）与循环间隔秒数
-    cols = {row[1] for row in cursor.execute("PRAGMA table_info(scheduled_tasks)").fetchall()}
-    if "task_type" not in cols:
-        cursor.execute(
-            "ALTER TABLE scheduled_tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'once'"
-        )
-    if "interval_seconds" not in cols:
-        cursor.execute(
-            "ALTER TABLE scheduled_tasks ADD COLUMN interval_seconds INTEGER"
-        )
-    if "interval_minutes" not in cols:
-        cursor.execute(
-            "ALTER TABLE scheduled_tasks ADD COLUMN interval_minutes INTEGER"
-        )
-    if "schedule_type" not in cols:
-        cursor.execute(
-            "ALTER TABLE scheduled_tasks ADD COLUMN schedule_type TEXT NOT NULL DEFAULT 'once'"
-        )
-    if "schedule_config" not in cols:
-        cursor.execute(
-            "ALTER TABLE scheduled_tasks ADD COLUMN schedule_config TEXT"
-        )
-    if "notify_type" not in cols:
-        cursor.execute(
-            "ALTER TABLE scheduled_tasks ADD COLUMN notify_type TEXT NOT NULL DEFAULT 'none'"
-        )
-    if "notify_config" not in cols:
-        cursor.execute(
-            "ALTER TABLE scheduled_tasks ADD COLUMN notify_config TEXT"
-        )
-    if "auto_delete" not in cols:
-        cursor.execute(
-            "ALTER TABLE scheduled_tasks ADD COLUMN auto_delete INTEGER NOT NULL DEFAULT 0"
-        )
+    for col, col_type, default in [
+        ("task_type", "TEXT", "'once'"),
+        ("interval_seconds", "INTEGER", None),
+        ("interval_minutes", "INTEGER", None),
+        ("schedule_type", "TEXT", "'once'"),
+        ("schedule_config", "TEXT", None),
+        ("notify_type", "TEXT", "'none'"),
+        ("notify_config", "TEXT", None),
+        ("auto_delete", "INTEGER", "0"),
+    ]:
+        if not _column_exists(cursor, "scheduled_tasks", col):
+            default_clause = f" DEFAULT {default}" if default is not None else ""
+            cursor.execute(
+                f"ALTER TABLE scheduled_tasks ADD COLUMN {col} {col_type}{default_clause}"
+            )
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -162,7 +187,6 @@ def init_database():
     )
 
     conn.commit()
-    conn.close()
 
 
 init_database()

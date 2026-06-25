@@ -1,5 +1,5 @@
 from api.config import router as config_router
-from api.chat import router as chat_router
+from api.chat.router import router as chat_router
 from api.sessions import router as sessions_router
 from api.work_dirs import router as work_dirs_router
 from api.scheduled_tasks import router as scheduled_tasks_router
@@ -19,3 +19,4 @@ from api.memory import router as memory_router
 from api.pets_api import router as pets_router
 from api.network_api import router as network_router
 from api.main_agent_api import router as main_agent_router
+from api.plugins_builtin import router as plugins_builtin_router

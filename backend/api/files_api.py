@@ -173,18 +173,43 @@ async def delete_file(req: DeleteRequest) -> dict[str, Any]:
 
 class RevertFileRequest(BaseModel):
     file_path: str
-    content: str  # 要恢复的内容（previous_content）
+    content: str = ""  # 要恢复的内容（previous_content）
+    operation: str = "modify"  # modify / create / delete
 
 
 @router.post("/revert")
 async def revert_file(req: RevertFileRequest) -> dict[str, Any]:
-    """将文件内容恢复到指定内容（用于产物区域的回退功能）。"""
+    """将文件恢复到指定状态（用于产物区域的回退功能）。
+
+    回退逻辑统一为内容覆盖：
+    - modify: 把 content 写回 file_path
+    - create: 文件已不存在则跳过，否则删除该文件（撤销创建）
+    - delete: 把 content（previous_content）写回 file_path（重新创建文件）
+    """
     if not req.file_path:
         return {"error": "file_path 不能为空"}
+
     try:
         target = Path(req.file_path)
+
+        if req.operation == "delete":
+            # 删除回退：把 previous_content 写回原路径（文件被删后重新创建）
+            if not req.content:
+                return {"error": "目录删除无法自动回退，请从系统回收站手动恢复"}
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(req.content, encoding="utf-8")
+            return {"ok": True, "file_path": str(target)}
+
+        if req.operation == "create" and not req.content:
+            # 创建回退：文件已不存在则跳过
+            if not target.exists():
+                return {"ok": True, "file_path": str(target), "note": "文件已不存在，无需回退"}
+            return {"error": f"文件不存在: {target}"}
+
+        # modify 回退：内容覆盖
         if not target.exists():
             return {"error": f"文件不存在: {target}"}
+
         target.write_text(req.content, encoding="utf-8")
         return {"ok": True, "file_path": str(target)}
     except Exception as e:

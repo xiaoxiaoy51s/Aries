@@ -2,41 +2,30 @@
   "type": "function",
   "function": {
     "name": "read_file",
-    "description": "读取本地文本文件内容。支持相对路径（默认在用户工作目录）或电脑任意位置的绝对路径。支持模糊匹配文件名。\n\n【读取方式】\n- 完整读取：默认行为\n- 区间读取：指定 start_line 和 end_line，只读取特定行（适合大文件）",
+    "description": "读取文件内容，支持行号范围读取和截断保护。\n\n【两种模式】\n- 普通模式：传 file_path（相对路径默认在工作目录，或绝对路径）\n- 技能文件模式：传 skill_name + file_path，读取技能目录下的文件。skill_name 可以是 ~/.Aries/skills/{skill_name}/ 下的用户技能，也可以是内置插件技能（如 web_search）\n\n编码固定 utf-8。大文件建议先用 offset + limit 读取片段。",
     "parameters": {
       "type": "object",
       "properties": {
         "file_path": {
           "type": "string",
-          "description": "要读取的文件路径。支持相对路径或电脑任意位置的绝对路径。支持模糊匹配文件名。"
+          "description": "文件路径。普通模式下为相对/绝对路径；技能模式下为技能目录内的相对路径。"
         },
-        "encoding": {
+        "skill_name": {
           "type": "string",
-          "description": "文本编码，默认 utf-8。",
-          "default": "utf-8"
+          "description": "技能目录名。传入时切换为技能文件模式。可以是用户技能（~/.Aries/skills/{skill_name}/）或内置插件技能（~/.Aries/plugins/skills/{skill_name}/）。"
+        },
+        "offset": {
+          "type": "integer",
+          "description": "起始行号（从 1 开始）。不传则从第 1 行开始。"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "读取的行数。不传则读取到文件末尾。"
         },
         "max_chars": {
           "type": "integer",
           "description": "最多返回的字符数上限，防止一次性载入过大文件。默认 20000。",
           "default": 20000
-        },
-        "start_line": {
-          "type": "integer",
-          "description": "起始行号（从 1 开始）。与 end_line 配合使用，只读取特定行范围。"
-        },
-        "end_line": {
-          "type": "integer",
-          "description": "结束行号（包含）。与 start_line 配合使用，只读取特定行范围。"
-        },
-        "fuzzy_search": {
-          "type": "boolean",
-          "description": "是否启用模糊匹配。当文件路径不完全匹配时，搜索相似文件名。默认 true。",
-          "default": true
-        },
-        "use_today": {
-          "type": "boolean",
-          "description": "是否在今天的日期目录中查找文件。默认 false（不再使用日期子目录）。",
-          "default": false
         }
       },
       "required": ["file_path"],

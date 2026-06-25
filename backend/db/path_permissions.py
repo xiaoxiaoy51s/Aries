@@ -18,20 +18,17 @@ DEFAULT_WHITELIST_PATH = str((Path.home() / ".Aries" / "work_dir").resolve())
 def init_default_whitelist():
     """初始化默认白名单（用户工作目录）。"""
     conn = get_connection()
-    try:
-        # 检查是否已存在
-        existing = conn.execute(
-            "SELECT id FROM path_permissions WHERE path = ?",
+    # 检查是否已存在
+    existing = conn.execute(
+        "SELECT id FROM path_permissions WHERE path = ?",
+        (_normalize(DEFAULT_WHITELIST_PATH),)
+    ).fetchone()
+    if not existing:
+        conn.execute(
+            "INSERT INTO path_permissions (path, type) VALUES (?, 'whitelist')",
             (_normalize(DEFAULT_WHITELIST_PATH),)
-        ).fetchone()
-        if not existing:
-            conn.execute(
-                "INSERT INTO path_permissions (path, type) VALUES (?, 'whitelist')",
-                (_normalize(DEFAULT_WHITELIST_PATH),)
-            )
-            conn.commit()
-    finally:
-        conn.close()
+        )
+        conn.commit()
 
 
 def _path_matches(rule_path: str, target_path: str) -> bool:
@@ -43,49 +40,38 @@ def _path_matches(rule_path: str, target_path: str) -> bool:
 
 def add_permission(path: str, perm_type: str) -> dict:
     conn = get_connection()
-    try:
-        normalized = _normalize(path)
-        # 如果已存在同路径但不同类型的记录，先删除
-        conn.execute(
-            "DELETE FROM path_permissions WHERE path = ? AND type != ?",
-            (normalized, perm_type),
-        )
-        conn.execute(
-            """INSERT OR REPLACE INTO path_permissions (path, type)
-               VALUES (?, ?)""",
-            (normalized, perm_type),
-        )
-        conn.commit()
-        return {"success": True, "path": normalized, "type": perm_type}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-    finally:
-        conn.close()
+    normalized = _normalize(path)
+    # 如果已存在同路径但不同类型的记录，先删除
+    conn.execute(
+        "DELETE FROM path_permissions WHERE path = ? AND type != ?",
+        (normalized, perm_type),
+    )
+    conn.execute(
+        """INSERT OR REPLACE INTO path_permissions (path, type)
+           VALUES (?, ?)""",
+        (normalized, perm_type),
+    )
+    conn.commit()
+    return {"success": True, "path": normalized, "type": perm_type}
 
 
 def remove_permission(path: str) -> dict:
     conn = get_connection()
-    try:
-        normalized = _normalize(path)
-        conn.execute("DELETE FROM path_permissions WHERE path = ?", (normalized,))
-        conn.commit()
-        return {"success": True}
-    finally:
-        conn.close()
+    normalized = _normalize(path)
+    conn.execute("DELETE FROM path_permissions WHERE path = ?", (normalized,))
+    conn.commit()
+    return {"success": True}
 
 
 def list_permissions() -> list[dict]:
     conn = get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT id, path, type, created_at FROM path_permissions ORDER BY type, path"
-        ).fetchall()
-        return [
-            {"id": r[0], "path": r[1], "type": r[2], "created_at": r[3] or ""}
-            for r in rows
-        ]
-    finally:
-        conn.close()
+    rows = conn.execute(
+        "SELECT id, path, type, created_at FROM path_permissions ORDER BY type, path"
+    ).fetchall()
+    return [
+        {"id": r[0], "path": r[1], "type": r[2], "created_at": r[3] or ""}
+        for r in rows
+    ]
 
 
 def check_path_permission(target_path: str) -> Optional[dict]:
@@ -102,13 +88,9 @@ def check_path_permission(target_path: str) -> Optional[dict]:
         return {"allowed": False, "reason": "无效路径"}
 
     conn = get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT path, type FROM path_permissions"
-        ).fetchall()
-    finally:
-        conn.close()
-
+    rows = conn.execute(
+        "SELECT path, type FROM path_permissions"
+    ).fetchall()
     whitelist_hits = []
     blacklist_hits = []
 

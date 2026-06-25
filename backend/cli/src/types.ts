@@ -47,7 +47,7 @@ export interface ExecuteRequest {
   timeout?: number
   skip_confirmation?: boolean
   invocation_id?: string
-  new_terminal?: boolean
+  session_id?: string
 }
 
 /** 危险命令检测结果 */

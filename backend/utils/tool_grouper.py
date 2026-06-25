@@ -33,14 +33,14 @@ GROUP_DESCRIPTION_MAX_CHARS = 300
 BUILTIN_TOOL_CATEGORIES: dict[str, list[str]] = {
     "文件操作": [
         "read_file", "write_file", "edit_file", "list_files", "search_file",
-        "replace_string", "multi_replace_string", "apply_patch",
+        "multi_replace_string", "apply_patch", "delete_file",
     ],
     "命令执行": [
         "cli_executor", "run_command",
     ],
     "记忆与任务": [
-        "write_agent_memory", "read_skill_file", "create_scheduled_task",
-        "capability_search", "delegate_to_subagent",
+        "todo_write", "create_scheduled_task",
+        "delegate_to_subagent",
     ],
 }
 

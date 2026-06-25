@@ -1,0 +1,13 @@
+"""Agent 模式常量。"""
+MAX_TOOL_ROUNDS = 100
+REPEAT_TOOL_LIMIT = 8
+LLM_CONNECT_TIMEOUT_SECONDS = 30.0
+LLM_READ_TIMEOUT_SECONDS = 900.0
+LLM_WRITE_TIMEOUT_SECONDS = 120.0
+TOOL_EXECUTION_TIMEOUT_SECONDS = 600.0
+
+_HINT_PREFIXES = (
+    "【系统提醒】你当前已接近本地工具调用上限",
+    "【系统提醒】检测到连续",
+    "# 当前任务清单",
+)

@@ -1,0 +1,18 @@
+{
+  "type": "function",
+  "function": {
+    "name": "stop_command",
+    "description": "停止一个正在后台运行的命令。当你不再需要某个开发服务器或长运行命令时，调用此工具发送 Ctrl+C 中断它，并关闭终端会话释放资源。\n\n参数 session_id 来自 cli_executor 返回的 session_id。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "要停止的终端会话 ID（cli_executor 返回的 session_id，或你自定义传入的 ID）。"
+        }
+      },
+      "required": ["session_id"],
+      "additionalProperties": false
+    }
+  }
+}

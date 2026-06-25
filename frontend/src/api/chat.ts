@@ -11,7 +11,7 @@ export interface ChatMessage {
 }
 
 export interface StreamEvent {
-  type: 'content' | 'reasoning' | 'tool_call' | 'tool_result' | 'confirmation_required' | 'error' | 'context_usage' | 'meta' | 'intent' | 'hint' | 'subagent_event' | 'subagent_reasoning' | 'subagent_content' | 'subagent_tool_call' | 'subagent_tool_result'
+  type: 'content' | 'reasoning' | 'tool_call' | 'tool_result' | 'confirmation_required' | 'error' | 'context_usage' | 'meta' | 'intent' | 'hint' | 'subagent_event' | 'subagent_reasoning' | 'subagent_content' | 'subagent_tool_call' | 'subagent_tool_result' | 'todo_update'
   data: any
   meta?: { session_id?: string }
 }
@@ -56,6 +56,9 @@ export function jsonToStreamEvent(json: Record<string, unknown>): StreamEvent | 
   }
   if (json.subagent_tool_result) {
     return { type: 'subagent_tool_result', data: json.subagent_tool_result }
+  }
+  if (json.todo_update) {
+    return { type: 'todo_update', data: json.todo_update }
   }
 
   const delta = (json.choices as Array<{ delta?: Record<string, unknown> }> | undefined)?.[0]?.delta

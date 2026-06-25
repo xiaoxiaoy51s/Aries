@@ -48,13 +48,17 @@ export declare class TerminalManager {
     closeSession(sessionId: string): void;
     /** 关闭全部 */
     closeAll(): void;
+    /** 通过 invocation_id 手动 detach（用户点击"后台运行"） */
+    detachByInvocation(invocationId: string): boolean;
+    /** 通过 session_id 手动 detach */
+    detachBySession(sessionId: string): boolean;
     /** 核心命令执行（供 AI 调用） */
     execute(command: string, options?: {
         workingDir?: string;
         timeout?: number;
         skipConfirmation?: boolean;
         invocationId?: string;
-        newTerminal?: boolean;
+        sessionId?: string;
         allowedDir?: string;
         userHomeDir?: string;
     }): Promise<ExecuteResult>;

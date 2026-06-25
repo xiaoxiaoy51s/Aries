@@ -86,7 +86,7 @@ const server = http.createServer((req, res) => {
           timeout: reqData.timeout,
           skipConfirmation: reqData.skip_confirmation,
           invocationId: reqData.invocation_id,
-          newTerminal: reqData.new_terminal,
+          sessionId: reqData.session_id,
           allowedDir,
           userHomeDir: os.homedir(),
         })

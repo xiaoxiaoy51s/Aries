@@ -93,9 +93,12 @@ async def terminal_websocket(
             finally:
                 fwd_task.cancel()
                 try:
-                    await fwd_task
-                except asyncio.CancelledError:
+                    await asyncio.wait_for(fwd_task, timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
                     pass
+    except asyncio.CancelledError:
+        # 连接阶段或清理阶段被正常取消（页面刷新/关闭），无需报错
+        pass
     except Exception as e:
         if websocket.client_state.name != "DISCONNECTED":
             await websocket.send_text(json.dumps({"type": "error", "data": f"CLI 连接失败: {e}"}))

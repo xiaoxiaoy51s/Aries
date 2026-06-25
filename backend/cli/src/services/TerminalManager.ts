@@ -371,7 +371,7 @@ export class TerminalManager {
       timeout?: number
       skipConfirmation?: boolean
       invocationId?: string
-      newTerminal?: boolean
+      sessionId?: string
       allowedDir?: string
       userHomeDir?: string
     } = {}
@@ -424,9 +424,9 @@ export class TerminalManager {
       }
     }
 
-    // 默认按 work_dir 复用 agent session，new_terminal=true 才新建
+    // AI 指定了 session_id 则使用它，否则默认按 work_dir 复用 agent session
     const agentSessionId = `agent:${targetDir}`
-    const sessionId = options.newTerminal ? undefined : agentSessionId
+    const sessionId = options.sessionId || agentSessionId
 
     // 复用已有 session 或创建新 session
     const sid = this.createSession(targetDir, sessionId)

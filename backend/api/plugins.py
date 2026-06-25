@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 import json
 
-from utils.plugins_manager import (
+from utils.mcp_config import (
     MCP_CACHE_ROOT,
     delete_plugin,
     discover_plugins,

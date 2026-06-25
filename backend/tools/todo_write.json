@@ -1,0 +1,47 @@
+{
+  "type": "function",
+  "function": {
+    "name": "todo_write",
+    "description": "创建和管理结构化任务清单，用于追踪复杂任务的进度。适合 3 步以上的任务；简单任务（1-2 步）不需要创建清单。\n\n【使用规则】\n- 同时只能有一个任务处于 in_progress 状态\n- 完成一个任务后立即标记为 completed，再开始下一个\n- 优先用 merge=false 创建初始清单；更新单个任务状态时用 merge=true\n- 任务状态变化时主动调用此工具更新，不要只在心里记着\n- 不要添加「测试该变更」这类任务，除非用户要求测试",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "todos": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "任务唯一标识符。"
+              },
+              "content": {
+                "type": "string",
+                "description": "任务描述。"
+              },
+              "priority": {
+                "type": "string",
+                "enum": ["high", "medium", "low"],
+                "description": "优先级。high > medium > low。"
+              },
+              "status": {
+                "type": "string",
+                "enum": ["pending", "in_progress", "completed"],
+                "description": "任务状态。pending=待处理，in_progress=进行中，completed=已完成。"
+              }
+            },
+            "required": ["id", "content", "priority", "status"]
+          },
+          "description": "任务数组。merge=false 时替换整个清单；merge=true 时按 id 合并更新。"
+        },
+        "merge": {
+          "type": "boolean",
+          "description": "true 时按 id 合并到现有清单（只更新提供的任务）；false 时替换整个清单。默认 false。",
+          "default": false
+        }
+      },
+      "required": ["todos"],
+      "additionalProperties": false
+    }
+  }
+}

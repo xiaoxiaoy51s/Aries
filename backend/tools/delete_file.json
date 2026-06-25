@@ -1,0 +1,18 @@
+{
+  "type": "function",
+  "function": {
+    "name": "delete_file",
+    "description": "删除文件或目录（移到系统回收站，非物理删除，可回退）。支持相对路径或绝对路径。\n\n【安全机制】\n- 文件移到操作系统回收站（Windows 回收站 / macOS 废纸篓），用户可在文件管理器中手动恢复\n- 操作记录写入会话日志（file_change），支持一键回退（文件类内容会写回原路径）\n- 路径超出工作目录时需要用户确认",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "要删除的文件或目录路径。支持相对路径（默认在工作目录）或绝对路径。"
+        }
+      },
+      "required": ["file_path"],
+      "additionalProperties": false
+    }
+  }
+}

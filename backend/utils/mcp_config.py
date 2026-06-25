@@ -73,6 +73,64 @@ def ensure_mcp_files() -> None:
     if not MCP_CONFIG_PATH.is_file():
         MCP_CONFIG_PATH.write_text(json.dumps(_empty_config(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+    # 合并内置 MCP 插件配置到 mcp.json
+    _merge_builtin_mcps()
+
+
+def _merge_builtin_mcps() -> None:
+    """把 backend/plugins/mcps/*/ 下的 JSON 合并到 ~/.Aries/mcp.json。
+
+    用户已有的同名 MCP 不会被覆盖。
+    JSON 格式与 SkillsPage 导入一致：必须包含 mcpServers 键。
+    注意：本函数不得调用 load_mcp_config/ensure_mcp_files，避免递归。
+    """
+    plugin_mcps_root = Path(__file__).resolve().parent.parent / "plugins" / "mcps"
+    if not plugin_mcps_root.is_dir():
+        return
+
+    incoming: dict[str, dict[str, Any]] = {}
+    for sub_dir in plugin_mcps_root.iterdir():
+        if not sub_dir.is_dir() or sub_dir.name.startswith("__"):
+            continue
+        # 取目录下第一个 .json 文件
+        json_files = sorted([p for p in sub_dir.iterdir() if p.is_file() and p.suffix == ".json"])
+        if not json_files:
+            continue
+        try:
+            raw = json.loads(json_files[0].read_text(encoding="utf-8"))
+            incoming.update(_extract_servers_block(raw))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+    if not incoming:
+        return
+
+    # 直接读写 mcp.json，避免触发 load_mcp_config -> ensure_mcp_files 递归
+    try:
+        parsed = json.loads(MCP_CONFIG_PATH.read_text(encoding="utf-8"))
+        if not isinstance(parsed, dict):
+            parsed = _empty_config()
+    except (OSError, json.JSONDecodeError):
+        parsed = _empty_config()
+
+    servers = parsed.setdefault("mcpServers", {})
+    if not isinstance(servers, dict):
+        servers = {}
+        parsed["mcpServers"] = servers
+
+    changed = False
+    for server_id, server_cfg in incoming.items():
+        if server_id in servers:
+            continue
+        servers[server_id] = server_cfg
+        changed = True
+
+    if changed:
+        MCP_CONFIG_PATH.write_text(
+            json.dumps(parsed, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
 
 def _normalize_server_entry(server_id: str, raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):

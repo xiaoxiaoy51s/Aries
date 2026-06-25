@@ -21,7 +21,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-from api import config_router, chat_router, upload_router, skills_router, plugins_router, subagents_router, sessions_router, work_dirs_router, debug_router, scheduled_tasks_router, platforms_router, system_router, path_permissions_router, terminal_router, git_router, files_router, chat_ws_router, memory_router, pets_router, network_router, main_agent_router
+from api import config_router, chat_router, upload_router, skills_router, plugins_router, subagents_router, sessions_router, work_dirs_router, debug_router, scheduled_tasks_router, platforms_router, system_router, path_permissions_router, terminal_router, git_router, files_router, chat_ws_router, memory_router, pets_router, network_router, main_agent_router, plugins_builtin_router
 from db.database import init_database
 from utils.scheduler import run_scheduler
 
@@ -80,6 +80,15 @@ async def lifespan(app: FastAPI):
     from utils.mcp_runtime import get_mcp_pool
 
     _check_and_cleanup_proxy()
+
+    # 同步内置插件到 ~/.Aries/plugins/
+    try:
+        from utils.plugin_manager import sync_plugins
+        counts = sync_plugins()
+        if any(counts.values()):
+            print(f"[Plugins] 同步完成: {counts}")
+    except Exception as exc:
+        print(f"[Plugins] 同步失败: {exc}")
 
     stale = reset_stale_running_tasks()
     if stale:
@@ -199,6 +208,7 @@ app.include_router(memory_router)
 app.include_router(pets_router)
 app.include_router(network_router)
 app.include_router(main_agent_router)
+app.include_router(plugins_builtin_router)
 
 
 @app.get("/")

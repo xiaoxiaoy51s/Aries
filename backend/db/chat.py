@@ -14,30 +14,17 @@ def save_message(
     mode: str = "agent",
 ) -> int:
     conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("PRAGMA table_info(chat_messages)")
-    columns = {row[1] for row in cursor.fetchall()}
-    has_mode = "mode" in columns
     effective_mode = (mode or "agent").strip().lower() or "agent"
 
-    col_names = ["session_id", "role", "content", "reasoning_content",
-                 "image_path", "message_snapshot_json"]
-    col_values: list = [session_id, role, content, reasoning_content,
-                        image_path, message_snapshot_json]
-
-    if has_mode:
-        col_names.append("mode")
-        col_values.append(effective_mode)
-
-    placeholders = ", ".join("?" * len(col_names))
-    sql = f"INSERT INTO chat_messages ({', '.join(col_names)}) VALUES ({placeholders})"
-    cursor.execute(sql, col_values)
-
+    cursor = conn.execute(
+        """
+        INSERT INTO chat_messages (session_id, role, content, reasoning_content, image_path, message_snapshot_json, mode)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (session_id, role, content, reasoning_content, image_path, message_snapshot_json, effective_mode),
+    )
     conn.commit()
-    last_id = int(cursor.lastrowid)
-    conn.close()
-    return last_id
+    return int(cursor.lastrowid)
 
 
 def update_message(
@@ -71,7 +58,6 @@ def update_message(
     conn = get_connection()
     conn.execute(f"UPDATE chat_messages SET {', '.join(updates)} WHERE id = ?", values)
     conn.commit()
-    conn.close()
 
 
 def get_chat_context_messages(
@@ -122,14 +108,10 @@ def get_recent_messages(session_id: str, limit: int = 20) -> list[dict]:
 
 def get_messages_after_id(session_id: str, after_id: int = 0, limit: int = 200) -> list[dict]:
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(chat_messages)")
-    has_mode = "mode" in {row[1] for row in cursor.fetchall()}
-    mode_col = ", mode" if has_mode else ""
 
     rows = conn.execute(
-        f"""
-        SELECT id, role, content, reasoning_content, image_path, message_snapshot_json{mode_col}
+        """
+        SELECT id, role, content, reasoning_content, image_path, message_snapshot_json, mode
         FROM chat_messages
         WHERE session_id = ? AND id > ?
         ORDER BY id DESC
@@ -140,7 +122,6 @@ def get_messages_after_id(session_id: str, after_id: int = 0, limit: int = 200) 
 
     rows = list(rows)
     rows.reverse()
-    conn.close()
 
     result = []
     for row in rows:
@@ -151,9 +132,8 @@ def get_messages_after_id(session_id: str, after_id: int = 0, limit: int = 200) 
             "reasoning_content": row[3],
             "image_path": row[4],
             "message_snapshot_json": row[5] or None,
+            "mode": row[6] or "agent",
         }
-        if has_mode:
-            item["mode"] = row[6] or "agent"
         result.append(item)
     return result
 
@@ -191,8 +171,12 @@ def build_work_trace_from_events(events: list[dict]) -> str:
             tool_name = event.get("tool_name") or "unknown_tool"
             status = event.get("status") or "unknown"
             result = event.get("result") or event.get("error") or ""
+            session_id = event.get("session_id") or ""
+            # 终端会话 ID 单独提取，避免被 result 截断后丢失
+            sid_line = f"终端会话ID: {session_id}\n" if session_id else ""
             lines.append(
                 f"【工具结果】{tool_name} ({status})\n"
+                + sid_line
                 + _truncate_context_text(str(result), 3000)
             )
         elif event_type == "assistant_text":
@@ -346,7 +330,6 @@ def list_recent_sessions(limit: int = 30) -> list[dict]:
         """,
         (limit,),
     ).fetchall()
-    conn.close()
 
     return [
         {"session_id": session_id, "last_user_message": content, "created_at": created_at}
@@ -356,14 +339,10 @@ def list_recent_sessions(limit: int = 30) -> list[dict]:
 
 def get_session_messages(session_id: str, limit: int = 100) -> list[dict]:
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(chat_messages)")
-    has_mode = "mode" in {row[1] for row in cursor.fetchall()}
-    mode_col = ", mode" if has_mode else ""
 
     rows = conn.execute(
-        f"""
-        SELECT id, role, content, created_at, reasoning_content, image_path, message_snapshot_json{mode_col}
+        """
+        SELECT id, role, content, created_at, reasoning_content, image_path, message_snapshot_json, mode
         FROM chat_messages
         WHERE session_id = ?
         ORDER BY id DESC
@@ -373,7 +352,6 @@ def get_session_messages(session_id: str, limit: int = 100) -> list[dict]:
     ).fetchall()
     rows = list(rows)
     rows.reverse()
-    conn.close()
 
     result = []
     for row in rows:
@@ -385,84 +363,74 @@ def get_session_messages(session_id: str, limit: int = 100) -> list[dict]:
             "reasoning_content": row[4],
             "image_path": row[5],
             "message_snapshot_json": row[6] or None,
+            "mode": row[7] or "agent",
         }
-        if has_mode:
-            item["mode"] = row[7] or "agent"
         result.append(item)
     return result
 
 
 def get_latest_memory_boundary(session_id: str) -> int:
     conn = get_connection()
-    try:
-        row = conn.execute(
-            """
-            SELECT COALESCE(MAX(source_until_message_id), 0)
-            FROM session_memories
-            WHERE session_id = ?
-            """,
-            (session_id,),
-        ).fetchone()
-        return int(row[0] or 0) if row else 0
-    finally:
-        conn.close()
+    row = conn.execute(
+        """
+        SELECT COALESCE(MAX(source_until_message_id), 0)
+        FROM session_memories
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    return int(row[0] or 0) if row else 0
 
 
 def get_session_memories(session_id: str, limit: int = 3) -> list[dict]:
     conn = get_connection()
-    try:
-        rows = conn.execute(
-            """
-            SELECT id, session_id, summary, source_message_count, source_token_estimate,
-                   summary_token_estimate, source_until_message_id, created_at
-            FROM session_memories
-            WHERE session_id = ?
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (session_id, limit),
-        ).fetchall()
-        result = []
-        for row in rows:
-            result.append({
-                "id": row[0],
-                "session_id": row[1],
-                "summary": row[2],
-                "source_message_count": row[3],
-                "source_token_estimate": row[4],
-                "summary_token_estimate": row[5],
-                "source_until_message_id": row[6],
-                "created_at": row[7],
-            })
-        result.reverse()
-        return result
-    finally:
-        conn.close()
+    rows = conn.execute(
+        """
+        SELECT id, session_id, summary, source_message_count, source_token_estimate,
+               summary_token_estimate, source_until_message_id, created_at
+        FROM session_memories
+        WHERE session_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (session_id, limit),
+    ).fetchall()
+    result = []
+    for row in rows:
+        result.append({
+            "id": row[0],
+            "session_id": row[1],
+            "summary": row[2],
+            "source_message_count": row[3],
+            "source_token_estimate": row[4],
+            "summary_token_estimate": row[5],
+            "source_until_message_id": row[6],
+            "created_at": row[7],
+        })
+    result.reverse()
+    return result
 
 
 def save_session_memory(memory: dict) -> int:
     conn = get_connection()
-    try:
-        cursor = conn.execute(
-            """
-            INSERT INTO session_memories (
-                session_id, summary, source_message_count, source_token_estimate,
-                summary_token_estimate, source_until_message_id
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                memory.get("session_id", ""),
-                memory.get("summary", ""),
-                memory.get("source_message_count", 0),
-                memory.get("source_token_estimate", 0),
-                memory.get("summary_token_estimate", 0),
-                memory.get("source_until_message_id"),
-            ),
-        )
-        conn.commit()
-        return int(cursor.lastrowid)
-    finally:
-        conn.close()
+    cursor = conn.execute(
+        """
+        INSERT INTO session_memories (
+            session_id, summary, source_message_count, source_token_estimate,
+            summary_token_estimate, source_until_message_id
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            memory.get("session_id", ""),
+            memory.get("summary", ""),
+            memory.get("source_message_count", 0),
+            memory.get("source_token_estimate", 0),
+            memory.get("summary_token_estimate", 0),
+            memory.get("source_until_message_id"),
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
 
 
 def delete_session(session_id: str) -> None:
@@ -470,4 +438,3 @@ def delete_session(session_id: str) -> None:
     conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM session_memories WHERE session_id = ?", (session_id,))
     conn.commit()
-    conn.close()

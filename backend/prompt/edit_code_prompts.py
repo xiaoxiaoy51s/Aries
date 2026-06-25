@@ -4,7 +4,7 @@
 借鉴 VS Code Copilot 的 EditCodePrompt2 / defaultAgentInstructions 设计：
 - 按"功能模块"拆分，每块有独立 priority，方便上层按 token 预算裁剪
 - 支持条件渲染：根据可用工具集和模型家族输出不同指令
-- 多策略编辑工具的使用指南（replace_string / multi_replace_string / apply_patch）
+- 多策略编辑工具的使用指南（edit_file / multi_replace_string / apply_patch）
 
 注入位置：build_agent_system_prompt_parts 的 base 段末尾，紧跟 CODING_BEHAVIOR_RULES。
 """
@@ -35,9 +35,9 @@ EDIT_CODE_CORE_RULES = """# 编辑代码核心规则
 EDIT_TOOL_SELECTION_RULES = """# 编辑工具选择策略
 根据修改场景选择最合适的工具，减少 LLM 往返次数：
 
-## replace_string（首选，最精确）
+## edit_file(search_replace)（首选，最精确）
 - 场景：替换文件中的特定文本片段
-- 要求：old_text 必须包含 3-5 行上下文（前后各几行未改动的代码），确保定位唯一
+- 要求：search_text 必须包含 3-5 行上下文（前后各几行未改动的代码），确保定位唯一
 - 优势：精准定位，不需要行号，适合小范围修改
 - 示例：修改变量名、调整函数参数、更新条件判断
 
@@ -45,57 +45,58 @@ EDIT_TOOL_SELECTION_RULES = """# 编辑工具选择策略
 - 场景：同一文件有多处独立修改
 - 要求：每条 replacement 的 old_text 都要包含足够上下文
 - 优势：一次调用完成多处修改，减少 LLM 往返，降低 token 消耗
-- 何时用：同一个文件需要改 3 处以上时，必须用 multi_replace_string 而不是多次 replace_string
+- 何时用：同一个文件需要改 3 处以上时，必须用 multi_replace_string 而不是多次 edit_file
 
 ## apply_patch（大范围修改）
 - 场景：新增整个函数/类、删除大段代码、跨多文件重构
 - 格式：标准 unified diff
 - 优势：一次完成大范围改动，适合 50 行以上的变更
-- 何时用：修改量太大用 replace_string 不划算时
+- 何时用：修改量太大用 edit_file(search_replace) 不划算时
 
-## edit_file（兜底）
-- 场景：以上工具都不适用时
-- 方式：line_range（按行号替换）/ search_replace / insert_line
+## edit_file(line_range / insert_line)（按行号操作）
+- 场景：需要按精确行号替换或插入时
+- 方式：line_range（按行号范围替换）/ insert_line（在指定行前插入）
 - 注意：line_range 需要精确行号，文件改动后行号会偏移，谨慎使用
 
 ## 工具选择决策树
-1. 单处小修改（<10行）→ replace_string
+1. 单处小修改（<10行）→ edit_file(search_replace)
 2. 同文件多处修改 → multi_replace_string
 3. 大范围新增/删除（>50行）→ apply_patch
 4. 按行号精确操作 → edit_file(line_range)
-5. 插入新代码到指定位置 → edit_file(insert_line) 或 replace_string"""
+5. 插入新代码到指定位置 → edit_file(insert_line)"""
 
-REPLACE_STRING_GUIDE = """# replace_string 使用指南
-工具名：replace_string
+EDIT_FILE_SEARCH_REPLACE_GUIDE = """# edit_file(search_replace) 使用指南
+工具名：edit_file（edit_type=search_replace）
 参数：
 - file_path: 目标文件路径
-- old_text: 要替换的原始文本（必须包含 3-5 行上下文确保唯一）
-- new_text: 替换后的文本
+- edit_type: "search_replace"
+- search_text: 要搜索的原始文本（必须包含 3-5 行上下文确保唯一）
+- new_content: 替换后的文本
 
 规则：
-- old_text 必须和文件中的实际内容完全匹配（包括缩进、空格、换行）
-- 如果 old_text 在文件中出现多次，工具会报错，此时需要增加上下文行使其唯一
-- 不要用 replace_string 替换大段代码（>30行），改用 apply_patch
-- 一次 replace_string 只做一处替换，多处修改用 multi_replace_string
+- search_text 必须和文件中的实际内容完全匹配（包括缩进、空格、换行）
+- 如果 search_text 在文件中出现多次，工具会报错，此时需要增加上下文行使其唯一
+- 不要用 search_replace 替换大段代码（>30行），改用 apply_patch
+- 一次 search_replace 只做一处替换，多处修改用 multi_replace_string
 
-正确示例（old_text 含上下文）：
-  old_text: |
+正确示例（search_text 含上下文）：
+  search_text: |
     def calculate_total(items):
         total = 0
         for item in items:
             total += item.price
         return total
 
-  new_text: |
+  new_content: |
     def calculate_total(items):
         total = 0
         for item in items:
             total += item.price * item.quantity
         return total
 
-错误示例（old_text 无上下文，可能不唯一）：
-  old_text: "total += item.price"
-  new_text: "total += item.price * item.quantity\""""
+错误示例（search_text 无上下文，可能不唯一）：
+  search_text: "total += item.price"
+  new_content: "total += item.price * item.quantity\""""
 
 MULTI_REPLACE_STRING_GUIDE = """# multi_replace_string 使用指南
 工具名：multi_replace_string
@@ -106,7 +107,7 @@ MULTI_REPLACE_STRING_GUIDE = """# multi_replace_string 使用指南
 规则：
 - 所有替换在同一事务中执行，任一失败则全部回滚
 - 各 replacement 的 old_text 互不重叠
-- 比 N 次 replace_string 更高效：一次 LLM 调用 + 一次文件写入
+- 比 N 次 edit_file(search_replace) 更高效：一次 LLM 调用 + 一次文件写入
 - 同一文件需要修改 3 处以上时，必须用此工具
 
 示例：
@@ -139,7 +140,7 @@ APPLY_PATCH_GUIDE = """# apply_patch 使用指南
 - 上下文行（空格开头的行）必须和文件完全匹配
 - 一次 apply_patch 只改一个文件，多文件改多个 patch
 
-何时用 apply_patch 而不是 replace_string：
+何时用 apply_patch 而不是 edit_file(search_replace)：
 - 新增超过 20 行代码
 - 删除超过 10 行代码
 - 修改散布在文件各处且每处改动较大
@@ -147,8 +148,8 @@ APPLY_PATCH_GUIDE = """# apply_patch 使用指南
 
 EDIT_REMINDER_RULES = """# 编辑提醒
 - 修改前先 read_file，修改后不需要再 read_file 验证（工具会返回修改结果）
-- 如果 replace_string 报"old_text not found"，先 read_file 重新确认文件内容，可能是文件已被其他操作修改
-- 不要在同一轮中对同一文件既用 replace_string 又用 edit_file，选一种方式
+- 如果 edit_file(search_replace) 报"search_text not found"，先 read_file 重新确认文件内容，可能是文件已被其他操作修改
+- 不要在同一轮中对同一文件既用 search_replace 又用 line_range/insert_line，选一种方式
 - 多文件修改可以在同一轮 tool_calls 中并行调用多个工具
 - 编辑后如需验证，用 run_command 执行测试或语法检查，不要用 read_file 反复确认"""
 
@@ -166,7 +167,7 @@ def build_edit_code_prompt(
     """根据可用工具和模型家族，条件渲染编辑代码 prompt。
 
     Args:
-        has_replace_string: 是否注册了 replace_string 工具
+        has_replace_string: 是否注册了 edit_file 的 search_replace 模式
         has_multi_replace: 是否注册了 multi_replace_string 工具
         has_apply_patch: 是否注册了 apply_patch 工具
         model_family: 模型家族标识（anthropic / openai / gemini / ""）
@@ -179,7 +180,7 @@ def build_edit_code_prompt(
     # 工具选择策略：根据可用工具调整
     tool_guides: list[str] = []
     if has_replace_string:
-        tool_guides.append(REPLACE_STRING_GUIDE)
+        tool_guides.append(EDIT_FILE_SEARCH_REPLACE_GUIDE)
     if has_multi_replace:
         tool_guides.append(MULTI_REPLACE_STRING_GUIDE)
     if has_apply_patch:
@@ -262,7 +263,7 @@ FIX_INTENT_PROMPT = """# 修复错误意图
 
 
 EXPLAIN_INTENT_PROMPT = """# 解释代码意图
-- 只读模式：不调用任何编辑工具（edit_file/replace_string/write_file）
+- 只读模式：不调用任何编辑工具（edit_file/write_file）
 - 先 read_file 读取用户询问的代码
 - 如需理解上下文，用 search_file 查找相关定义和调用
 - 解释时引用具体文件路径和行号
@@ -377,7 +378,7 @@ def build_optimized_edit_prompt(
         )
 
     if has_replace_string:
-        builder.add_text(REPLACE_STRING_GUIDE, priority=PRIORITY_TOOL_GUIDE, name="replace_string_guide")
+        builder.add_text(EDIT_FILE_SEARCH_REPLACE_GUIDE, priority=PRIORITY_TOOL_GUIDE, name="edit_file_search_replace_guide")
     if has_multi_replace:
         builder.add_text(MULTI_REPLACE_STRING_GUIDE, priority=PRIORITY_TOOL_GUIDE, name="multi_replace_guide")
     if has_apply_patch:
@@ -465,20 +466,21 @@ def classify_intent(user_text: str) -> str:
 
 # 各意图对应的工具集白名单（None 表示全量工具）
 _READONLY_TOOLS = {
-    "read_file", "list_files", "search_file", "read_skill_file",
-    "capability_search",
+    "read_file", "list_files", "search_file",
+    "todo_write",
 }
 
 _EDIT_TOOLS = {
     "read_file", "write_file", "edit_file", "list_files", "search_file",
-    "replace_string", "multi_replace_string", "apply_patch",
-    "cli_executor", "read_skill_file", "write_agent_memory",
-    "create_scheduled_task", "capability_search",
+    "multi_replace_string", "apply_patch", "delete_file",
+    "cli_executor",
+    "todo_write",
+    "create_scheduled_task",
 }
 
 _CREATE_TOOLS = {
     "read_file", "write_file", "list_files", "search_file",
-    "cli_executor", "read_skill_file", "capability_search",
+    "cli_executor", "todo_write",
 }
 
 _FULL_TOOLS = None  # None 表示不做过滤
@@ -575,7 +577,7 @@ def get_prompt_for_intent(intent: str, **kwargs: Any) -> str:
 __all__ = [
     "EDIT_CODE_CORE_RULES",
     "EDIT_TOOL_SELECTION_RULES",
-    "REPLACE_STRING_GUIDE",
+    "EDIT_FILE_SEARCH_REPLACE_GUIDE",
     "MULTI_REPLACE_STRING_GUIDE",
     "APPLY_PATCH_GUIDE",
     "EDIT_REMINDER_RULES",

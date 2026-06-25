@@ -27,6 +27,7 @@ from db.work_dirs import (
     rename_work_dir,
     get_latest_work_dir,
 )
+from services.chat_stream_manager import get_bg_history_events
 from utils.session_logger import resolve_message_log_events
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -326,18 +327,28 @@ def delete_session_api(session_id: str):
 
 @router.get("/messages/{message_id}/jsonl")
 def get_message_jsonl(message_id: int):
-    """返回消息的 JSONL 事件（思考、工具、回复）。message_snapshot_json 存文件路径。"""
+    """返回消息的 JSONL 事件（思考、工具、回复）。
+
+    优先读取 message_snapshot_json 字段；如果为空且消息属于某个 session，
+    则尝试从该 session 的后台事件日志文件（~/.Aries/bg_events/{session_id}.jsonl）恢复。
+    这样用户在后台任务流式输出过程中重新进入页面，也能看到已生成的内容。
+    """
     conn = get_connection()
     row = conn.execute(
-        "SELECT message_snapshot_json FROM chat_messages WHERE id = ?",
+        "SELECT session_id, message_snapshot_json FROM chat_messages WHERE id = ?",
         (message_id,),
     ).fetchone()
-    conn.close()
 
     if not row:
         raise HTTPException(status_code=404, detail="消息不存在")
 
-    snapshot_field = row[0] if row[0] else None
+    session_id = row[0]
+    snapshot_field = row[1] if row[1] else None
     events = resolve_message_log_events(snapshot_field)
     jsonl_path = snapshot_field if snapshot_field and str(snapshot_field).endswith(".jsonl") else None
+
+    # 没有持久化快照时，从 session 级后台事件文件恢复
+    if not events and session_id:
+        events = get_bg_history_events(session_id)
+
     return {"message_id": message_id, "jsonl_path": jsonl_path, "events": events}

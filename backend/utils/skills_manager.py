@@ -83,12 +83,6 @@ def parse_skill_markdown(skill_md_path: Path, default_name: str) -> dict[str, An
     }
 
 
-def _is_skill_dir(path: Path) -> bool:
-    if not path.is_dir() or path.name.startswith("."):
-        return False
-    return (path / "SKILL.md").is_file() or (path / "skill.md").is_file()
-
-
 def skill_import_path(folder_name: str) -> str:
     """技能模块导入路径。"""
     return f"skills.{folder_name}"
@@ -96,13 +90,8 @@ def skill_import_path(folder_name: str) -> str:
 
 def _iter_skill_dirs() -> list[Path]:
     """遍历 skills/ 目录下所有技能目录。"""
-    items: list[Path] = []
-    if not SKILLS_ROOT.exists():
-        return items
-    for child in sorted(SKILLS_ROOT.iterdir()):
-        if _is_skill_dir(child):
-            items.append(child)
-    return items
+    from utils._config_loader import discover_subdir_configs
+    return [p.parent for p in discover_subdir_configs(SKILLS_ROOT)]
 
 
 def discover_skills() -> list[SkillEntry]:
@@ -163,7 +152,7 @@ def build_skill_runtime_context(entry: SkillEntry, task: str = "") -> str:
 def build_skills_context_from_entries(relevant_skills: list[SkillEntry]) -> str:
     if not relevant_skills:
         return ""
-    lines = ["【相关本地技能】", "以下技能与当前请求相关。必要时可调用 read_skill_file 工具获取完整内容。"]
+    lines = ["【相关本地技能】", "以下技能与当前请求相关。必要时可调用 read_file 工具（传 skill_name 参数）获取完整内容。"]
     for entry in relevant_skills:
         lines.append(f"- {entry.name}: {entry.description or '无描述'}")
     return "\n".join(lines).strip()
@@ -172,10 +161,12 @@ def build_skills_context_from_entries(relevant_skills: list[SkillEntry]) -> str:
 CORE_TOOL_NAMES = {
     "read_file", "write_file", "edit_file", "list_files", "search_file",
     "cli_executor",
-    "read_skill_file",
-    "write_agent_memory",
+    "check_command_status", "stop_command",
     "create_scheduled_task",
-    "replace_string", "multi_replace_string", "apply_patch",
+    "multi_replace_string", "apply_patch",
+    "delete_file",
+    "todo_write",
+    "send_file_to_user",
 }
 
 
@@ -229,12 +220,35 @@ def get_all_tool_definitions() -> list[dict]:
     except Exception as e:
         print(f"Failed to load MCP tool definitions: {e}")
 
-    # capability_search 暂时注释，避免 AI 每次都去检索
-    # try:
-    #     from utils.capability_registry import get_capability_search_tool_definition
-    #     tools.append(get_capability_search_tool_definition())
-    # except Exception as e:
-    #     print(f"Failed to load capability_search tool definition: {e}")
+    # 加载内置插件工具（tools 类型：web_fetch 等纯 JSON 工具）
+    try:
+        from utils.plugin_manager import get_plugin_tool_definitions
+        plugin_tools = get_plugin_tool_definitions()
+        if plugin_tools:
+            existing_names = {
+                t.get("function", {}).get("name") for t in tools if isinstance(t, dict)
+            }
+            for pt in plugin_tools:
+                name = pt.get("function", {}).get("name", "")
+                if name and name not in existing_names and name not in CORE_TOOL_NAMES:
+                    tools.append(pt)
+    except Exception as e:
+        print(f"Failed to load plugin tools: {e}")
+
+    # 加载内置插件技能（skills 类型：web_search 等带 Python 代码的技能）
+    try:
+        from utils.plugin_manager import get_plugin_skill_tool_definitions
+        plugin_skill_tools = get_plugin_skill_tool_definitions()
+        if plugin_skill_tools:
+            existing_names = {
+                t.get("function", {}).get("name") for t in tools if isinstance(t, dict)
+            }
+            for pt in plugin_skill_tools:
+                name = pt.get("function", {}).get("name", "")
+                if name and name not in existing_names and name not in CORE_TOOL_NAMES:
+                    tools.append(pt)
+    except Exception as e:
+        print(f"Failed to load plugin skill tools: {e}")
 
     try:
         from utils.capability_registry import get_delegate_to_subagent_tool_definition
@@ -256,13 +270,11 @@ def execute_tool(
         arguments = {}
 
     try:
-        from utils.capability_registry import CAPABILITY_SEARCH_TOOL_NAME, DELEGATE_TO_SUBAGENT_TOOL_NAME, execute_capability_search
-        if tool_name == CAPABILITY_SEARCH_TOOL_NAME:
-            return execute_capability_search(arguments)
+        from utils.capability_registry import DELEGATE_TO_SUBAGENT_TOOL_NAME
         if tool_name == DELEGATE_TO_SUBAGENT_TOOL_NAME:
             return {"success": False, "error": "delegate_to_subagent 必须由主 Agent 的 async 执行路径处理", "output": ""}
-    except Exception as e:
-        return {"success": False, "error": str(e), "output": f"执行 {tool_name} 失败: {str(e)}"}
+    except Exception:
+        pass
 
     try:
         from utils.mcp_runtime import execute_mcp_tool
@@ -306,5 +318,23 @@ def execute_tool(
                 return skill_module.execute(**arguments)
         except Exception:
             continue
+
+    # 查找内置插件技能（skills 类型：web_search 等）
+    try:
+        from utils.plugin_manager import execute_plugin_skill_tool
+        result = execute_plugin_skill_tool(tool_name, dict(arguments))
+        if result is not None:
+            return result
+    except Exception as e:
+        print(f"Failed to execute plugin skill tool {tool_name}: {e}")
+
+    # 查找内置插件工具（tools 类型：web_fetch 等）
+    try:
+        from utils.plugin_manager import execute_plugin_tool
+        result = execute_plugin_tool(tool_name, dict(arguments))
+        if result is not None:
+            return result
+    except Exception as e:
+        print(f"Failed to execute plugin tool {tool_name}: {e}")
 
     return {"success": False, "error": f"Unknown tool: {tool_name}", "output": f"❌ 未知的工具: {tool_name}"}

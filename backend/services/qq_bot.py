@@ -157,6 +157,7 @@ class _QQRunner:
         def _run():
             try:
                 logging.getLogger("botpy").addHandler(logging.NullHandler())
+                logging.getLogger("botpy").propagate = False
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 self._loop = loop

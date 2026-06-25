@@ -85,7 +85,7 @@ const server = http.createServer((req, res) => {
                     timeout: reqData.timeout,
                     skipConfirmation: reqData.skip_confirmation,
                     invocationId: reqData.invocation_id,
-                    newTerminal: reqData.new_terminal,
+                    sessionId: reqData.session_id,
                     allowedDir,
                     userHomeDir: os.homedir(),
                 });
@@ -104,13 +104,25 @@ const server = http.createServer((req, res) => {
         });
         return;
     }
-    // 中断命令
+    // 中断命令 / 手动 detach（后台运行）
     if (method === 'POST' && parsedUrl.pathname?.startsWith('/sessions/')) {
-        const sid = parsedUrl.pathname.split('/')[2];
+        const parts = parsedUrl.pathname.split('/');
+        const sid = parts[2];
         if (parsedUrl.pathname.endsWith('/interrupt')) {
             termManager.interrupt(sid);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: true }));
+            return;
+        }
+        if (parsedUrl.pathname.endsWith('/detach')) {
+            // 先尝试用 sid 作为 session_id
+            let ok = termManager.detachBySession(sid);
+            if (!ok) {
+                // 再尝试用 sid 作为 invocation_id
+                ok = termManager.detachByInvocation(sid);
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: ok, detached: ok }));
             return;
         }
     }

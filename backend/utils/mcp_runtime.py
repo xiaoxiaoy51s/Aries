@@ -16,7 +16,7 @@ from typing import Any
 
 from datetime import timedelta
 
-from utils.plugins_manager import (
+from utils.mcp_config import (
     build_mcp_http_headers,
     discover_plugins,
     get_all_servers,

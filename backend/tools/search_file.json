@@ -2,52 +2,47 @@
   "type": "function",
   "function": {
     "name": "search_file",
-    "description": "在指定目录或整个代码库中搜索文件内容（底层使用 ripgrep 高性能引擎）。支持关键字/正则表达式搜索，返回匹配的文件路径、行号和上下文内容。\n\n【适用场景】\n- 查找函数定义、变量使用、特定代码模式\n- 理解代码库结构、追踪调用关系\n- 大型代码库也能快速响应，适合频繁调用\n\n【搜索范围】\n- 可以搜索单个文件、整个目录（递归）\n- 可以按文件类型过滤（如 *.py, *.js）\n\n【返回结果】\n- 匹配的文件路径、行号、匹配行及上下文内容\n- 总匹配数统计",
+    "description": "在指定目录或整个代码库中搜索文件内容（底层使用 ripgrep 高性能引擎）。支持正则表达式搜索，返回匹配的文件路径、行号和上下文内容。\n\n【适用场景】\n- 查找函数定义、变量使用、特定代码模式\n- 理解代码库结构、追踪调用关系\n- 大型代码库也能快速响应，适合频繁调用",
     "parameters": {
       "type": "object",
       "properties": {
-        "keyword": {
-          "type": "string",
-          "description": "要搜索的关键字或正则表达式。"
-        },
-        "directory": {
-          "type": "string",
-          "description": "搜索的目录路径。默认为用户邮箱目录（搜索整个代码库）。支持相对路径或绝对路径。",
-          "default": ""
-        },
         "pattern": {
           "type": "string",
-          "description": "文件匹配模式，如 *.py, *.js, **/*.ts 等。默认为 *（所有文件）。",
+          "description": "搜索关键词或正则表达式。"
+        },
+        "path": {
+          "type": "string",
+          "description": "搜索的目录路径。默认搜索整个工作目录。支持相对路径或绝对路径。",
+          "default": ""
+        },
+        "glob": {
+          "type": "string",
+          "description": "文件过滤模式，如 *.py, *.js, **/*.ts。默认 *（所有文件）。",
           "default": "*"
+        },
+        "output_mode": {
+          "type": "string",
+          "description": "输出模式：content（显示匹配行及上下文，默认）、files（仅返回匹配的文件路径列表）、count（仅返回匹配数量统计）。",
+          "enum": ["content", "files", "count"],
+          "default": "content"
         },
         "context_lines": {
           "type": "integer",
-          "description": "返回匹配行前后各多少行作为上下文。默认 2。",
+          "description": "返回匹配行前后各多少行作为上下文。仅 output_mode=content 时生效。默认 2。",
           "default": 2
-        },
-        "max_results": {
-          "type": "integer",
-          "description": "最多返回多少处匹配。默认 50。",
-          "default": 50
-        },
-        "use_regex": {
-          "type": "boolean",
-          "description": "是否将 keyword 作为正则表达式。默认 false。",
-          "default": false
         },
         "case_sensitive": {
           "type": "boolean",
           "description": "是否区分大小写。默认 false。",
           "default": false
         },
-        "exclude_dirs": {
-          "type": "array",
-          "items": {"type": "string"},
-          "description": "要排除的目录名列表，如 ['__pycache__', '.git', 'node_modules']。默认排除常见目录。",
-          "default": ["__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build"]
+        "max_results": {
+          "type": "integer",
+          "description": "最多返回多少处匹配。默认 50。",
+          "default": 50
         }
       },
-      "required": ["keyword"],
+      "required": ["pattern"],
       "additionalProperties": false
     }
   }

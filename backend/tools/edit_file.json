@@ -2,13 +2,13 @@
   "type": "function",
   "function": {
     "name": "edit_file",
-    "description": "编辑本地文件的特定部分。适合修改代码文件、配置文件等文本文件。支持按行号范围编辑或关键词替换。\n\n【使用场景】\n- 修改代码的特定行（如修复 bug、调整逻辑）\n- 替换特定文本（如修改变量名、更新配置）\n- 插入/删除代码块\n\n【编辑方式】\n- line_range: 指定行号范围 [start, end]，替换这些行的内容\n- search_replace: 搜索特定文本并替换\n- insert_line: 在指定行号前插入内容",
+    "description": "编辑本地文件的特定部分。适合修改代码文件、配置文件等文本文件。支持按行号范围编辑或关键词替换。编码固定 utf-8。\n\n【编辑方式】\n- line_range: 指定行号范围 [start_line, end_line]，替换这些行的内容\n- search_replace: 搜索特定文本并替换\n- insert_line: 在指定行号前插入内容",
     "parameters": {
       "type": "object",
       "properties": {
         "file_path": {
           "type": "string",
-          "description": "要编辑的文件路径。支持相对路径（默认相对于用户邮箱目录）或绝对路径。"
+          "description": "要编辑的文件路径。支持相对路径（默认在工作目录）或绝对路径。"
         },
         "edit_type": {
           "type": "string",
@@ -40,16 +40,6 @@
           "type": "integer",
           "description": "替换第几次出现（1=第一次，-1=最后一次）。默认 -1（替换所有）。",
           "default": -1
-        },
-        "encoding": {
-          "type": "string",
-          "description": "文本编码，默认 utf-8。",
-          "default": "utf-8"
-        },
-        "use_today": {
-          "type": "boolean",
-          "description": "是否在今天的日期目录中查找文件。默认 false（不再使用日期子目录）。",
-          "default": false
         }
       },
       "required": ["file_path", "edit_type", "new_content"],

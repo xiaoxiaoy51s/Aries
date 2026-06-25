@@ -168,16 +168,32 @@ def _build_skill_tool_definitions(
         tool_table: {tool_name: skill_module} 供子 Agent 执行时直接调用，
                     避开 skills_manager.execute_tool 的 enabled-only 限制
     """
-    from utils.skills_manager import CORE_TOOL_NAMES, skill_import_path
+    from utils.skills_manager import CORE_TOOL_NAMES
+
+    def _load_skill_module(entry):
+        """优先用 importlib 从 skill_path 加载（支持内置插件 skills）。"""
+        import importlib.util
+
+        init_path = entry.skill_path / "__init__.py"
+        if init_path.is_file():
+            module_name = f"_subagent_skill_{entry.folder_name}"
+            spec = importlib.util.spec_from_file_location(module_name, init_path)
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                return mod
+        # 回退到常规 skills.{folder_name}
+        from utils.skills_manager import skill_import_path
+        return __import__(
+            skill_import_path(entry.folder_name),
+            fromlist=["get_tool_definition", "get_tool_definitions", "execute"],
+        )
 
     tools: list[dict[str, Any]] = []
     table: dict[str, Any] = {}
     for entry in skill_entries:
         try:
-            mod = __import__(
-                skill_import_path(entry.folder_name, enabled=entry.enabled, skill_path=entry.skill_path),
-                fromlist=["get_tool_definition", "get_tool_definitions", "execute"],
-            )
+            mod = _load_skill_module(entry)
             collected_names: list[str] = []
             if hasattr(mod, "get_tool_definitions"):
                 defs = mod.get_tool_definitions()
@@ -428,7 +444,7 @@ async def run_subagent(
     execution.log_path = str(log_path)
 
     # 4. 构造工具集：核心 + skills + 过滤后的 MCP + report_to_main
-    #    显式不暴露 capability_search 和 delegate_to_subagent，防止递归
+    #    显式不暴露 delegate_to_subagent，防止递归
     core_tools = _build_core_tool_definitions()
     skill_tools, skill_tool_table = _build_skill_tool_definitions(skill_entries)
     try:
@@ -821,8 +837,8 @@ async def _run_subagent_loop(
                             "log_path": execution.log_path,
                         }
 
-                # 安全防递归：禁止 delegate_to_subagent / capability_search
-                if tool_name in ("delegate_to_subagent", "capability_search"):
+                # 安全防递归：禁止 delegate_to_subagent
+                if tool_name == "delegate_to_subagent":
                     sub_logger.write_tool_call(tool_id, tool_name, args)
                     if on_event is not None:
                         try:

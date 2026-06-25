@@ -227,7 +227,6 @@ def create_task(
     )
     conn.commit()
     task_id = int(cursor.lastrowid)
-    conn.close()
     return task_id
 
 
@@ -263,7 +262,6 @@ def get_pending_tasks(now: str, limit: int = 50) -> list[dict]:
         """,
         (now, limit),
     ).fetchall()
-    conn.close()
     return [_row_to_dict(r) for r in rows]
 
 
@@ -273,7 +271,6 @@ def get_task_by_id(task_id: int) -> dict | None:
         f"SELECT {_TASK_COLUMNS} FROM scheduled_tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
-    conn.close()
     return _row_to_dict(row) if row else None
 
 
@@ -292,7 +289,6 @@ def list_tasks(page: int = 1, page_size: int = 20) -> dict:
     total = conn.execute(
         "SELECT COUNT(*) FROM scheduled_tasks",
     ).fetchone()[0]
-    conn.close()
     return {
         "tasks": [_row_to_dict(r) for r in rows],
         "total": total,
@@ -315,7 +311,6 @@ def reset_stale_running_tasks(stale_minutes: int = 10) -> int:
     )
     conn.commit()
     affected = cursor.rowcount
-    conn.close()
     return affected
 
 
@@ -327,9 +322,6 @@ def update_task_session_id(task_id: int, session_id: str) -> None:
         (session_id, now, task_id),
     )
     conn.commit()
-    conn.close()
-
-
 def update_task_status(
     task_id: int,
     status: str,
@@ -350,9 +342,6 @@ def update_task_status(
             (status, now, task_id),
         )
     conn.commit()
-    conn.close()
-
-
 def cancel_task(task_id: int) -> bool:
     conn = get_connection()
     cursor = conn.execute(
@@ -361,7 +350,6 @@ def cancel_task(task_id: int) -> bool:
     )
     conn.commit()
     affected = cursor.rowcount
-    conn.close()
     return affected > 0
 
 
@@ -373,7 +361,6 @@ def delete_task(task_id: int) -> bool:
     )
     conn.commit()
     affected = cursor.rowcount
-    conn.close()
     return affected > 0
 
 

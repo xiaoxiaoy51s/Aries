@@ -2,8 +2,16 @@
 File Manager - 基础文件管理工具
 被 agent_tools.py 直接引用，作为核心后端功能
 支持使用 ripgrep 进行高性能文件搜索和内容搜索
+
+层次结构：
+- FileManagerTool（本文件）— 高层面板工具（AI 调用入口）
+- UserFileManager（user_file_manager.py）— 底层文件 I/O 与路径管理
+外部代码统一通过本文件导入 UserFileManager。
 """
 from __future__ import annotations
+
+# 底层 I/O 统一从 user_file_manager 路由，外部只从本文件导入
+from utils.user_file_manager import UserFileManager  # noqa: F401
 
 import fnmatch
 import logging
@@ -39,8 +47,8 @@ class FileManagerTool:
     """
 
     def __init__(self, user_email: str | None = None, work_dir: str | None = None) -> None:
-        from utils.user_file_manager import UserFileManager
-        self.manager = UserFileManager(work_dir=work_dir)
+        from utils.user_file_manager import UserFileManager as _UserFileManager
+        self.manager = _UserFileManager(work_dir=work_dir)
         self._work_dir = work_dir or ""
         self._ripgrep_service = None
         self._ripgrep_checked = False
@@ -66,33 +74,41 @@ class FileManagerTool:
         self,
         *,
         file_path: str,
-        encoding: str = "utf-8",
-        max_chars: int = 40000,
-        start_line: int | None = None,
-        end_line: int | None = None,
-        fuzzy_search: bool = True,
-        use_today: bool = False,
+        offset: int | None = None,
+        limit: int | None = None,
+        max_chars: int = 20000,
+        skill_name: str | None = None,
         skip_confirmation: bool = False,
+        **extra: Any,
     ) -> dict[str, Any]:
-        """Read file content with optional line range."""
+        """Read file content with optional line range.
+
+        支持普通文件读取和技能文件读取（skill_name 不为空时）。
+        兼容旧参数名 start_line/end_line。
+        """
         normalized_path = str(file_path or "").strip()
         if not normalized_path:
             return self._error_response("缺少 file_path 参数", "")
+
+        # 技能文件模式：通过 skill_name 定位技能目录
+        if skill_name:
+            return self._read_skill_file(skill_name, normalized_path, offset, limit, max_chars)
+
         try:
-            target = self.manager.resolve_file_path(normalized_path, use_today=use_today)
+            target = self.manager.resolve_file_path(normalized_path)
         except ValueError as exc:
             return self._error_response(str(exc), normalized_path)
         oob = self._check_out_of_bounds(target, skip_confirmation)
         if oob:
             return oob
         if not target.exists():
-            if fuzzy_search:
-                similar = self._find_similar_files(normalized_path)
-                if similar:
-                    return self._error_response(
-                        f"文件不存在。您是否想查找: {similar}?",
-                        normalized_path
-                    )
+            # 模糊匹配提示
+            similar = self._find_similar_files(normalized_path)
+            if similar:
+                return self._error_response(
+                    f"文件不存在。您是否想查找: {similar}?",
+                    normalized_path
+                )
             return self._error_response("文件不存在", normalized_path)
         if target.is_dir():
             return self._error_response("路径是目录，不是文件", normalized_path)
@@ -104,20 +120,31 @@ class FileManagerTool:
         except Exception as exc:
             return self._error_response(f"读取失败: {exc}", normalized_path)
         try:
-            with open(target, "r", encoding=encoding, errors="replace") as f:
+            with open(target, "r", encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
         except Exception as exc:
             return self._error_response(f"读取失败: {exc}", normalized_path)
         total_lines = len(lines)
-        if start_line is not None or end_line is not None:
-            start = (start_line or 1) - 1
-            end = (end_line or total_lines)
-            start = max(0, start)
-            end = min(total_lines, end)
+
+        # 兼容旧参数名 start_line/end_line
+        start_line = extra.get("start_line") or extra.get("offset")
+        end_line = extra.get("end_line")
+        _offset = offset if offset is not None else start_line
+        _limit = limit
+
+        if _offset is not None or _limit is not None:
+            start = max(0, (_offset or 1) - 1)
+            if _limit is not None:
+                end = min(total_lines, start + _limit)
+            elif end_line is not None:
+                end = min(total_lines, end_line)
+            else:
+                end = total_lines
             lines = lines[start:end]
             line_offset = start
         else:
             line_offset = 0
+
         content = "".join(lines)
         truncated = len(content) > max_chars
         if truncated:
@@ -140,24 +167,95 @@ class FileManagerTool:
             "truncated": truncated,
         }
 
+    def _read_skill_file(
+        self,
+        skill_name: str,
+        file_path: str,
+        offset: int | None = None,
+        limit: int | None = None,
+        max_chars: int = 20000,
+    ) -> dict[str, Any]:
+        """读取技能目录内的文件（支持用户 skills 和内置插件 skills）。"""
+        try:
+            from utils.skills_manager import get_skill_by_name
+            from utils.plugin_manager import discover_plugins
+            entry = get_skill_by_name(skill_name)
+            if entry is None:
+                # 查找内置插件 skill
+                plugin_dir = None
+                for plugin in discover_plugins():
+                    if plugin.kind == "skills" and plugin.name == skill_name:
+                        plugin_dir = plugin.target_path
+                        break
+                if plugin_dir is None:
+                    return self._error_response(f"技能不存在: {skill_name}", file_path)
+                skill_path = Path(plugin_dir)
+            else:
+                skill_path = entry.skill_path
+            target = (skill_path / file_path).resolve()
+            if not str(target).startswith(str(skill_path.resolve())):
+                return self._error_response("非法的文件路径（越界）", file_path)
+            if not target.exists() or not target.is_file():
+                return self._error_response(f"技能文件不存在: {file_path}", file_path)
+            content = target.read_text(encoding="utf-8", errors="replace")
+            lines = content.splitlines(keepends=True)
+            total_lines = len(lines)
+            if offset is not None or limit is not None:
+                start = max(0, (offset or 1) - 1)
+                end = min(total_lines, start + limit) if limit else total_lines
+                lines = lines[start:end]
+                line_offset = start
+            else:
+                line_offset = 0
+            content = "".join(lines)
+            truncated = len(content) > max_chars
+            if truncated:
+                content = content[:max_chars]
+            output_lines = [f"技能: {skill_name}", f"路径: {target}", f"行数: {total_lines}", ""]
+            if truncated:
+                output_lines.append(f"内容已截断（超过 {max_chars} 字符限制）")
+                output_lines.append("")
+            for i, line in enumerate(lines[:1000], start=line_offset + 1):
+                output_lines.append(f"{i:4d}| {line.rstrip()}")
+            if len(lines) > 1000:
+                output_lines.append(f"\n... 还有 {len(lines) - 1000} 行 ...")
+            return {
+                "success": True,
+                "error": "",
+                "output": "\n".join(output_lines),
+                "content": content,
+                "file_path": str(target),
+                "skill": skill_name,
+                "truncated": truncated,
+            }
+        except Exception as exc:
+            return self._error_response(f"读取技能文件失败: {exc}", file_path)
+
     def execute_write_file(
         self,
         *,
-        file_path: str,
+        file_path: str = "",
         content: str,
+        memory: bool = False,
         append: bool = False,
         create_dirs: bool = True,
-        encoding: str = "utf-8",
-        use_today: bool = False,
         skip_confirmation: bool = False,
+        _work_dir: str = "",
+        **extra: Any,
     ) -> dict[str, Any]:
-        """Write content to file."""
+        """Write content to file or agent memory."""
+        text = str(content or "")
+
+        # 记忆模式：写入 ~/.Aries/memory/{work_dir}/agent.md
+        if memory:
+            from memory.agent_memory import write_agent_memory
+            return write_agent_memory(_work_dir, text)
+
         normalized_path = str(file_path or "").strip()
         if not normalized_path:
             return self._error_response("缺少 file_path 参数", "")
-        text = str(content or "")
         try:
-            target = self.manager.resolve_file_path(normalized_path, use_today=use_today)
+            target = self.manager.resolve_file_path(normalized_path)
         except ValueError as exc:
             return self._error_response(str(exc), normalized_path)
         oob = self._check_out_of_bounds(target, skip_confirmation)
@@ -176,7 +274,7 @@ class FileManagerTool:
             operation = "create"
             if target.exists():
                 try:
-                    previous_content = target.read_text(encoding=encoding)
+                    previous_content = target.read_text(encoding="utf-8")
                     operation = "modify"
                 except Exception:
                     previous_content = ""
@@ -189,7 +287,7 @@ class FileManagerTool:
 
         mode = "a" if append else "w"
         try:
-            with open(target, mode, encoding=encoding) as f:
+            with open(target, mode, encoding="utf-8") as f:
                 f.write(text)
         except Exception as exc:
             return self._error_response(f"写入失败: {exc}", normalized_path)
@@ -216,16 +314,15 @@ class FileManagerTool:
         search_text: str | None = None,
         use_regex: bool = False,
         occurrence: int = -1,
-        encoding: str = "utf-8",
-        use_today: bool = False,
         skip_confirmation: bool = False,
+        **extra: Any,
     ) -> dict[str, Any]:
         """Edit specific parts of a file."""
         normalized_path = str(file_path or "").strip()
         if not normalized_path:
             return self._error_response("缺少 file_path 参数", "")
         try:
-            target = self.manager.resolve_file_path(normalized_path, use_today=use_today)
+            target = self.manager.resolve_file_path(normalized_path)
         except ValueError as exc:
             return self._error_response(str(exc), normalized_path)
         oob = self._check_out_of_bounds(target, skip_confirmation)
@@ -234,7 +331,7 @@ class FileManagerTool:
         if not target.exists():
             return self._error_response("文件不存在", normalized_path)
         try:
-            with open(target, "r", encoding=encoding) as f:
+            with open(target, "r", encoding="utf-8") as f:
                 lines = f.readlines()
         except Exception as exc:
             return self._error_response(f"读取失败: {exc}", normalized_path)
@@ -311,6 +408,59 @@ class FileManagerTool:
             "new_content": new_content_str,
         }
         return result
+
+    def execute_delete_file(
+        self,
+        *,
+        file_path: str,
+        skip_confirmation: bool = False,
+    ) -> dict[str, Any]:
+        """删除文件或目录（移到系统回收站，非物理删除，可回退）。"""
+        normalized_path = str(file_path or "").strip()
+        if not normalized_path:
+            return self._error_response("缺少 file_path 参数", "")
+
+        try:
+            target = self.manager.resolve_file_path(normalized_path)
+        except ValueError as exc:
+            return self._error_response(str(exc), normalized_path)
+
+        oob = self._check_out_of_bounds(target, skip_confirmation)
+        if oob:
+            return oob
+
+        if not target.exists():
+            return self._error_response("文件不存在", normalized_path)
+
+        # 不允许删除工作目录根
+        if target == self.manager.get_user_dir():
+            return self._error_response("不能删除工作目录根", normalized_path)
+
+        # 执行：移到系统回收站
+        result = self.manager.move_to_trash(normalized_path)
+        if not result["success"]:
+            return self._error_response(result["error"], normalized_path)
+
+        is_dir = result.get("is_dir", False)
+        previous_content = result.get("previous_content", "")
+
+        action = "目录" if is_dir else "文件"
+        ret = {
+            "success": True,
+            "error": "",
+            "output": f"已将{action}移到系统回收站\n{target}",
+            "file_path": str(target),
+            "working_dir": str(self.base_dir),
+        }
+        # 记录 file_change（用于产物区域展示和回退）
+        # 回退逻辑：把 previous_content 写回原路径（文件可回退，目录无法自动回退）
+        ret["file_change"] = {
+            "file_path": str(target),
+            "operation": "delete",
+            "previous_content": previous_content,
+            "new_content": "",
+        }
+        return ret
 
     def execute_list_files(
         self,
@@ -433,33 +583,42 @@ class FileManagerTool:
     def execute_search_file(
         self,
         *,
-        keyword: str,
-        directory: str = "",
-        pattern: str = "*",
+        pattern: str,
+        path: str = "",
+        glob: str = "*",
+        output_mode: str = "content",
         context_lines: int = 2,
         max_results: int = 50,
-        use_regex: bool = False,
         case_sensitive: bool = False,
-        exclude_dirs: list[str] | None = None,
         skip_confirmation: bool = False,
+        **extra: Any,
     ) -> dict[str, Any]:
         """Search for content across files.
         
         优先使用 ripgrep 进行高性能内容搜索，如果 ripgrep 不可用则回退到 Python 原生实现。
+        兼容旧参数名: keyword→pattern, directory→path, pattern(文件过滤)→glob
         """
-        if not keyword:
+        # 兼容旧参数名
+        if not pattern and extra.get("keyword"):
+            pattern = extra["keyword"]
+        if not path and extra.get("directory"):
+            path = extra["directory"]
+        if glob == "*" and extra.get("pattern") and extra["pattern"] != pattern:
+            glob = extra["pattern"]
+
+        if not pattern:
             return {
                 "success": False,
-                "error": "缺少 keyword 参数",
-                "output": "缺少 keyword 参数",
+                "error": "缺少 pattern 参数",
+                "output": "缺少 pattern 参数",
                 "matches": [],
                 "total_matches": 0,
                 "files_matched": 0,
             }
-        exclude_dirs = exclude_dirs or ["__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build"]
+        exclude_dirs = ["__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build"]
         try:
-            if directory:
-                search_path = self.manager.resolve_file_path(directory, use_today=False)
+            if path:
+                search_path = self.manager.resolve_file_path(path)
             else:
                 search_path = self.base_dir
         except ValueError as exc:
@@ -489,18 +648,18 @@ class FileManagerTool:
         if ripgrep_service:
             try:
                 ripgrep_matches = ripgrep_service.grep(
-                    pattern=keyword,
+                    pattern=pattern,
                     cwd=str(search_path),
-                    include=pattern if pattern != "*" else None,
+                    include=glob if glob != "*" else None,
                     limit=max_results,
                     context_lines=context_lines,
                     case_sensitive=case_sensitive,
-                    use_regex=use_regex,
+                    use_regex=True,
                     exclude_dirs=exclude_dirs,
                 )
                 if ripgrep_matches:
                     return self._format_search_result(
-                        ripgrep_matches, keyword, search_path, pattern, context_lines
+                        ripgrep_matches, pattern, search_path, glob, context_lines, output_mode
                     )
             except Exception as e:
                 logger.warning(f"ripgrep grep 失败，回退到 Python 原生搜索: {e}")
@@ -508,10 +667,7 @@ class FileManagerTool:
         # 回退到 Python 原生实现
         flags = 0 if case_sensitive else re.IGNORECASE
         try:
-            if use_regex:
-                regex = re.compile(keyword, flags)
-            else:
-                regex = re.compile(re.escape(keyword), flags)
+            regex = re.compile(pattern, flags)
         except re.error as exc:
             return {
                 "success": False,
@@ -525,16 +681,10 @@ class FileManagerTool:
         total_matches = 0
         files_matched = 0
 
-        def should_exclude(path: Path) -> bool:
-            for part in path.parts:
-                if part in exclude_dirs:
-                    return True
-            return False
-
-        def match_pattern(path: Path) -> bool:
-            if pattern == "*":
+        def match_pattern(p: Path) -> bool:
+            if glob == "*":
                 return True
-            return fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(str(path), pattern)
+            return fnmatch.fnmatch(p.name, glob) or fnmatch.fnmatch(str(p), glob)
 
         # 优化：使用 os.scandir 递归遍历（比 rglob 快），逐行读取文件（避免大文件内存爆炸）
         exclude_set = set(exclude_dirs)
@@ -552,7 +702,7 @@ class FileManagerTool:
                                 yield from scan_dir(Path(entry.path))
                             elif entry.is_file(follow_symlinks=False):
                                 p = Path(entry.path)
-                                if pattern == "*" or fnmatch.fnmatch(p.name, pattern):
+                                if glob == "*" or fnmatch.fnmatch(p.name, glob):
                                     yield p
                         except OSError:
                             continue
@@ -608,11 +758,47 @@ class FileManagerTool:
             if total_matches >= max_results:
                 break
 
+        # 根据 output_mode 生成输出
+        if output_mode == "count":
+            output_lines = [
+                f"搜索完成",
+                f"关键字: {pattern}",
+                f"搜索目录: {search_path}",
+                f"找到 {files_matched} 个文件，共 {total_matches} 处匹配",
+            ]
+            return {
+                "success": True,
+                "error": "",
+                "output": "\n".join(output_lines),
+                "total_matches": total_matches,
+                "files_matched": files_matched,
+            }
+
+        if output_mode == "files":
+            output_lines = [
+                f"搜索完成",
+                f"关键字: {pattern}",
+                f"搜索目录: {search_path}",
+                f"找到 {files_matched} 个文件，共 {total_matches} 处匹配",
+                "",
+            ]
+            for m in matches:
+                output_lines.append(m["relative_path"])
+            return {
+                "success": True,
+                "error": "",
+                "output": "\n".join(output_lines),
+                "files": [m["relative_path"] for m in matches],
+                "total_matches": total_matches,
+                "files_matched": files_matched,
+            }
+
+        # content 模式（默认）
         output_lines = [
             f"搜索完成",
-            f"关键字: {keyword}",
+            f"关键字: {pattern}",
             f"搜索目录: {search_path}",
-            f"文件模式: {pattern}",
+            f"文件模式: {glob}",
             f"找到 {files_matched} 个文件，共 {total_matches} 处匹配",
         ]
         for match_info in matches[:10]:
@@ -637,10 +823,11 @@ class FileManagerTool:
     def _format_search_result(
         self,
         matches: list[dict[str, Any]],
-        keyword: str,
-        search_path: Path,
         pattern: str,
+        search_path: Path,
+        glob: str,
         context_lines: int,
+        output_mode: str = "content",
     ) -> dict[str, Any]:
         """格式化 ripgrep 搜索结果"""
         # 按文件分组
@@ -662,13 +849,54 @@ class FileManagerTool:
                 "match_count": len(file_matches),
             })
         
-        # 生成输出文本
+        total_matches = len(matches)
+        files_matched = len(formatted_matches)
+
+        # count 模式：仅返回数量
+        if output_mode == "count":
+            output_lines = [
+                f"搜索完成 (ripgrep)",
+                f"关键字: {pattern}",
+                f"搜索目录: {search_path}",
+                f"找到 {files_matched} 个文件，共 {total_matches} 处匹配",
+            ]
+            return {
+                "success": True,
+                "error": "",
+                "output": "\n".join(output_lines),
+                "total_matches": total_matches,
+                "files_matched": files_matched,
+                "search_mode": "ripgrep",
+            }
+
+        # files 模式：仅返回文件路径列表
+        if output_mode == "files":
+            output_lines = [
+                f"搜索完成 (ripgrep)",
+                f"关键字: {pattern}",
+                f"搜索目录: {search_path}",
+                f"找到 {files_matched} 个文件，共 {total_matches} 处匹配",
+                "",
+            ]
+            for m in formatted_matches:
+                output_lines.append(m["relative_path"])
+            return {
+                "success": True,
+                "error": "",
+                "output": "\n".join(output_lines),
+                "files": [m["relative_path"] for m in formatted_matches],
+                "total_matches": total_matches,
+                "files_matched": files_matched,
+                "search_mode": "ripgrep",
+            }
+
+        # content 模式（默认）：显示匹配行及上下文
         output_lines = [
             f"搜索完成 (使用 ripgrep 高性能搜索)",
-            f"关键字: {keyword}",
+            f"关键字: {pattern}",
             f"搜索目录: {search_path}",
-            f"文件模式: {pattern}",
-            f"找到 {len(formatted_matches)} 个文件，共 {len(matches)} 处匹配",
+            f"文件模式: {glob}",
+            f"找到 {files_matched} 个文件，共 {total_matches} 处匹配",
         ]
         
         for match_info in formatted_matches[:10]:
@@ -696,8 +924,8 @@ class FileManagerTool:
             "error": "",
             "output": "\n".join(output_lines),
             "matches": formatted_matches,
-            "total_matches": len(matches),
-            "files_matched": len(formatted_matches),
+            "total_matches": total_matches,
+            "files_matched": files_matched,
             "search_mode": "ripgrep",
         }
 

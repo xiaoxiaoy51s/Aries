@@ -1,0 +1,22 @@
+{
+  "type": "function",
+  "function": {
+    "name": "check_command_status",
+    "description": "查询后台运行命令的状态和最新输出。当你用 cli_executor 启动了开发服务器（设置了 session_id 或自动检测的长运行命令），命令会返回 session_id 并转入后台运行。用此工具可以查看该命令的最新输出，判断服务是否启动成功或是否有报错。\n\n如果不传 session_id，则列出所有当前活跃的后台终端会话，方便你查找对应的 session_id。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "要查询的终端会话 ID（cli_executor 返回的 session_id，或你自定义传入的 ID）。不传时列出所有活跃会话。"
+        },
+        "tail_lines": {
+          "type": "integer",
+          "description": "只返回最后 N 行输出，避免输出过长。默认 50。",
+          "default": 50
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

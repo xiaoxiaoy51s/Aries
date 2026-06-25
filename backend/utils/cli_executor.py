@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -58,7 +59,7 @@ class CLIExecutor:
 
     @property
     def allowed_dir(self) -> Path:
-        from utils.user_file_manager import UserFileManager
+        from utils.file_manager import UserFileManager
         manager = UserFileManager(work_dir=self._work_dir)
         return manager.get_user_dir()
 
@@ -74,7 +75,8 @@ class CLIExecutor:
         skip_confirmation: bool = False,
         invocation_id: str | None = None,
         terminal_session_id: str | None = None,
-        new_terminal: bool = False,
+        session_id: str = "",
+        **extra,
     ) -> dict[str, Any]:
         """通过 HTTP 委托给 Node.js CLI Server 执行命令"""
         server_url = get_server_url()
@@ -96,9 +98,9 @@ class CLIExecutor:
                 "requires_confirmation": False,
             }
 
-        # 自动检测长运行命令，强制使用新终端（避免覆盖正在运行的命令）
-        if not new_terminal and _is_persistent_command(command):
-            new_terminal = True
+        # 自动检测长运行命令，未指定 session_id 时自动生成（避免覆盖正在运行的命令）
+        if not session_id and _is_persistent_command(command):
+            session_id = f"ai-{uuid.uuid4().hex[:8]}"
 
         try:
             payload = {
@@ -107,7 +109,7 @@ class CLIExecutor:
                 "timeout": min(max(timeout, 1), self.MAX_TIMEOUT_SECONDS),
                 "skip_confirmation": skip_confirmation,
                 "invocation_id": invocation_id or "",
-                "new_terminal": new_terminal,
+                "session_id": session_id,
             }
 
             resp = httpx.post(
@@ -195,8 +197,9 @@ class CLIExecutor:
         skip_confirmation: bool = False,
         invocation_id: str | None = None,
         terminal_session_id: str | None = None,
-        new_terminal: bool = False,
+        session_id: str = "",
         cancel_event: asyncio.Event | None = None,
+        **extra,
     ) -> dict[str, Any]:
         """异步执行命令，支持用户中断和后台运行。
 
@@ -223,9 +226,9 @@ class CLIExecutor:
                 "requires_confirmation": False,
             }
 
-        # 自动检测长运行命令，强制使用新终端
-        if not new_terminal and _is_persistent_command(command):
-            new_terminal = True
+        # 自动检测长运行命令，未指定 session_id 时自动生成
+        if not session_id and _is_persistent_command(command):
+            session_id = f"ai-{uuid.uuid4().hex[:8]}"
 
         # 按域名规则注入代理环境变量（npm install / git clone 等）
         original_command = command.strip()
@@ -241,7 +244,7 @@ class CLIExecutor:
             "timeout": min(max(timeout, 1), self.MAX_TIMEOUT_SECONDS),
             "skip_confirmation": skip_confirmation,
             "invocation_id": invocation_id or "",
-            "new_terminal": new_terminal,
+            "session_id": session_id,
         }
 
         # 注册事件

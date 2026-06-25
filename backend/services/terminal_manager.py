@@ -152,7 +152,7 @@ def start_cli_server(
     if not port:
         port = _find_available_port()
 
-    from utils.user_file_manager import UserFileManager
+    from utils.file_manager import UserFileManager
     manager = UserFileManager(work_dir=work_dir)
     allowed_dir = str(manager.get_user_dir())
 
@@ -271,7 +271,7 @@ class TerminalManager:
         self._loop = loop
 
     def resolve_agent_session_id(self, work_dir: str | None = None) -> str:
-        from utils.user_file_manager import UserFileManager
+        from utils.file_manager import UserFileManager
         manager = UserFileManager(work_dir=work_dir)
         key = str(manager.get_user_dir())
         return f"agent:{key}"

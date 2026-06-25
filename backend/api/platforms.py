@@ -145,7 +145,6 @@ def list_active_platforms():
         WHERE session_id IN ('__wechat__', '__qq__', '__feishu__')
         """
     ).fetchall()
-    conn.close()
 
     active_ids = {row[0] for row in rows}
     result = []

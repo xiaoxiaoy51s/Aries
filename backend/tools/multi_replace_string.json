@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "multi_replace_string",
-    "description": "批量替换同一文件中的多处文本。所有替换在同一事务中执行，任一失败则全部回滚。\n\n【适用场景】\n- 同一文件需要修改 3 处以上时，必须用此工具而不是多次 replace_string\n- 减少 LLM 往返次数，降低 token 消耗\n\n【规则】\n- 每条 replacement 的 old_text 必须包含足够上下文确保唯一\n- 各 replacement 的 old_text 互不重叠\n- 所有替换原子性：要么全部成功，要么全部回滚",
+    "description": "批量替换同一文件中的多处文本。所有替换在同一事务中执行，任一失败则全部回滚。\n\n【适用场景】\n- 同一文件需要修改 3 处以上时，必须用此工具而不是多次 edit_file\n- 减少 LLM 往返次数，降低 token 消耗\n\n【规则】\n- 每条 replacement 的 old_text 必须包含足够上下文确保唯一\n- 各 replacement 的 old_text 互不重叠\n- 所有替换原子性：要么全部成功，要么全部回滚",
     "parameters": {
       "type": "object",
       "properties": {
