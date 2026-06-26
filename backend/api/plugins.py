@@ -1,8 +1,8 @@
-﻿from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 import json
 
-from mcp.config import (
+from aries_mcp.config import (
     MCP_CACHE_ROOT,
     delete_plugin,
     discover_plugins,
@@ -19,13 +19,13 @@ class PluginImport(BaseModel):
 
 
 def _reload_mcp_pool() -> None:
-    from mcp.runtime import get_mcp_pool
+    from aries_mcp.runtime import get_mcp_pool
     get_mcp_pool().rebuild(force=True)
 
 
 @router.get("")
 async def list_plugins():
-    from mcp.runtime import get_mcp_diagnostics
+    from aries_mcp.runtime import get_mcp_diagnostics
 
     entries = discover_plugins()
     diagnostics = {item["id"]: item for item in get_mcp_diagnostics()}
@@ -50,7 +50,7 @@ async def list_plugins():
 
 @router.get("/{plugin_id}")
 async def get_plugin_detail(plugin_id: str):
-    from mcp.runtime import get_mcp_diagnostics
+    from aries_mcp.runtime import get_mcp_diagnostics
 
     server = get_mcp_server_config(plugin_id)
     if server is None:
@@ -87,7 +87,7 @@ async def import_plugins(body: PluginImport):
 @router.post("/refresh")
 async def refresh_plugins():
     _reload_mcp_pool()
-    from mcp.runtime import get_mcp_diagnostics, get_mcp_tool_definitions
+    from aries_mcp.runtime import get_mcp_diagnostics, get_mcp_tool_definitions
     return {
         "tool_count": len(get_mcp_tool_definitions()),
         "diagnostics": get_mcp_diagnostics(),

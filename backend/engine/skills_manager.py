@@ -213,7 +213,7 @@ def get_all_tool_definitions() -> list[dict]:
             print(f"Failed to load tool definition for {entry.name}: {e}")
 
     try:
-        from mcp.runtime import get_mcp_tool_definitions
+        from aries_mcp.runtime import get_mcp_tool_definitions
         mcp_tools = get_mcp_tool_definitions(allowed_mcp_ids=get_main_agent_allowed_mcps())
         if mcp_tools:
             tools.extend(mcp_tools)
@@ -277,7 +277,7 @@ def execute_tool(
         pass
 
     try:
-        from mcp.runtime import execute_mcp_tool
+        from aries_mcp.runtime import execute_mcp_tool
         mcp_result = execute_mcp_tool(tool_name, arguments)
         if mcp_result is not None:
             return mcp_result

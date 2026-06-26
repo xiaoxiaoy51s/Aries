@@ -84,7 +84,7 @@ def _check_and_cleanup_proxy():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from db.scheduled_task import reset_stale_running_tasks
-    from mcp.runtime import get_mcp_pool
+    from aries_mcp.runtime import get_mcp_pool
 
     _check_and_cleanup_proxy()
 

@@ -1,4 +1,3 @@
-import json
 import sqlite3
 from .database import get_connection
 from utils.session_logger import resolve_message_log_events
@@ -63,7 +62,7 @@ def update_message(
 def get_chat_context_messages(
     session_id: str,
     message_limit: int = 28,
-    reasoning_rounds: int = 2,
+    reasoning_rounds: int = 3,
     max_assistant_len: int = 800,
 ) -> list[dict]:
     """获取最近 message_limit 条消息 + reasoning_rounds 轮深度思考，
@@ -146,16 +145,11 @@ def _truncate_context_text(text: str, limit: int = 6000) -> str:
     return text[:limit] + "\n...(内容已截断)"
 
 
-def _format_tool_args(args: object, limit: int = 1200) -> str:
-    try:
-        text = json.dumps(args, ensure_ascii=False)
-    except TypeError:
-        text = str(args)
-    return _truncate_context_text(text, limit)
-
-
 def build_work_trace_from_events(events: list[dict]) -> str:
-    """从 JSONL 事件重建一轮完整工作轨迹：reasoning + 工具调用 + 工具结果 + 最终回复。"""
+    """从 JSONL 事件重建一轮工作记录：按时间顺序仅保留深度思考 + 最终回复。
+
+    去掉 tool_call / tool_result，避免日志冗长导致 AI 上下文混乱。
+    """
     lines: list[str] = []
     for event in events:
         event_type = event.get("type")
@@ -163,31 +157,15 @@ def build_work_trace_from_events(events: list[dict]) -> str:
             text = (event.get("text") or "").strip()
             if text:
                 lines.append("【深度思考】\n" + _truncate_context_text(text))
-        elif event_type == "tool_call":
-            tool_name = event.get("tool_name") or "unknown_tool"
-            args = _format_tool_args(event.get("args") or {})
-            lines.append(f"【工具调用】{tool_name}\n参数：{args}")
-        elif event_type == "tool_result":
-            tool_name = event.get("tool_name") or "unknown_tool"
-            status = event.get("status") or "unknown"
-            result = event.get("result") or event.get("error") or ""
-            session_id = event.get("session_id") or ""
-            # 终端会话 ID 单独提取，避免被 result 截断后丢失
-            sid_line = f"终端会话ID: {session_id}\n" if session_id else ""
-            lines.append(
-                f"【工具结果】{tool_name} ({status})\n"
-                + sid_line
-                + _truncate_context_text(str(result), 3000)
-            )
         elif event_type == "assistant_text":
             text = (event.get("text") or "").strip()
             if text:
-                lines.append("【阶段/最终回复】\n" + _truncate_context_text(text, 3000))
+                lines.append("【最终回复】\n" + _truncate_context_text(text, 3000))
     return "\n\n".join(lines).strip()
 
 
-def get_recent_agent_reasoning(session_id: str, rounds: int = 2) -> list[str]:
-    """取最近 N 轮 assistant 工作轨迹，包含 reasoning、工具调用、工具结果和最终回复。"""
+def get_recent_agent_reasoning(session_id: str, rounds: int = 3) -> list[str]:
+    """取最近 N 轮 assistant 工作记录，包含深度思考和最终回复（按时间顺序）。"""
     db_msgs = get_recent_messages(session_id, limit=80)
     trace_list: list[str] = []
     for msg in db_msgs:
@@ -209,7 +187,7 @@ def get_recent_agent_reasoning(session_id: str, rounds: int = 2) -> list[str]:
     return trace_list[-rounds:]
 
 
-def build_agent_reasoning_context(session_id: str, rounds: int = 2) -> dict | None:
+def build_agent_reasoning_context(session_id: str, rounds: int = 3) -> dict | None:
     """将最近 N 轮 agent 工作记录包装为 system 消息。"""
     recent = get_recent_agent_reasoning(session_id, rounds=rounds)
     if not recent:
@@ -275,7 +253,7 @@ def get_memory_aware_context_messages(
     boundary = get_latest_memory_boundary(session_id)
     db_messages = get_messages_after_id(session_id, after_id=boundary, limit=120)
     memories = get_session_memories(session_id, limit=3)
-    reasoning_list = get_recent_agent_reasoning(session_id, rounds=2)
+    reasoning_list = get_recent_agent_reasoning(session_id, rounds=3)
     return build_context_messages(
         db_messages=db_messages,
         memories=memories,

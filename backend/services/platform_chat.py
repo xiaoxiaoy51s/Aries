@@ -30,7 +30,7 @@ SendSegmentFn = Callable[[str], Awaitable[None]]
 PLATFORMS = ("qq", "wechat", "feishu")
 HISTORY_ROUNDS = 14
 HISTORY_LIMIT = HISTORY_ROUNDS * 2
-REASONING_ROUNDS = 2
+REASONING_ROUNDS = 3
 ASSISTANT_MAX_LEN = 2000
 
 # 每个平台当前进行中的任务和取消事件

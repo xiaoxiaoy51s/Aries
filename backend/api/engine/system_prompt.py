@@ -1,4 +1,4 @@
-﻿"""系统提示词构建 + 技能/工具解析。"""
+"""系统提示词构建 + 技能/工具解析。"""
 import platform
 from datetime import datetime
 
@@ -167,7 +167,7 @@ def build_agent_system_prompt(
 
 
 def get_agent_skills_and_tools():
-    from mcp.runtime import build_mcp_prompt_context
+    from aries_mcp.runtime import build_mcp_prompt_context
     from engine.subagent_manager import build_subagent_router_section
     from utils.main_agent_config import get_main_agent_allowed_skills
 

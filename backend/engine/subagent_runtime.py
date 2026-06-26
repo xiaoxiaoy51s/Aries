@@ -140,7 +140,7 @@ def _filter_mcp_tools(all_tools: list[dict[str, Any]], allowed_mcps: list[str]) 
     """按 server_id 过滤 MCP 工具定义。MCP 工具名约定为 `mcp_{server_id}_{tool}`。"""
     if not allowed_mcps:
         return []
-    from mcp.runtime import _slug  # type: ignore
+    from aries_mcp.runtime import _slug  # type: ignore
 
     allowed_slugs = {_slug(m) for m in allowed_mcps}
     result: list[dict[str, Any]] = []
@@ -448,7 +448,7 @@ async def run_subagent(
     core_tools = _build_core_tool_definitions()
     skill_tools, skill_tool_table = _build_skill_tool_definitions(skill_entries)
     try:
-        from mcp.runtime import get_mcp_tool_definitions
+        from aries_mcp.runtime import get_mcp_tool_definitions
 
         all_mcp_tools = get_mcp_tool_definitions()
     except Exception:

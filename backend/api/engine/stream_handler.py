@@ -355,6 +355,7 @@ async def stream_agent_mode(
                         continue
 
                     # 普通工具执行
+                    yield f"data: {json.dumps({'tool_call': {'tool_call_id': tool_id, 'tool_name': tool_name, 'status': 'running', 'args': args, 'round': round_no}}, ensure_ascii=False)}\n\n"
                     result, confirm_event, stream_stopped = await run_single_tool(
                         tool_name, args, tool_id, session_id, work_dir, round_no,
                         logger, cancel_event, segment_sink, assistant_message_id,

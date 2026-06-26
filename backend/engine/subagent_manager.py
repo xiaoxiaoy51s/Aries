@@ -153,7 +153,7 @@ def _check_skill_exists(skill_name: str) -> bool:
 def _check_mcp_exists(mcp_name: str) -> bool:
     """检查 mcp 是否在 ~/.Aries/mcp.json 中配置。"""
     try:
-        from mcp.config import load_mcp_config
+        from aries_mcp.config import load_mcp_config
 
         config = load_mcp_config()
         servers = config.get("mcpServers") or {}
@@ -449,7 +449,7 @@ def build_subagent_runtime(name: str) -> dict[str, Any]:
             skill_entries.append(sk)
 
     # 2. 检查 mcp 配置存在性（不要求 enabled）
-    from mcp.config import load_mcp_config
+    from aries_mcp.config import load_mcp_config
 
     mcp_servers_cfg = load_mcp_config().get("mcpServers") or {}
     for mcp_name in entry.allowed_mcps:
