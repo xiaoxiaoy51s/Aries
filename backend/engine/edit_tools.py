@@ -257,7 +257,7 @@ class EditTools:
     # ------------------------------------------------------------------
 
     def execute_multi_replace_string(self, *, file_path: str, replacements: list[dict[str, str]],
-                                      encoding: str = "utf-8", skip_confirmation: bool = False) -> dict[str, Any]:
+                                      skip_confirmation: bool = False) -> dict[str, Any]:
         normalized_path = str(file_path or "").strip()
         if not normalized_path:
             return self._error("缺少 file_path 参数", "")
@@ -274,7 +274,7 @@ class EditTools:
         if not target.exists():
             return self._error("文件不存在", normalized_path)
         try:
-            content = target.read_text(encoding=encoding, errors="replace")
+            content = target.read_text(encoding="utf-8", errors="replace")
         except Exception as exc:
             return self._error(f"读取失败: {exc}", normalized_path)
 
@@ -303,7 +303,7 @@ class EditTools:
             new_content = new_content[:pos] + new_text + new_content[pos + len(old_text):]
 
         try:
-            target.write_text(new_content, encoding=encoding)
+            target.write_text(new_content, encoding="utf-8")
         except Exception as exc:
             return self._error(f"写入失败: {exc}", normalized_path)
 
@@ -319,7 +319,7 @@ class EditTools:
     # ------------------------------------------------------------------
 
     def execute_apply_patch(self, *, file_path: str, patch: str,
-                             encoding: str = "utf-8", skip_confirmation: bool = False) -> dict[str, Any]:
+                             skip_confirmation: bool = False) -> dict[str, Any]:
         normalized_path = str(file_path or "").strip()
         if not normalized_path:
             return self._error("缺少 file_path 参数", "")
@@ -335,7 +335,7 @@ class EditTools:
         if not target.exists():
             return self._error("文件不存在", normalized_path)
         try:
-            original = target.read_text(encoding=encoding, errors="replace")
+            original = target.read_text(encoding="utf-8", errors="replace")
         except Exception as exc:
             return self._error(f"读取失败: {exc}", normalized_path)
 
@@ -349,7 +349,7 @@ class EditTools:
         if new_content == original:
             return self._error("补丁未产生任何修改，请检查 patch 内容。", normalized_path)
         try:
-            target.write_text(new_content, encoding=encoding)
+            target.write_text(new_content, encoding="utf-8")
         except Exception as exc:
             return self._error(f"写入失败: {exc}", normalized_path)
 

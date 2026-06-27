@@ -8,7 +8,7 @@
       "properties": {
         "command": {
           "type": "string",
-          "description": "要执行的命令。"
+          "description": "要执行的命令，不要使用&&，powershell不支持这种命令。"
         },
         "working_dir": {
           "type": "string",

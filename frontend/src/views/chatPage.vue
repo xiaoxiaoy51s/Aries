@@ -162,6 +162,7 @@ import { confirmTool } from '@/api/git'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { getSessionMessages, getSession, updateSessionMeta, getSessionContextUsage } from '@/api/sessions'
 import { listWorkDirs, createWorkDir } from '@/api/work_dirs'
+import { selectDirectory } from '@/api/system'
 import AssistantMessage from '@/components/AssistantMessage.vue'
 import ChatComposer from '@/components/ChatComposer.vue'
 import DangerCommandConfirm from '@/components/DangerCommandConfirm.vue'
@@ -697,15 +698,25 @@ function onWorkDirChanged(e: Event) {
 // 点「+ 新工作目录」时调用 —— 后端调起系统文件夹选择对话框
 async function pickWorkDir() {
   try {
-    const baseUrl = modelStore.getBaseUrl()
-    const res = await fetch(`${baseUrl}/system/select-directory`, {
-      method: 'POST',
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const data = await res.json()
-    if (data.cancelled || !data.path) return
-    if (data.error) throw new Error(data.error)
-    await applyWorkDir(data.path)
+    let path = ''
+
+    // 优先使用 Electron 原生文件浏览器
+    const electronAPI = (window as any).electronAPI
+    if (electronAPI?.selectDirectory) {
+      const result = await electronAPI.selectDirectory({ title: '选择工作目录' })
+      if (result.cancelled || !result.path) return
+      path = result.path
+    } else {
+      const result = await selectDirectory()
+      if (result.cancelled || !result.path) return
+      if (result.error) {
+        alert(result.error)
+        return
+      }
+      path = result.path
+    }
+
+    await applyWorkDir(path)
   } catch (e) {
     console.error('选择目录失败', e)
     alert('无法打开文件夹选择器：' + (e as Error).message)
@@ -1231,6 +1242,7 @@ onMounted(() => {
   window.addEventListener('aries:open-url', onOpenUrlFromMessage)
   window.addEventListener('aries:toast', onToast)
   window.addEventListener('aries:add-to-chat', onAddToChat)
+  window.addEventListener('aries:select-work-dir', onSelectWorkDir)
   loadWorkDir()
   // 确保模型列表已加载（避免 MainLayout 加载未完成导致下拉框为空）
   void modelStore.loadModels()
@@ -1284,7 +1296,12 @@ onUnmounted(() => {
   window.removeEventListener('aries:open-url', onOpenUrlFromMessage)
   window.removeEventListener('aries:toast', onToast)
   window.removeEventListener('aries:add-to-chat', onAddToChat)
+  window.removeEventListener('aries:select-work-dir', onSelectWorkDir)
 })
+
+function onSelectWorkDir() {
+  void pickWorkDir()
+}
 
 // ---------- 宠物窗口状态推送 ----------
 let petStatusPhase = ''

@@ -31,5 +31,23 @@ interface Window {
         | 'running'
         | 'review'
     ) => void
+
+    /** 系统用户主目录 */
+    homePath?: string
+    /** 弹出系统原生文件/文件夹选择对话框 */
+    selectDirectory?: (opts?: any) => Promise<{ path: string | null; cancelled: boolean }>
+    selectFile?: (opts?: any) => Promise<{ path: string | null; cancelled: boolean }>
+    /** 重启应用 */
+    relaunch?: () => void
+
+    /** 窗口控制 */
+    windowMinimize?: () => void
+    windowMaximize?: () => void
+    windowClose?: () => void
+    windowIsMaximized?: () => Promise<boolean>
+    onWindowMaximizedChange?: (callback: (value: boolean) => void) => void
+
+    /** 创建新窗口 */
+    createNewWindow?: () => void
   }
 }

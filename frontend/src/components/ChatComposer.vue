@@ -434,7 +434,6 @@
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import SlashComposerInput, { type ComposerImage } from '@/components/SlashComposerInput.vue'
 import RoleEditorModal from '@/components/RoleEditorModal.vue'
-import { getInitPrompt } from '@/api/memory'
 import { listPlugins, type PluginItem as McpPluginItem } from '@/api/plugins'
 import { listPets } from '@/api/pets'
 import { listSkills, type SkillItem as ApiSkillItem } from '@/api/skills'
@@ -838,7 +837,9 @@ const pluginItems = computed<PluginItem[]>(() => {
   const percent = props.contextUsagePercent ?? 0
   const compactBadge = percent > 0 ? `已使用 ${percent}%` : undefined
   return [
-    { id: 'init', icon: 'file-text', label: '初始化', description: '生成当前项目的 Agent 记忆' },
+    { id: 'ask', icon: 'message-circle', label: '问答', description: '回答问题、解释代码（只读）' },
+    { id: 'explore', icon: 'compass', label: '探索', description: '快速扫描代码库、定位关键文件（只读）' },
+    { id: 'plan', icon: 'map', label: '规划', description: '制定实现计划，不修改代码' },
     { id: 'role', icon: 'shield', label: '规则', description: '设置 AI 行为约束规则' },
     { id: 'mcp', icon: 'cpu', label: 'MCP', description: '显示 MCP 服务器状态' },
     { id: 'review', icon: 'code', label: '代码审查', description: '审查未暂存的更改' },
@@ -1022,15 +1023,8 @@ async function onPluginClick(item: PluginItem) {
     return
   }
 
-  if (item.id === 'init') {
-    try {
-      const res = await getInitPrompt()
-      if (res.prompt) {
-        plainTextProxy.value = res.prompt
-      }
-    } catch (e) {
-      console.error('获取 Init Prompt 失败', e)
-    }
+  if (item.id === 'ask' || item.id === 'explore' || item.id === 'plan') {
+    plainTextProxy.value = `@${item.id}`
     nextTick(() => composerRef.value?.focus?.())
     return
   }
@@ -1237,11 +1231,11 @@ defineExpose({
   max-width: 760px;
   display: flex;
   flex-direction: column;
-  background: #f3f3f1;
-  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: transparent;
+  border: none;
   border-radius: var(--radius-lg);
   padding: 0px 0px 0;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.025);
+  box-shadow: none;
 }
 
 .composer-shell-bottom {

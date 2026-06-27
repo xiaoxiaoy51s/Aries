@@ -36,7 +36,7 @@ class UserFileManager:
     def resolve_list_dir(self, subdir: str | None = None) -> Path:
         if not subdir:
             return self.user_dir
-        candidate = Path(subdir)
+        candidate = Path(subdir).expanduser()
         if candidate.is_absolute():
             return candidate.resolve()
         return (self.user_dir / subdir).resolve()

@@ -102,8 +102,11 @@ const maxRows = computed(() => props.maxRows || 5)
 const fileRefWithLinesPattern = /##((?:[A-Za-z]:\\[^\s\n#]+|\/[^\s\n#]+)#L\d+-\d+)##/g
 const plainFileRefPattern = /##((?:[A-Za-z]:\\[^\s\n#]+\.[a-zA-Z0-9_]+|\/[^\s\n#]+\.[a-zA-Z0-9_]+))##/g
 const folderRefPattern = /##((?:[A-Za-z]:\\[^\s\n#]*|\/[^\s\n#]*)[\\/])##/g
-const codeReviewPattern = /^@code_review(?:\s+(?:unstaged|staged|branch|full))?/
+const codeReviewPattern = /^@code_review(?:\s+(?:unstaged|staged|branch|commit|full))?/
 const codeReviewAnyPattern = /@code_review(?:\s+(?:unstaged|staged|branch|commit|full))?/
+const agentModePattern = /^@(ask|explore|plan)/
+const agentModeAnyPattern = /@(ask|explore|plan)/g
+const agentModeLabels: Record<string, string> = { ask: '问答', explore: '探索', plan: '规划' }
 // 技能引用：@skill:<folder_name>，folder_name 由字母/数字/-/_/. 组成
 const skillRefPattern = /@skill:([A-Za-z0-9._-]+)/g
 
@@ -136,12 +139,23 @@ watch(() => props.disabled, (value) => {
 }, { immediate: true })
 
 function normalizeCodeReviewText(text: string) {
-  const match = text.match(codeReviewAnyPattern)
-  if (!match || match.index === undefined || match.index === 0) return text
-  const marker = match[0]
-  const before = text.slice(0, match.index).trim()
-  const after = text.slice(match.index + marker.length).trimStart()
-  return [marker, before, after].filter(Boolean).join(' ')
+  const crMatch = text.match(codeReviewAnyPattern)
+  let result = text
+  if (crMatch && crMatch.index !== undefined && crMatch.index !== 0) {
+    const marker = crMatch[0]
+    const before = result.slice(0, crMatch.index).trim()
+    const after = result.slice(crMatch.index + marker.length).trimStart()
+    result = [marker, before, after].filter(Boolean).join(' ')
+  }
+  for (const m of result.matchAll(agentModeAnyPattern)) {
+    if (m.index === undefined || m.index === 0) continue
+    const marker = m[0]
+    const before = result.slice(0, m.index).trim()
+    const after = result.slice(m.index + marker.length).trimStart()
+    result = [marker, before, after].filter(Boolean).join(' ')
+    break
+  }
+  return result
 }
 
 function renderText(text: string) {
@@ -150,7 +164,7 @@ function renderText(text: string) {
 
   // 收集所有 ##包裹## 格式的匹配
   // value 存储捕获组（不带 ##），但区间是 ##...## 整体的长度
-  const matches: { type: 'file' | 'plain-file' | 'folder' | 'code-review' | 'skill'; value: string; index: number; end: number }[] = []
+  const matches: { type: 'file' | 'plain-file' | 'folder' | 'code-review' | 'agent-mode' | 'skill'; value: string; index: number; end: number }[] = []
 
   for (const m of text.matchAll(fileRefWithLinesPattern)) {
     matches.push({ type: 'file', value: m[1], index: m.index || 0, end: (m.index || 0) + m[0].length })
@@ -169,10 +183,15 @@ function renderText(text: string) {
   if (codeReviewMatch && codeReviewMatch.index !== undefined) {
     matches.push({ type: 'code-review', value: codeReviewMatch[0], index: codeReviewMatch.index, end: codeReviewMatch.index + codeReviewMatch[0].length })
   }
+  const agentModeMatch = text.match(agentModePattern)
+  if (agentModeMatch && agentModeMatch.index !== undefined) {
+    const fullMarker = agentModeMatch[0]
+    matches.push({ type: 'agent-mode', value: fullMarker, index: agentModeMatch.index, end: agentModeMatch.index + fullMarker.length })
+  }
 
   // 去重：区间长 + 类型优先级高 的优先保留
-  // 优先级：file(带行号) > folder > plain-file > code-review > skill
-  const typePriority: Record<string, number> = { 'file': 5, 'folder': 4, 'plain-file': 3, 'code-review': 2, 'skill': 1 }
+  // 优先级：file(带行号) > folder > plain-file > code-review / agent-mode > skill
+  const typePriority: Record<string, number> = { 'file': 5, 'folder': 4, 'plain-file': 3, 'code-review': 2, 'agent-mode': 2, 'skill': 1 }
   const sorted = matches.sort((a, b) => {
     const pa = typePriority[a.type] || 0
     const pb = typePriority[b.type] || 0
@@ -209,7 +228,9 @@ function renderText(text: string) {
             ? createFolderRefTag(match.value)
             : match.type === 'skill'
               ? createSkillTag(match.value)
-              : createCodeReviewTag(match.value)
+              : match.type === 'agent-mode'
+                ? createAgentModeTag(match.value)
+                : createCodeReviewTag(match.value)
     )
     lastIndex = match.end
   }
@@ -235,6 +256,15 @@ function createCodeReviewTag(value: string) {
   tag.contentEditable = 'false'
   tag.dataset.ref = value
   tag.textContent = value
+  return tag
+}
+
+function createAgentModeTag(marker: string) {
+  const tag = document.createElement('span')
+  tag.className = 'agent-mode-tag'
+  tag.contentEditable = 'false'
+  tag.dataset.ref = marker
+  tag.textContent = marker
   return tag
 }
 
@@ -403,10 +433,11 @@ function extractNodeText(node: ChildNode): string {
   if (el.classList.contains('skill-tag')) {
     return `@skill:${el.dataset.ref || ''}`
   }
-  if (el.classList.contains('file-ref-tag') || el.classList.contains('code-review-tag') || el.classList.contains('folder-ref-tag')) {
+  if (el.classList.contains('file-ref-tag') || el.classList.contains('code-review-tag') || el.classList.contains('folder-ref-tag') || el.classList.contains('agent-mode-tag')) {
     const ref = el.dataset.ref || ''
     // 文件/文件夹引用统一用 ##...## 包裹，方便后续正则匹配
     if (el.classList.contains('code-review-tag')) return ref
+    if (el.classList.contains('agent-mode-tag')) return ref
     return `##${ref}##`
   }
 
@@ -441,6 +472,37 @@ function onInput() {
 }
 
 function onPaste(e: ClipboardEvent) {
+  const items = e.clipboardData?.items
+  if (items) {
+    const imageItems: DataTransferItem[] = []
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        imageItems.push(item)
+      }
+    }
+    if (imageItems.length > 0) {
+      e.preventDefault()
+      Promise.all(
+        imageItems.map((item) => {
+          const file = item.getAsFile()
+          if (!file) return null
+          return new Promise<ComposerImage>((resolve) => {
+            const reader = new FileReader()
+            reader.onload = () =>
+              resolve({ id: crypto.randomUUID(), data: reader.result as string, name: file.name })
+            reader.readAsDataURL(file)
+          })
+        })
+      ).then((imgs) => {
+        const valid = imgs.filter((img): img is ComposerImage => img !== null)
+        if (valid.length) {
+          emit('update:attached-images', [...(props.attachedImages || []), ...valid])
+        }
+      })
+      return
+    }
+  }
+
   e.preventDefault()
   // 粘贴纯文本，避免浏览器自动将 URL 转为 <a> 标签
   const text = e.clipboardData?.getData('text/plain') || ''
@@ -734,6 +796,24 @@ defineExpose({ openFilePicker, clearImages, focus })
   border-radius: 6px;
   background: rgba(37, 99, 235, 0.08);
   color: #2563eb;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  vertical-align: middle;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}
+
+:deep(.agent-mode-tag) {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  margin: 0 2px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: rgba(139, 92, 246, 0.1);
+  color: #7c3aed;
   font-size: 13px;
   font-weight: 500;
   line-height: 1;

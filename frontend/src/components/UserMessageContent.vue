@@ -45,6 +45,8 @@ const fileRefWithLinesPattern = /##((?:[A-Za-z]:\\[^\s\n#]+|\/[^\s\n#]+)#L\d+-\d
 const plainFileRefPattern = /##((?:[A-Za-z]:\\[^\s\n#]+\.[a-zA-Z0-9_]+|\/[^\s\n#]+\.[a-zA-Z0-9_]+))##/g
 const folderRefPattern = /##((?:[A-Za-z]:\\[^\s\n#]*|\/[^\s\n#]*)[\\/])##/g
 const codeReviewPattern = /^@code_review(?:\s+(?:branch|full))?/
+const agentModePattern = /^@(ask|explore|plan)/
+const agentModeLabels: Record<string, string> = { ask: '问答', explore: '探索', plan: '规划' }
 // 技能引用：@skill:<folder_name>
 const skillRefPattern = /@skill:([A-Za-z0-9._-]+)/g
 
@@ -53,7 +55,7 @@ function renderContent() {
   const text = props.content || ''
   contentRef.value.innerHTML = ''
 
-  const matches: { type: 'file' | 'plain-file' | 'folder' | 'code-review' | 'skill'; value: string; index: number; end: number }[] = []
+  const matches: { type: 'file' | 'plain-file' | 'folder' | 'code-review' | 'agent-mode' | 'skill'; value: string; index: number; end: number }[] = []
 
   for (const m of text.matchAll(fileRefWithLinesPattern)) {
     matches.push({ type: 'file', value: m[1], index: m.index || 0, end: (m.index || 0) + m[0].length })
@@ -76,9 +78,19 @@ function renderContent() {
       end: codeReviewMatch.index + codeReviewMatch[0].length,
     })
   }
+  const agentModeMatch = text.match(agentModePattern)
+  if (agentModeMatch && agentModeMatch.index !== undefined) {
+    const fullMarker = agentModeMatch[0]
+    matches.push({
+      type: 'agent-mode',
+      value: fullMarker,
+      index: agentModeMatch.index,
+      end: agentModeMatch.index + fullMarker.length,
+    })
+  }
 
   // 去重：类型优先级高 + 区间长 的优先保留
-  const typePriority: Record<string, number> = { 'file': 5, 'folder': 4, 'plain-file': 3, 'code-review': 2, 'skill': 1 }
+  const typePriority: Record<string, number> = { 'file': 5, 'folder': 4, 'plain-file': 3, 'code-review': 2, 'agent-mode': 2, 'skill': 1 }
   const sorted = matches.sort((a, b) => {
     const pa = typePriority[a.type] || 0
     const pb = typePriority[b.type] || 0
@@ -115,7 +127,9 @@ function renderContent() {
             ? createFolderRefTag(match.value)
             : match.type === 'skill'
               ? createSkillTag(match.value)
-              : createCodeReviewTag(match.value)
+              : match.type === 'agent-mode'
+                ? createAgentModeTag(match.value)
+                : createCodeReviewTag(match.value)
     )
     lastIndex = match.end
   }
@@ -136,6 +150,13 @@ function createCodeReviewTag(value: string) {
   const tag = document.createElement('span')
   tag.className = 'code-review-tag'
   tag.textContent = value
+  return tag
+}
+
+function createAgentModeTag(label: string) {
+  const tag = document.createElement('span')
+  tag.className = 'agent-mode-tag'
+  tag.textContent = label
   return tag
 }
 
@@ -264,6 +285,24 @@ onMounted(() => {
   border-radius: 6px;
   background: rgba(37, 99, 235, 0.08);
   color: #2563eb;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  vertical-align: middle;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}
+
+:deep(.agent-mode-tag) {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  margin: 0 2px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: rgba(139, 92, 246, 0.1);
+  color: #7c3aed;
   font-size: 13px;
   font-weight: 500;
   line-height: 1;

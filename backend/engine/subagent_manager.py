@@ -6,7 +6,8 @@
 - Subagent 的 allowed_skills / allowed_mcps 对内强制激活：
     即使 skill 在全局未配置给主 Agent，只要 Subagent 声明就强制可用
     （但前提是文件/配置必须存在，不存在则视为加载失败）
-- 主 Agent 看到的精简字段：name / description / model / fallback_model / enabled /
+- model 为空 → 走系统默认模型（~/.Aries/config.json 中的 active 模型）
+- 主 Agent 看到的精简字段：name / description / enabled /
   allowed_skills / allowed_mcps
 """
 from __future__ import annotations
@@ -33,9 +34,8 @@ _NAME_SAFE_PATTERN = re.compile(r"^[A-Za-z0-9._\-]+$")
 class SubagentEntry:
     name: str
     description: str
-    model: str
-    fallback_model: str
-    enabled: bool
+    model: str = ""
+    enabled: bool = True
     allowed_skills: list[str] = field(default_factory=list)
     allowed_mcps: list[str] = field(default_factory=list)
     system_prompt: str = ""
@@ -43,15 +43,14 @@ class SubagentEntry:
     # 运行时计算字段
     available: bool = True
     unavailable_reason: str = ""
-    # 实际使用的模型（model 不存在时回退到 fallback_model）
+    # 实际使用的模型（model 为空时走系统默认模型）
     effective_model: str = ""
 
     def to_router_dict(self) -> dict[str, Any]:
-        """给主 Agent 路由表用的精简视图（不含 system_prompt）。"""
+        """给主 Agent 路由表用的精简视图（不含 system_prompt 和模型信息）。"""
         return {
             "name": self.name,
             "description": self.description,
-            "model": self.effective_model or self.model,
             "enabled": self.enabled,
             "allowed_skills": list(self.allowed_skills),
             "allowed_mcps": list(self.allowed_mcps),
@@ -62,6 +61,7 @@ class SubagentEntry:
     def to_api_dict(self) -> dict[str, Any]:
         """给前端 UI 用的完整视图（含 system_prompt 与路径）。"""
         data = self.to_router_dict()
+        data["model"] = self.model
         data["system_prompt"] = self.system_prompt
         data["config_path"] = str(self.config_path) if self.config_path else ""
         return data
@@ -85,9 +85,12 @@ def _normalize_entry(raw: dict[str, Any], fallback_name: str, path: Path) -> Sub
     name = str(raw.get("name") or fallback_name).strip()
     description = str(raw.get("description") or "").strip()
     model = str(raw.get("model") or "").strip()
-    fallback_model = str(raw.get("fallback_model") or "default").strip() or "default"
     enabled = bool(raw.get("enabled", True))
-    system_prompt = str(raw.get("system_prompt") or "").strip()
+    raw_sp = raw.get("system_prompt")
+    if isinstance(raw_sp, list):
+        system_prompt = "\n".join(str(line).strip() for line in raw_sp if str(line).strip())
+    else:
+        system_prompt = str(raw_sp or "").strip()
 
     def _str_list(value: Any) -> list[str]:
         if not isinstance(value, list):
@@ -98,7 +101,6 @@ def _normalize_entry(raw: dict[str, Any], fallback_name: str, path: Path) -> Sub
         name=name,
         description=description,
         model=model,
-        fallback_model=fallback_model,
         enabled=enabled,
         allowed_skills=_str_list(raw.get("allowed_skills")),
         allowed_mcps=_str_list(raw.get("allowed_mcps")),
@@ -164,27 +166,27 @@ def _check_mcp_exists(mcp_name: str) -> bool:
 
 
 def _compute_availability(entry: SubagentEntry) -> None:
-    """根据 enabled + 依赖检查计算 available / effective_model。结果写回 entry。"""
+    """根据 enabled + 依赖检查计算 available / effective_model。结果写回 entry。
+
+    model 为空 → 走系统默认模型（不阻塞加载）。
+    model 非空但不存在 → 标记不可用。
+    """
     if not entry.enabled:
         entry.available = False
         entry.unavailable_reason = "已被用户禁用"
-        entry.effective_model = entry.model or entry.fallback_model
+        entry.effective_model = entry.model
         return
 
-    # 模型回退
-    if entry.model and _check_model_available(entry.model):
+    # model 为空 → 走系统默认模型
+    if not entry.model:
+        entry.effective_model = ""
+    elif _check_model_available(entry.model):
         entry.effective_model = entry.model
-    elif _check_model_available(entry.fallback_model):
-        entry.effective_model = entry.fallback_model
     else:
-        # 既无 model 也无 fallback，先不阻塞（执行时再次检查），但标记原因
-        entry.effective_model = entry.fallback_model or entry.model
-        if entry.model:
-            entry.available = False
-            entry.unavailable_reason = (
-                f"模型 {entry.model} 与 fallback {entry.fallback_model} 均不可用"
-            )
-            return
+        entry.effective_model = entry.model
+        entry.available = False
+        entry.unavailable_reason = f"模型 {entry.model} 不可用"
+        return
 
     # 依赖 skill / mcp 是否"存在"（不要求 available/enabled）
     for skill in entry.allowed_skills:
@@ -218,7 +220,7 @@ def discover_subagents() -> list[SubagentEntry]:
         if path.name == "main_agent.json":
             continue
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8"), strict=False)
         except (OSError, json.JSONDecodeError) as exc:
             logger.warning("解析 subagent 配置失败 %s: %s", path, exc)
             continue
@@ -276,7 +278,6 @@ def save_subagent(payload: dict[str, Any]) -> SubagentEntry:
         "name": name,
         "description": str(payload.get("description") or "").strip(),
         "model": str(payload.get("model") or "").strip(),
-        "fallback_model": str(payload.get("fallback_model") or "default").strip() or "default",
         "enabled": bool(payload.get("enabled", True)),
         "allowed_skills": [
             str(item).strip()
@@ -320,7 +321,7 @@ def set_subagent_enabled(name: str, enabled: bool) -> SubagentEntry:
 
 
 def _reload(path: Path) -> SubagentEntry:
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = json.loads(path.read_text(encoding="utf-8"), strict=False)
     entry = _normalize_entry(raw, fallback_name=path.stem, path=path)
     _compute_availability(entry)
     return entry
@@ -331,7 +332,7 @@ def build_subagent_router_section(entries: list[SubagentEntry] | None = None) ->
 
     输出格式：
         ## Available Subagents
-        - <name> | 描述 | 模型: <model> | 技能: [a, b] | MCP: [x]
+        - <name> | 描述 | 技能: [a, b] | MCP: [x]
     """
     if entries is None:
         entries = list_available_subagents()
@@ -347,10 +348,9 @@ def build_subagent_router_section(entries: list[SubagentEntry] | None = None) ->
     for entry in entries:
         skills = ", ".join(entry.allowed_skills) if entry.allowed_skills else "-"
         mcps = ", ".join(entry.allowed_mcps) if entry.allowed_mcps else "-"
-        model = entry.effective_model or entry.model or entry.fallback_model
         lines.append(
             f"- {entry.name} | {entry.description or '(无描述)'} "
-            f"| 模型: {model} | 技能: [{skills}] | MCP: [{mcps}]"
+            f"| 技能: [{skills}] | MCP: [{mcps}]"
         )
     return "\n".join(lines)
 
@@ -430,7 +430,7 @@ def build_subagent_runtime(name: str) -> dict[str, Any]:
         skills_context: 强制激活的全部 skill 内容拼接
         skill_entries: list[SkillEntry]，供执行引擎按需取 import path
         mcp_servers: list[str]，subagent 持有的 mcp 名称（强制激活）
-        effective_model: 实际使用的模型 id
+        effective_model: 实际使用的模型 id（空字符串表示走系统默认）
 
     若 subagent 不存在或依赖的 skill / mcp 在系统中根本找不到，抛 ValueError。
     """
@@ -464,5 +464,5 @@ def build_subagent_runtime(name: str) -> dict[str, Any]:
         "skills_context": skills_context,
         "skill_entries": skill_entries,
         "mcp_servers": list(entry.allowed_mcps),
-        "effective_model": entry.effective_model or entry.model or entry.fallback_model,
+        "effective_model": entry.effective_model or entry.model,
     }

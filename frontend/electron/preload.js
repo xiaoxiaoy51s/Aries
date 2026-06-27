@@ -1,9 +1,10 @@
 const { contextBridge, ipcRenderer } = require('electron')
-const os = require('os')
+
+const HOME_DIR = process.env.USERPROFILE || process.env.HOME || ''
 
 contextBridge.exposeInMainWorld('electronAPI', {
   /** 系统用户主目录 */
-  homePath: os.homedir(),
+  homePath: HOME_DIR,
   /**
    * 显示宠物。
    *  - 传统调用 showPet(url, name)：仍兼容（按 GIF/单图模式渲染）
@@ -33,4 +34,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /** 重启应用 */
   relaunch: () => ipcRenderer.send('app:relaunch'),
+
+  /** 窗口控制 */
+  windowMinimize: () => ipcRenderer.send('window:minimize'),
+  windowMaximize: () => ipcRenderer.send('window:maximize'),
+  windowClose: () => ipcRenderer.send('window:close'),
+  windowIsMaximized: () => ipcRenderer.invoke('window:is-maximized'),
+  onWindowMaximizedChange: (callback) => ipcRenderer.on('window:maximized-change', (_event, value) => callback(value)),
+
+  /** 创建新窗口 */
+  createNewWindow: () => ipcRenderer.send('window:create-new'),
 })

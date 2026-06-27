@@ -36,20 +36,6 @@
           323.723636 0 198.981818 161.745455 360.727273 360.727273 360.727273s360.727273-161.745455 360.727272-360.727273-161.745455-360.727273-360.727272-360.727272c-12.8 0-23.272727-10.472727-23.272728-23.272728s10.472727-23.272727 23.272728-23.272727c224.581818 0 407.272727 182.690909 407.272727 407.272727s-182.690909 407.272727-407.272727 407.272728z" fill="#040000" p-id="16140"></path><path d="M491.287273 531.316364c-12.8 0-23.272727-10.472727-23.272728-23.272728l-0.232727-279.272727c0-12.8 10.472727-23.272727 23.272727-23.272727s23.272727 10.472727 23.272728 23.272727l0.232727 279.272727c0 12.8-10.472727 23.272727-23.272727 23.272728z" fill="#040000" p-id="16141"></path><path d="M688.407273 531.316364h-197.12c-12.8 0-23.272727-10.472727-23.272728-23.272728s10.472727-23.272727 23.272728-23.272727h197.12c12.8 0 23.272727 10.472727 23.272727 23.272727s-10.472727 23.272727-23.272727 23.272728z" fill="#040000" p-id="16142"></path></svg>
           <span>定时任务</span>
         </button>
-        <button
-          type="button"
-          class="sidebar-action"
-          :class="{ active: currentPage === 'subagents' }"
-          @click="currentPage = 'subagents'"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="4"/>
-            <circle cx="9" cy="10" r="1"/>
-            <circle cx="15" cy="10" r="1"/>
-            <path d="M9 16h6"/>
-          </svg>
-          <span>智能体</span>
-        </button>
       </div>
 
       <div class="sidebar-section projects-section">
@@ -135,8 +121,7 @@
         <!-- 定时任务页面 -->
         <AutomationPage v-else-if="currentPage === 'scheduled-tasks'" />
 
-        <!-- 智能体页面 -->
-        <SubagentsPage v-else-if="currentPage === 'subagents'" />
+
       </div>
     </main>
 
@@ -212,7 +197,6 @@ import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import ChatPage from './chatPage.vue'
 import SkillsPage from './SkillsPage.vue'
 import AutomationPage from './AutomationPage.vue'
-import SubagentsPage from './SubagentsPage.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import SearchDialog from '@/components/SearchDialog.vue'
 import { listProjects, updateSessionMeta, deleteSession } from '@/api/sessions'
@@ -238,7 +222,7 @@ interface Project {
   sessions: ProjectSession[]
 }
 
-const currentPage = ref<'chat' | 'skills' | 'scheduled-tasks' | 'subagents'>('chat')
+const currentPage = ref<'chat' | 'skills' | 'scheduled-tasks'>('chat')
 const showSettings = ref(false)
 const showSearch = ref(false)
 
@@ -330,6 +314,7 @@ onMounted(async () => {
   window.addEventListener('aries:refresh-sessions', onRefreshProjects)
   window.addEventListener('aries:workdir-changed', onRefreshProjects)
   window.addEventListener('aries:open-session', onOpenSession)
+  window.addEventListener('aries:open-settings', onOpenSettings)
   window.addEventListener('click', onGlobalCloseCtxMenu)
   window.addEventListener('keydown', onGlobalCloseCtxMenu)
   window.addEventListener('contextmenu', (e) => {
@@ -343,6 +328,7 @@ onUnmounted(() => {
   window.removeEventListener('aries:refresh-sessions', onRefreshProjects)
   window.removeEventListener('aries:workdir-changed', onRefreshProjects)
   window.removeEventListener('aries:open-session', onOpenSession)
+  window.removeEventListener('aries:open-settings', onOpenSettings)
   window.removeEventListener('click', onGlobalCloseCtxMenu)
   window.removeEventListener('keydown', onGlobalCloseCtxMenu)
 })
@@ -418,6 +404,10 @@ function onOpenSession(e: Event) {
   }
 }
 
+function onOpenSettings() {
+  showSettings.value = true
+}
+
 function onSearchSelect(sessionId: string) {
   selectSession(sessionId)
 }
@@ -488,6 +478,8 @@ function cancelDelete() {
   display: flex;
   height: 100vh;
   width: 100%;
+  padding-top: 40px;
+  box-sizing: border-box;
 }
 
 .app-container.sidebar-collapsed .sidebar {
@@ -508,14 +500,16 @@ function cancelDelete() {
 .sidebar {
   width: var(--sidebar-width);
   min-width: var(--sidebar-width);
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.82);
+  border-right: 1px solid rgba(255, 255, 255, 0.6);
   display: flex;
   flex-direction: column;
-  padding: 44px 10px 12px;
+  padding: 12px 10px 12px;
   gap: 4px;
   transition: width 0.2s ease, min-width 0.2s ease, padding 0.2s ease, border-color 0.2s ease;
   flex-shrink: 0;
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
 }
 
 .sidebar-actions {
@@ -872,8 +866,8 @@ function cancelDelete() {
 
 .workspace-panel {
   flex: 1;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.55);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-panel);
   display: flex;
@@ -881,6 +875,8 @@ function cancelDelete() {
   overflow: hidden;
   min-height: 0;
   min-width: 0;
+  backdrop-filter: blur(20px) saturate(1.15);
+  -webkit-backdrop-filter: blur(20px) saturate(1.15);
 }
 
 /* —— 模态框 —— */

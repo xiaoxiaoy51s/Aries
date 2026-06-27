@@ -36,6 +36,7 @@ async def stream_chat_with_background(
     work_dir,
     cancel_event,
     http_request: Request,
+    agent_mode: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """带后台任务管理的流式聊天"""
     bg_queue = register_bg_session(session_id)
@@ -53,6 +54,7 @@ async def stream_chat_with_background(
                 work_dir=work_dir,
                 cancel_event=cancel_event,
                 disconnect_check=None,
+                agent_mode=agent_mode,
             ):
                 await bg_queue.put(event)
                 append_bg_history(session_id, event)

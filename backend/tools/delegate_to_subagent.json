@@ -2,21 +2,17 @@
   "type": "function",
   "function": {
     "name": "delegate_to_subagent",
-    "description": "委派任务给一个独立的子 Agent。子 Agent 拥有独立上下文窗口和工具集，适合复杂多步任务或保护主上下文不被淹没的场景。\n\n重要约束：\n- 子 Agent 看不到当前对话历史，你必须在 task 中提供完成任务所需的全部信息\n- 子 Agent 一次性返回最终结果，不能交互式追问\n- 同一轮 tool_calls 中可以并发委派多个不同子 Agent\n\n何时使用：复杂多步任务、需要独立上下文窗口、可并行的独立查询。\n何时不要使用：简单任务、答案已知、必须串行依赖前序结果的任务。",
+    "description": "委派任务给一个独立的子 Agent。子 Agent 拥有独立上下文窗口和工具集，适合复杂多步任务或保护主上下文不被淹没的场景。\n\n重要约束：\n- 子 Agent 看不到当前对话历史，你必须在 task 中提供完成任务所需的全部信息\n- 子 Agent 一次性返回最终结果，不能交互式追问\n- 同一轮 tool_calls 中可以并发委派多个不同子 Agent\n\n参数说明（仅接受以下字段，其他字段会被忽略）：\n- subagent_name：必填，目标子 Agent 名称（来自 Available Subagents 路由表中的 name）\n- task：必填，完整任务描述\n- isolation：选填，工作空间隔离模式（默认空=共享目录；\"worktree\"=git worktree 隔离）\n\n不要传入 task_name、allowed_skills、timeout 等字段，它们不会被接受。如需指定超时或工具范围，请在 subagent 配置文件中设置。\n\n何时使用：复杂多步任务、需要独立上下文窗口、可并行的独立查询。\n何时不要使用：简单任务、答案已知、必须串行依赖前序结果的任务。",
     "parameters": {
       "type": "object",
       "properties": {
         "subagent_name": {
           "type": "string",
-          "description": "目标子 Agent 名称（来自 Available Subagents 路由表中的 name）"
+          "description": "目标子 Agent 名称（来自 Available Subagents 路由表中的 name）。不能为空字符串。"
         },
         "task": {
           "type": "string",
-          "description": "完整任务描述，必须详尽，包含子 Agent 完成任务所需的全部上下文"
-        },
-        "context": {
-          "type": "string",
-          "description": "追加给子 Agent 的背景信息"
+          "description": "完整任务描述，必须详尽，包含子 Agent 完成任务所需的全部上下文。不能为空字符串。"
         },
         "isolation": {
           "type": "string",
@@ -25,7 +21,7 @@
         }
       },
       "required": ["subagent_name", "task"],
-      "additionalProperties": false
+      "additionalProperties": true
     }
   }
 }

@@ -13,6 +13,7 @@ from engine.skills_manager import execute_tool
 from utils.session_logger import SessionLogger
 from models.model_manager import resolve_active_model_config
 from db.sessions import upsert_session, get_session
+from db.work_dirs import DEFAULT_WORK_DIR
 from db.chat import save_message, update_message, get_memory_aware_context_messages
 from utils.token_counter import build_token_usage_info, extract_usage_from_response
 
@@ -29,6 +30,8 @@ from .utils import (
     _replace_text_content,
 )
 from .code_review import extract_code_review_marker, build_code_review_context
+from .agent_modes import extract_agent_marker, build_agent_mode_context
+from prompt.agent_prompts import filter_tools_for_agent, get_agent_mode as _get_agent_mode
 from .background import (
     register_chat_stream,
     stream_chat_with_background,
@@ -56,9 +59,13 @@ async def stream_chat(request: ChatRequest, http_request: Request) -> AsyncGener
     session_id = request.session_id or uuid4().hex
     is_new_session = not request.session_id
 
-    # 首次创建 session 时写入 work_dir（仅当客户端提供）
-    if is_new_session and request.work_dir:
-        upsert_session(session_id=session_id, work_dir=request.work_dir)
+    # 取该 session 的工作目录（DB 优先，request 兜底，未选择时默认 ~/.Aries/work_dir）
+    _meta = get_session(session_id) or {}
+    effective_work_dir = (_meta.get("work_dir") or request.work_dir or DEFAULT_WORK_DIR).strip() or DEFAULT_WORK_DIR
+
+    # 首次创建 session 时写入 work_dir；未选择时使用默认目录
+    if is_new_session and effective_work_dir:
+        upsert_session(session_id=session_id, work_dir=effective_work_dir)
     elif request.session_id and request.work_dir:
         upsert_session(session_id=request.session_id, work_dir=request.work_dir)
 
@@ -68,15 +75,24 @@ async def stream_chat(request: ChatRequest, http_request: Request) -> AsyncGener
     user_content = user_message.get("content", "") if isinstance(user_message, dict) else ""
     raw_text_content, saved_paths = extract_and_save_images(user_content)
     code_review_mode, cleaned_text = extract_code_review_marker(raw_text_content)
-    if code_review_mode:
-        _replace_text_content(user_message, cleaned_text or "请开始代码审查。")
+    agent_mode_name = None
+    if not code_review_mode:
+        agent_mode_name, cleaned_text_agent = extract_agent_marker(raw_text_content)
+        if agent_mode_name:
+            cleaned_text = cleaned_text_agent
+    if code_review_mode or agent_mode_name:
+        _replace_text_content(user_message, cleaned_text or (
+            "请开始代码审查。" if code_review_mode else f"请以{_get_agent_mode(agent_mode_name)['label']}模式开始。"
+        ))
     images_json = json.dumps(saved_paths, ensure_ascii=False) if saved_paths else None
-    if raw_text_content or images_json or code_review_mode:
+    if raw_text_content or images_json or code_review_mode or agent_mode_name:
         save_message(session_id, "user", raw_text_content or "", image_path=images_json, mode="agent")
         # 新会话的第一条用户消息作为标题（18字+省略号）
         if is_new_session:
             if code_review_mode:
                 upsert_session(session_id=session_id, title="代码审查")
+            elif agent_mode_name:
+                upsert_session(session_id=session_id, title=_get_agent_mode(agent_mode_name)['label'])
             elif raw_text_content.strip():
                 raw = raw_text_content.strip().replace("\n", " ")[:18]
                 title = raw + ("…" if len(raw_text_content.strip()) > 18 else "")
@@ -92,9 +108,8 @@ async def stream_chat(request: ChatRequest, http_request: Request) -> AsyncGener
     current_user_msg = prepared[-1] if prepared else None
 
     skills_context, tool_definitions, mcp_context, subagents_context = get_agent_skills_and_tools()
-    # 取该 session 的工作目录（DB 优先，request 兜底）
-    _meta = get_session(session_id) or {}
-    effective_work_dir = (_meta.get("work_dir") or request.work_dir or "").strip() or None
+    if agent_mode_name:
+        tool_definitions = filter_tools_for_agent(tool_definitions, agent_mode_name)
     system_prompt = build_agent_system_prompt(
         skills_context,
         work_dir=effective_work_dir,
@@ -104,6 +119,8 @@ async def stream_chat(request: ChatRequest, http_request: Request) -> AsyncGener
     )
     if code_review_mode:
         system_prompt += build_code_review_context(code_review_mode, effective_work_dir)
+    if agent_mode_name:
+        system_prompt += build_agent_mode_context(agent_mode_name)
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history_messages)
@@ -143,7 +160,8 @@ async def stream_chat(request: ChatRequest, http_request: Request) -> AsyncGener
 
     # 使用后台任务管理器
     async for event in stream_chat_with_background(
-        request, messages, headers, payload, session_id, effective_work_dir, cancel_event, http_request
+        request, messages, headers, payload, session_id, effective_work_dir, cancel_event, http_request,
+        agent_mode=agent_mode_name,
     ):
         yield event
 
@@ -163,8 +181,14 @@ async def chat_completions(request: ChatRequest, http_request: Request):
 
     session_id = request.session_id or uuid4().hex
     is_new_session = not request.session_id
-    if is_new_session and request.work_dir:
-        upsert_session(session_id=session_id, work_dir=request.work_dir)
+
+    # 取该 session 的工作目录（DB 优先，request 兜底，未选择时默认 ~/.Aries/work_dir）
+    _meta = get_session(session_id) or {}
+    effective_work_dir = (_meta.get("work_dir") or request.work_dir or DEFAULT_WORK_DIR).strip() or DEFAULT_WORK_DIR
+
+    # 首次创建 session 时写入 work_dir；未选择时使用默认目录
+    if is_new_session and effective_work_dir:
+        upsert_session(session_id=session_id, work_dir=effective_work_dir)
     elif request.session_id and request.work_dir:
         upsert_session(session_id=request.session_id, work_dir=request.work_dir)
 
@@ -174,10 +198,17 @@ async def chat_completions(request: ChatRequest, http_request: Request):
     user_content = user_message.get("content", "") if isinstance(user_message, dict) else ""
     raw_text_content, saved_paths = extract_and_save_images(user_content)
     code_review_mode, cleaned_text = extract_code_review_marker(raw_text_content)
-    if code_review_mode:
-        _replace_text_content(user_message, cleaned_text or "请开始代码审查。")
+    agent_mode_name = None
+    if not code_review_mode:
+        agent_mode_name, cleaned_text_agent = extract_agent_marker(raw_text_content)
+        if agent_mode_name:
+            cleaned_text = cleaned_text_agent
+    if code_review_mode or agent_mode_name:
+        _replace_text_content(user_message, cleaned_text or (
+            "请开始代码审查。" if code_review_mode else f"请以{_get_agent_mode(agent_mode_name)['label']}模式开始。"
+        ))
     images_json = json.dumps(saved_paths, ensure_ascii=False) if saved_paths else None
-    if raw_text_content or images_json or code_review_mode:
+    if raw_text_content or images_json or code_review_mode or agent_mode_name:
         save_message(session_id, "user", raw_text_content or "", image_path=images_json, mode="agent")
 
     # 从数据库加载 memory-aware 上下文：长期压缩记忆 + 最近 token 窗口 + 最近工作记录
@@ -189,9 +220,8 @@ async def chat_completions(request: ChatRequest, http_request: Request):
     current_user_msg = prepared[-1] if prepared else None
 
     skills_context, tool_definitions, mcp_context, subagents_context = get_agent_skills_and_tools()
-    # 取该 session 的工作目录（DB 优先，request 兜底）
-    _meta = get_session(session_id) or {}
-    effective_work_dir = (_meta.get("work_dir") or request.work_dir or "").strip() or None
+    if agent_mode_name:
+        tool_definitions = filter_tools_for_agent(tool_definitions, agent_mode_name)
     system_prompt = build_agent_system_prompt(
         skills_context,
         work_dir=effective_work_dir,
@@ -201,6 +231,8 @@ async def chat_completions(request: ChatRequest, http_request: Request):
     )
     if code_review_mode:
         system_prompt += build_code_review_context(code_review_mode, effective_work_dir)
+    if agent_mode_name:
+        system_prompt += build_agent_mode_context(agent_mode_name)
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history_messages)

@@ -13,11 +13,6 @@
         "patch": {
           "type": "string",
           "description": "unified diff 格式的补丁内容。"
-        },
-        "encoding": {
-          "type": "string",
-          "description": "文本编码，默认 utf-8。",
-          "default": "utf-8"
         }
       },
       "required": ["file_path", "patch"],

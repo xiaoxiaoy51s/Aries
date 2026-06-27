@@ -142,16 +142,22 @@ function onNewChat() {
   todos.value = []
 }
 
+function onOpenTodoPanel() {
+  panelOpen.value = true
+}
+
 onMounted(() => {
   window.addEventListener('aries:todo-update', onTodoUpdate)
   window.addEventListener('aries:load-session', onLoadSession)
   window.addEventListener('aries:new-chat', onNewChat)
+  window.addEventListener('aries:open-todo-panel', onOpenTodoPanel)
 })
 
 onUnmounted(() => {
   window.removeEventListener('aries:todo-update', onTodoUpdate)
   window.removeEventListener('aries:load-session', onLoadSession)
   window.removeEventListener('aries:new-chat', onNewChat)
+  window.removeEventListener('aries:open-todo-panel', onOpenTodoPanel)
 })
 </script>
 

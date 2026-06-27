@@ -26,6 +26,7 @@ process.on('unhandledRejection', (reason) => {
   console.error('[unhandledRejection]', reason)
 })
 
+const windows = new Set()
 let mainWindow = null
 let petWindow = null
 let petStatusWindow = null
@@ -119,34 +120,75 @@ async function startBackend() {
 }
 
 function createWindow() {
-  mainWindow = new BrowserWindow({
+  const win = new BrowserWindow({
     width: 1200, height: 800, minWidth: 800, minHeight: 600,
     icon: path.join(__dirname, '..', 'public', 'favicon.png'),
     title: '',
+    frame: false,
+    titleBarStyle: 'hidden',
+    thickFrame: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       webviewTag: true,
       preload: path.join(__dirname, 'preload.js'),
     },
-    backgroundColor: '#f3f3f2',
+    backgroundColor: '#f8f8f7',
+  })
+
+  windows.add(win)
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = win
+  }
+
+  win.on('maximize', () => {
+    win.webContents.send('window:maximized-change', true)
+  })
+  win.on('unmaximize', () => {
+    win.webContents.send('window:maximized-change', false)
+  })
+
+  win.on('closed', () => {
+    windows.delete(win)
+    if (mainWindow === win) {
+      mainWindow = null
+      for (const w of windows) {
+        if (!w.isDestroyed()) {
+          mainWindow = w
+          break
+        }
+      }
+    }
   })
 
   const isDev = process.env.NODE_ENV !== 'production' && !app.isPackaged
   if (isDev) {
-    mainWindow.loadURL('http://localhost:5173')
+    win.loadURL('http://localhost:5173')
   } else {
-    mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
+    win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
   }
 
-  // mainWindow.webContents.openDevTools()
-
   // F12 打开/关闭 DevTools（类似浏览器行为）
-  mainWindow.webContents.on('before-input-event', (event, input) => {
+  win.webContents.on('before-input-event', (event, input) => {
     if (input.key === 'F12') {
-      mainWindow.webContents.toggleDevTools()
+      win.webContents.toggleDevTools()
     }
   })
+
+  return win
+}
+
+function createNewWindow() {
+  const win = createWindow()
+  if (!win) return
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const { width, height } = primaryDisplay.workAreaSize
+  // 简单偏移，避免完全重叠
+  const offset = windows.size * 30
+  const x = Math.min(offset, Math.max(0, width - 1200))
+  const y = Math.min(offset, Math.max(0, height - 800))
+  win.setPosition(x, y)
+  win.show()
 }
 
 // ---------- 宠物窗口 ----------
@@ -365,6 +407,47 @@ ipcMain.on('app:relaunch', () => {
   // 2. 再重启 Electron 主进程（新实例会在 whenReady 后自动 startBackend）
   app.relaunch()
   app.exit(0)
+})
+
+// IPC: 窗口控制
+function getSenderWindow(event) {
+  const webContents = event.sender
+  for (const win of windows) {
+    if (!win.isDestroyed() && win.webContents === webContents) {
+      return win
+    }
+  }
+  return mainWindow
+}
+
+ipcMain.on('window:minimize', (event) => {
+  const win = getSenderWindow(event)
+  if (win && !win.isDestroyed()) win.minimize()
+})
+
+ipcMain.on('window:maximize', (event) => {
+  const win = getSenderWindow(event)
+  if (win && !win.isDestroyed()) {
+    if (win.isMaximized()) {
+      win.unmaximize()
+    } else {
+      win.maximize()
+    }
+  }
+})
+
+ipcMain.on('window:close', (event) => {
+  const win = getSenderWindow(event)
+  if (win && !win.isDestroyed()) win.close()
+})
+
+ipcMain.handle('window:is-maximized', (event) => {
+  const win = getSenderWindow(event)
+  return !!(win && !win.isDestroyed() && win.isMaximized())
+})
+
+ipcMain.on('window:create-new', () => {
+  createNewWindow()
 })
 
 // IPC: 系统原生文件/文件夹选择对话框

@@ -251,8 +251,13 @@ def get_all_tool_definitions() -> list[dict]:
         print(f"Failed to load plugin skill tools: {e}")
 
     try:
-        from utils.capability_registry import get_delegate_to_subagent_tool_definition
-        tools.append(get_delegate_to_subagent_tool_definition())
+        from tools import get_tool_by_name
+        from utils.capability_registry import DELEGATE_TO_SUBAGENT_TOOL_NAME
+        subagent_tool = get_tool_by_name(DELEGATE_TO_SUBAGENT_TOOL_NAME)
+        if subagent_tool:
+            tools.append(subagent_tool)
+        else:
+            print(f"Failed to load delegate_to_subagent tool definition: not found")
     except Exception as e:
         print(f"Failed to load delegate_to_subagent tool definition: {e}")
 

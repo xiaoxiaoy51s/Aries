@@ -77,6 +77,18 @@
               </svg>
               开发环境
             </li>
+            <li
+              :class="{ active: activeTab === 'subagents' }"
+              @click="activeTab = 'subagents'"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="4"/>
+                <circle cx="9" cy="10" r="1"/>
+                <circle cx="15" cy="10" r="1"/>
+                <path d="M9 16h6"/>
+              </svg>
+              智能体
+            </li>
           </ul>
         </nav>
 
@@ -98,6 +110,7 @@
             <PetsTab v-else-if="activeTab === 'pets'" />
             <NetworkTab v-else-if="activeTab === 'network'" />
             <DevEnvTab v-else-if="activeTab === 'dev-env'" />
+            <SubagentsTab v-else-if="activeTab === 'subagents'" />
           </div>
         </div>
       </div>
@@ -113,11 +126,12 @@ import PathsTab from './tabs/PathsTab.vue'
 import PetsTab from './tabs/PetsTab.vue'
 import NetworkTab from './tabs/NetworkTab.vue'
 import DevEnvTab from './tabs/DevEnvTab.vue'
+import SubagentsTab from './tabs/SubagentsTab.vue'
 
 defineProps<{ visible: boolean }>()
 defineEmits<{ close: [] }>()
 
-const activeTab = ref<'models' | 'accounts' | 'paths' | 'pets' | 'network' | 'dev-env'>('models')
+const activeTab = ref<'models' | 'accounts' | 'paths' | 'pets' | 'network' | 'dev-env' | 'subagents'>('models')
 
 const tabTitle = computed(() => {
   const map = {
@@ -127,6 +141,7 @@ const tabTitle = computed(() => {
     pets: '桌面宠物',
     network: '网络代理',
     'dev-env': '开发环境',
+    subagents: '智能体',
   } as const
   return map[activeTab.value]
 })

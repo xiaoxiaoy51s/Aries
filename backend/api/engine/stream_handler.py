@@ -27,7 +27,9 @@ from .stream_constants import (
 )
 from .todo_handler import get_todos, format_todos_for_context, purge_todo_messages
 from .system_prompt import build_agent_system_prompt_parts, get_agent_skills_and_tools
-from .tool_runner import run_single_tool, run_delegate_items, build_tool_result_event
+from .tool_runner import run_single_tool, run_delegate_items, build_tool_result_event, is_parallel_safe
+from prompt.agent_prompts import filter_tools_for_agent as _filter_tools_for_agent_mode
+from api.chat.agent_modes import build_agent_mode_context as _build_agent_mode_context
 
 
 async def _should_stop_stream(
@@ -51,6 +53,26 @@ def _pop_limit_hint_message(messages: list[dict[str, Any]]) -> None:
         content = messages[-1].get("content", "")
         if isinstance(content, str) and any(content.startswith(p) for p in _HINT_PREFIXES):
             messages.pop()
+
+
+def _strip_image_base64(tr: dict) -> tuple[dict, str]:
+    """构建 tool 角色消息，并剥离 image_base64。
+
+    返回 (tool_message, image_base64)。
+    image_base64 为空字符串表示无图片。
+    tool 消息的 content 始终为纯文本字符串（兼容所有 API）。
+    """
+    content = tr.get("content", "")
+    image_b64 = ""
+    if isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict) and parsed.get("image_base64"):
+                image_b64 = str(parsed.pop("image_base64") or "")
+                content = json.dumps(parsed, ensure_ascii=False)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return {"role": "tool", "tool_call_id": tr["tool_call_id"], "content": content}, image_b64
 
 
 class _LLMStreamResult:
@@ -169,6 +191,7 @@ async def stream_agent_mode(
     cancel_event: Optional[asyncio.Event] = None,
     disconnect_check: Optional[Any] = None,
     segment_sink: Optional["PlatformStreamSink"] = None,
+    agent_mode: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Agent 模式 - 支持多轮工具调用"""
     final_content = ""
@@ -176,6 +199,7 @@ async def stream_agent_mode(
     assistant_message_id = None
     logger = None
     snapshot = ""
+    _esc_listener_started = False  # ESC 监听是否已启动（computer-use 期间）
 
     try:
         assistant_message_id = save_message(session_id, "assistant", "", message_snapshot_json="", mode="agent")
@@ -191,6 +215,14 @@ async def stream_agent_mode(
             mcp_context=mcp_context, subagents_context=subagents_context,
         )
         system_prompt = prompt_parts["full"]
+
+        # 固定 Agent 模式：过滤工具 + 追加专用 prompt（与 @code_review 逻辑一致）
+        if agent_mode:
+            tool_definitions = _filter_tools_for_agent_mode(tool_definitions, agent_mode)
+            agent_ctx = _build_agent_mode_context(agent_mode)
+            if agent_ctx:
+                system_prompt = system_prompt + agent_ctx
+                prompt_parts["full"] = system_prompt
 
         # context usage breakdown
         from utils.token_counter import build_context_usage_breakdown
@@ -210,29 +242,32 @@ async def stream_agent_mode(
         logger.set_token_usage({"context": context_breakdown})
         yield f"data: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
 
-        # ===== 意图识别 =====
-        try:
-            from prompt.edit_code_prompts import classify_intent, filter_tools_for_intent, get_prompt_for_intent, INTENT_AGENT
-            user_text = ""
-            for msg in reversed(messages):
-                if isinstance(msg, dict) and msg.get("role") == "user":
-                    content = msg.get("content", "")
-                    if isinstance(content, str):
-                        user_text = content
-                    elif isinstance(content, list):
-                        for part in content:
-                            if isinstance(part, dict) and part.get("type") == "text":
-                                user_text += part.get("text", "")
-                    break
-            intent = classify_intent(user_text)
-            if intent != INTENT_AGENT:
-                tool_definitions = filter_tools_for_intent(intent, tool_definitions)
-            intent_prompt = get_prompt_for_intent(intent)
-            if intent_prompt:
-                system_prompt = system_prompt + "\n\n" + intent_prompt
-            yield f"data: {json.dumps({'intent': intent}, ensure_ascii=False)}\n\n"
-        except Exception:
-            pass
+        # ===== 意图识别 =====（固定 Agent 模式下跳过，避免覆盖工具过滤）
+        if not agent_mode:
+            try:
+                from prompt.edit_code_prompts import classify_intent, filter_tools_for_intent, get_prompt_for_intent, INTENT_AGENT
+                user_text = ""
+                for msg in reversed(messages):
+                    if isinstance(msg, dict) and msg.get("role") == "user":
+                        content = msg.get("content", "")
+                        if isinstance(content, str):
+                            user_text = content
+                        elif isinstance(content, list):
+                            for part in content:
+                                if isinstance(part, dict) and part.get("type") == "text":
+                                    user_text += part.get("text", "")
+                        break
+                intent = classify_intent(user_text)
+                if intent != INTENT_AGENT:
+                    tool_definitions = filter_tools_for_intent(intent, tool_definitions)
+                intent_prompt = get_prompt_for_intent(intent)
+                if intent_prompt:
+                    system_prompt = system_prompt + "\n\n" + intent_prompt
+                yield f"data: {json.dumps({'intent': intent}, ensure_ascii=False)}\n\n"
+            except Exception:
+                pass
+        else:
+            yield f"data: {json.dumps({'intent': f'agent:{agent_mode}'}, ensure_ascii=False)}\n\n"
 
         current_messages = [{"role": "system", "content": system_prompt}]
         current_messages.extend(messages)
@@ -243,6 +278,7 @@ async def stream_agent_mode(
         async with httpx.AsyncClient(timeout=llm_timeout, trust_env=False) as client:
             last_tool_name: str = ""
             repeat_count: int = 0
+            _pending_images: list[str] = []
 
             for round_no in range(1, MAX_TOOL_ROUNDS + 1):
                 if await _should_stop_stream(cancel_event, disconnect_check):
@@ -317,12 +353,28 @@ async def stream_agent_mode(
                 # ===== 执行工具调用 =====
                 tool_results = []
                 delegate_items: list[dict[str, Any]] = []
+                # 分组：并行安全的只读工具 vs 需串行的工具
+                parallel_tasks: list[dict[str, Any]] = []
+                serial_items: list[dict[str, Any]] = []
+
+                # ===== ESC 热键监听（computer-use 期间按 ESC 强制中断 AI）=====
+                _has_cu_tool = any(
+                    tc.get("function", {}).get("name", "").startswith("computer_")
+                    for tc in tool_calls_buffer
+                )
+                if _has_cu_tool and not _esc_listener_started and cancel_event:
+                    try:
+                        from plugins.skills.computer_use import win_backend as _cu_win
+                        def _on_esc():
+                            if not cancel_event.is_set():
+                                cancel_event.set()
+                        _cu_win.start_esc_listener(_on_esc)
+                        _esc_listener_started = True
+                        yield f"data: {json.dumps({'hint': 'ESC 监听已启动，按下 ESC 键可随时中断 AI 桌面操作'}, ensure_ascii=False)}\n\n"
+                    except Exception:
+                        pass
 
                 for tc in tool_calls_buffer:
-                    if await _should_stop_stream(cancel_event, disconnect_check):
-                        cancelled = True
-                        final_content = full_content
-                        break
                     tool_name = tc.get("function", {}).get("name", "")
                     args_str = tc.get("function", {}).get("arguments", "{}")
                     tool_id = tc.get("id") or f"call_{assistant_message_id}_{len(tool_results)}"
@@ -354,7 +406,82 @@ async def stream_agent_mode(
                         )
                         continue
 
-                    # 普通工具执行
+                    item = {"tool_name": tool_name, "args": args, "tool_id": tool_id}
+                    if is_parallel_safe(tool_name) and not cancel_event:
+                        parallel_tasks.append(item)
+                    else:
+                        serial_items.append(item)
+
+                # 1. 并行安全的只读工具：先发 running 事件，再 asyncio.gather 并发执行
+                if parallel_tasks:
+                    for item in parallel_tasks:
+                        yield f"data: {json.dumps({'tool_call': {'tool_call_id': item['tool_id'], 'tool_name': item['tool_name'], 'status': 'running', 'args': item['args'], 'round': round_no}}, ensure_ascii=False)}\n\n"
+                        logger.write_tool_call(item['tool_id'], item['tool_name'], item['args'])
+
+                    async def _run_one(item: dict) -> dict:
+                        result, confirm_event, stream_stopped = await run_single_tool(
+                            item['tool_name'], item['args'], item['tool_id'], session_id,
+                            work_dir, round_no, logger, cancel_event, segment_sink, assistant_message_id,
+                        )
+                        return {"item": item, "result": result, "confirm_event": confirm_event, "stream_stopped": stream_stopped}
+
+                    parallel_results = await asyncio.gather(*[_run_one(it) for it in parallel_tasks], return_exceptions=True)
+                    for pr in parallel_results:
+                        if isinstance(pr, Exception):
+                            # gather 异常：构造错误结果
+                            tool_results.append({"tool_call_id": "error", "role": "tool", "content": json.dumps({"error": str(pr)}, ensure_ascii=False)})
+                            continue
+                        item = pr["item"]
+                        result = pr["result"]
+                        confirm_event = pr["confirm_event"]
+                        stream_stopped = pr["stream_stopped"]
+
+                        if confirm_event:
+                            yield f"data: {json.dumps(confirm_event, ensure_ascii=False)}\n\n"
+                            yield f"data: {json.dumps({'tool_result': {'tool_name': item['tool_name'], 'status': 'pending_confirmation', 'output': '等待用户确认危险命令…', 'round': round_no}}, ensure_ascii=False)}\n\n"
+
+                        tool_results.append({
+                            "tool_call_id": item['tool_id'],
+                            "role": "tool",
+                            "content": json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result),
+                        })
+
+                        status = "completed" if not isinstance(result, dict) or not result.get("error") else "error"
+                        error_msg = result.get("error", "") if isinstance(result, dict) else ""
+                        output = result.get("output", "") if isinstance(result, dict) else str(result)
+                        _file_change = result.get("file_change") if isinstance(result, dict) else None
+                        logger.write_tool_result(
+                            item['tool_id'], item['tool_name'], status,
+                            result=json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result),
+                            error=error_msg, session_id=result.get("session_id", "") if isinstance(result, dict) else "",
+                            file_change=_file_change,
+                        )
+                        if segment_sink:
+                            await segment_sink.on_tool_done(item['tool_name'], status, output)
+
+                        result_event = build_tool_result_event(item['tool_name'], item['tool_id'], status, output, round_no, result)
+                        yield f"data: {json.dumps({'tool_result': result_event}, ensure_ascii=False)}\n\n"
+
+                        try:
+                            from services.chat_ws import broadcast_stream_event
+                            await broadcast_stream_event(session_id, {"meta": logger.get_run_metadata()})
+                        except Exception:
+                            pass
+
+                        if stream_stopped:
+                            cancelled = True
+                            final_content = full_content
+
+                # 2. 需串行的工具：逐个执行
+                for item in serial_items:
+                    if await _should_stop_stream(cancel_event, disconnect_check):
+                        cancelled = True
+                        final_content = full_content
+                        break
+                    tool_name = item['tool_name']
+                    args = item['args']
+                    tool_id = item['tool_id']
+
                     yield f"data: {json.dumps({'tool_call': {'tool_call_id': tool_id, 'tool_name': tool_name, 'status': 'running', 'args': args, 'round': round_no}}, ensure_ascii=False)}\n\n"
                     result, confirm_event, stream_stopped = await run_single_tool(
                         tool_name, args, tool_id, session_id, work_dir, round_no,
@@ -402,9 +529,14 @@ async def stream_agent_mode(
                     break
 
                 # 并行执行 delegate_to_subagent
-                sub_tool_results = await run_delegate_items(
+                sub_tool_results = []
+                async for ev in run_delegate_items(
                     delegate_items, session_id, work_dir, logger, cancel_event, round_no,
-                )
+                ):
+                    if "__final_results" in ev:
+                        sub_tool_results = ev["__final_results"]
+                    else:
+                        yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
                 for sr in sub_tool_results:
                     yield f"data: {json.dumps({'tool_result': {'tool_name': 'delegate_to_subagent', 'tool_call_id': sr['tool_call_id'], 'status': 'completed', 'output': '', 'round': round_no}}, ensure_ascii=False)}\n\n"
                 tool_results.extend(sub_tool_results)
@@ -442,7 +574,18 @@ async def stream_agent_mode(
                     "tool_calls": tool_calls_buffer
                 })
                 for tr in tool_results:
-                    current_messages.append({"role": "tool", "tool_call_id": tr["tool_call_id"], "content": tr["content"]})
+                    tool_msg, img_b64 = _strip_image_base64(tr)
+                    current_messages.append(tool_msg)
+                    if img_b64:
+                        _pending_images.append(img_b64)
+
+                # 截图图片作为单独的 user 消息注入（兼容所有 API，tool 消息不支持 content array）
+                if _pending_images:
+                    user_content: list[dict] = [{"type": "text", "text": "以下是刚才截取的屏幕截图，请根据画面内容决定下一步操作："}]
+                    for b64 in _pending_images:
+                        user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+                    current_messages.append({"role": "user", "content": user_content})
+                    _pending_images = []
 
                 # 注入任务清单
                 _todos = get_todos(session_id)
@@ -476,6 +619,14 @@ async def stream_agent_mode(
                 if logger:
                     logger.write_error_event("step_limit_exceeded", f"工具调用达到上限（{MAX_TOOL_ROUNDS} 轮），已在前一轮引导 AI 总结进度。")
     finally:
+        # 停止 ESC 热键监听
+        if _esc_listener_started:
+            try:
+                from plugins.skills.computer_use import win_backend as _cu_win
+                _cu_win.stop_esc_listener()
+            except Exception:
+                pass
+
         if assistant_message_id is not None and logger is not None:
             if cancelled:
                 logger.write_info_event("stream_interrupted", "用户中断或连接断开，正在保存已有进度到数据库")

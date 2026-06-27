@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "write_file",
-    "description": "写入文件或 Agent 记忆。编码固定 utf-8。\n\n【两种模式】\n- 普通模式（默认）：传 file_path + content，写入指定文件。支持覆盖和追加。\n- 记忆模式：传 content + memory=true，写入 ~/.Aries/memory/{work_dir}/agent.md。用于保存对当前代码库结构、开发命令、编码约定等内容的总结。",
+    "description": "用于写入文件或 写入Agent 记忆。\n\n【两种模式】\n- 普通模式（默认）：传 file_path + content，写入指定文件。支持覆盖和追加。\n- 记忆模式：传 content + memory=true，写入 ~/.Aries/memory/{work_dir}/agent.md。用于保存对当前代码库结构、开发命令、编码约定等内容的总结。",
     "parameters": {
       "type": "object",
       "properties": {

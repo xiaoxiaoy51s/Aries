@@ -351,7 +351,7 @@ def get_plugin_agent_configs() -> list[dict[str, Any]]:
         agent_dir = Path(entry.target_path)
         for json_file in agent_dir.glob("*.json"):
             try:
-                data = json.loads(json_file.read_text(encoding="utf-8"))
+                data = json.loads(json_file.read_text(encoding="utf-8"), strict=False)
                 if isinstance(data, dict):
                     data["_source"] = "plugin"
                     configs.append(data)

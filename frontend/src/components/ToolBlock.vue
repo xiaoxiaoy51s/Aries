@@ -7,7 +7,7 @@
         <span class="tool-args-preview">{{ argsPreview }}</span>
       </div>
       <span v-if="pendingConfirmation" class="confirm-badge">待确认</span>
-      <div v-if="hasTerminalSession || isSubagentDelegate" class="tool-actions">
+      <div v-if="hasTerminalSession || isSubagentDelegate || isTodoWrite" class="tool-actions">
         <button
           v-if="hasTerminalSession"
           type="button"
@@ -22,6 +22,13 @@
           title="查看智能体实时工作过程"
           @click.stop="viewSubagent"
         >查看智能体</button>
+        <button
+          v-if="isTodoWrite"
+          type="button"
+          class="view-terminal-btn"
+          title="查看任务清单"
+          @click.stop="openTodos"
+        >查看任务</button>
         <button
           v-if="showBackgroundBtn"
           type="button"
@@ -40,7 +47,7 @@
           <span class="tool-name">{{ toolName }}</span>
           <span class="tool-args-preview">{{ argsPreview }}</span>
         </div>
-        <div v-if="hasTerminalSession || isSubagentDelegate" class="tool-actions">
+        <div v-if="hasTerminalSession || isSubagentDelegate || isTodoWrite" class="tool-actions">
           <button
             v-if="hasTerminalSession"
             type="button"
@@ -55,6 +62,13 @@
             title="查看智能体实时工作过程"
             @click.stop="viewSubagent"
           >查看智能体</button>
+          <button
+            v-if="isTodoWrite"
+            type="button"
+            class="view-terminal-btn"
+            title="查看任务清单"
+            @click.stop="openTodos"
+          >查看任务</button>
           <button
             v-if="showBackgroundBtn"
             type="button"
@@ -146,6 +160,7 @@ const isStopped = ref(false)
 const isOpeningTerminal = ref(false)
 
 const isSubagentDelegate = computed(() => props.toolName === 'delegate_to_subagent')
+const isTodoWrite = computed(() => props.toolName === 'todo_write')
 const subagentStatusLabel = computed(() => {
   const s = props.subagent?.status || ''
   switch (s) {
@@ -239,6 +254,10 @@ async function openTerminal() {
       isOpeningTerminal.value = false
     }, 500)
   }
+}
+
+function openTodos() {
+  window.dispatchEvent(new CustomEvent('aries:open-todo-panel'))
 }
 
 function viewSubagent() {

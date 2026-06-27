@@ -47,6 +47,15 @@ from .edit_code_prompts import (
     get_prompt_for_intent,
 )
 
+from .agent_prompts import (
+    ASK_SYSTEM_PROMPT,
+    EXPLORE_SYSTEM_PROMPT,
+    PLAN_SYSTEM_PROMPT,
+    AGENT_MODES,
+    get_agent_mode,
+    filter_tools_for_agent,
+)
+
 __all__ = [
     "CODE_STYLE_RULES",
     "CODING_BEHAVIOR_RULES",
@@ -87,4 +96,11 @@ __all__ = [
     "get_tools_for_intent",
     "filter_tools_for_intent",
     "get_prompt_for_intent",
+    # 固定 Agent 模式
+    "ASK_SYSTEM_PROMPT",
+    "EXPLORE_SYSTEM_PROMPT",
+    "PLAN_SYSTEM_PROMPT",
+    "AGENT_MODES",
+    "get_agent_mode",
+    "filter_tools_for_agent",
 ]
