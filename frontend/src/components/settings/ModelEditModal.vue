@@ -1,16 +1,14 @@
 <template>
   <Teleport to="body">
-    <div v-if="visible" class="modal-overlay" @click.self="$emit('close')">
-      <div class="modal-container">
+    <div v-if="visible" class="modal-overlay">
+      <div class="modal-container" @click.stop>
         <div class="modal-header">
           <h3>{{ isEdit ? '编辑模型' : '新增模型' }}</h3>
           <button type="button" class="close-btn" @click="$emit('close')">×</button>
         </div>
         <div class="modal-body">
           <label class="form-label">模型名称</label>
-          <input v-model="form.name" type="text" class="form-input" placeholder="例如: GPT-4o" />
-          <label class="form-label">模型 ID</label>
-          <input v-model="form.model" type="text" class="form-input" placeholder="例如: gpt-4o" />
+          <input v-model="form.name" type="text" class="form-input" placeholder="例如: gpt-4o" />
           <label class="form-label">API 地址</label>
           <input v-model="form.baseUrl" type="text" class="form-input" placeholder="https://api.openai.com/v1" />
           <label class="form-label">API Key</label>
@@ -36,20 +34,30 @@ const props = defineProps<{
 
 const emit = defineEmits<{ close: []; save: [data: any] }>()
 
-const form = ref({ name: '', model: '', baseUrl: '', apiKey: '' })
+const form = ref({ name: '', baseUrl: '', apiKey: '' })
 
 watch(() => props.visible, (val) => {
   if (val) {
     if (props.isEdit && props.model) {
-      form.value = { ...props.model }
+      form.value = {
+        name: props.model.name || props.model.model || '',
+        baseUrl: props.model.baseUrl || '',
+        apiKey: props.model.apiKey || '',
+      }
     } else {
-      form.value = { name: '', model: '', baseUrl: '', apiKey: '' }
+      form.value = { name: '', baseUrl: '', apiKey: '' }
     }
   }
 })
 
 function onSave() {
-  emit('save', { ...form.value })
+  const name = form.value.name.trim()
+  emit('save', {
+    name,
+    model: name,
+    baseUrl: form.value.baseUrl,
+    apiKey: form.value.apiKey,
+  })
 }
 </script>
 

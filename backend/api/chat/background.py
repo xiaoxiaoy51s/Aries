@@ -11,7 +11,6 @@ import logging
 from services.chat_stream_manager import (
     register as register_chat_stream,
     unregister as unregister_chat_stream,
-    request_cancel as request_chat_cancel,
     register_bg_session,
     mark_bg_done,
     is_bg_running,
@@ -104,11 +103,14 @@ async def stream_chat_with_background(
     task.add_done_callback(_background_tasks.discard)
 
 
-async def stop_chat_handler(session_id: str) -> dict:
-    """停止聊天处理"""
-    if request_chat_cancel(session_id):
-        return {"status": "stopping", "message": "已请求停止生成"}
-    return {"status": "idle", "message": "当前没有运行中的对话"}
+async def stop_chat_handler(session_id: str, work_dir: str | None = None) -> dict:
+    """停止聊天并紧急终止所有关联任务（CLI、子 Agent、终端）。"""
+    from services.emergency_stop import emergency_stop_session
+
+    result = await emergency_stop_session(session_id, work_dir)
+    if result.get("chat_cancelled") or result.get("invocations") or result.get("subagents"):
+        return {"status": "stopping", "message": "已请求停止并终止所有进行中的任务", **result}
+    return {"status": "idle", "message": "当前没有运行中的对话", **result}
 
 
 async def chat_status_handler(session_id: str) -> dict:

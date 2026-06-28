@@ -127,21 +127,25 @@ def prepare_llm_payload(
         payload["temperature"] = temperature
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
-    return payload
+    from utils.token_counter import attach_stream_usage_options
+    return attach_stream_usage_options(payload)
 
 
 def summarize_cache_usage(api_usage: dict[str, Any] | None) -> dict[str, Any]:
-    """从累计 api_usage 计算 cache 命中率摘要。"""
+    """从累计 api_usage 计算 Provider 前缀 cache 命中率摘要。"""
     if not api_usage:
         return {}
     prompt = int(api_usage.get("prompt_tokens") or 0)
     cached = int(api_usage.get("cached_tokens") or 0)
     cache_read = int(api_usage.get("cache_read_input_tokens") or 0)
     hit = cached or cache_read
-    if not hit or not prompt:
+    if not hit:
         return {}
-    rate = round(min(hit / prompt, 1.0) * 100, 1)
+    # prompt_tokens 可能小于 cache hit（Provider 只统计未缓存部分），分母取较大值
+    denominator = max(prompt, hit)
+    rate = round(min(hit / denominator, 1.0) * 100, 1) if denominator else 0.0
     return {
         "cached_tokens": hit,
+        "prompt_tokens": prompt,
         "cache_hit_rate_percent": rate,
     }

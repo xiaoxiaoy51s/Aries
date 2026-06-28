@@ -15,7 +15,7 @@
     <div v-if="showActions && content && !isStreaming" class="action-buttons">
       <button class="action-btn" @click="copyAllContent" title="复制">
         <svg v-if="copiedAll" t="1782397384882" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="" p-id="19463" width="12" height="12"><path d="M833.33 767.96h-91.9c-21.73 0-39.34-17.6-39.34-39.34s17.62-39.34 39.34-39.34h91.9c8.82 0 15.98-7.18 15.98-15.98V193.8c0-8.8-7.17-15.98-15.98-15.98H353.84c-8.82 0-15.98 7.18-15.98 15.98v90.86c0 21.75-17.62 39.34-39.34 39.34s-39.34-17.6-39.34-39.34V193.8c0-52.21 42.47-94.67 94.67-94.67h479.49c52.19 0 94.67 42.45 94.67 94.67v479.49c-0.01 52.21-42.49 94.67-94.68 94.67z" fill="#333333" p-id="19464"></path><path d="M675.96 925.33H196.47c-52.19 0-94.67-42.45-94.67-94.67V351.17c0-52.21 42.47-94.67 94.67-94.67h479.49c52.19 0 94.67 42.45 94.67 94.67v479.49c-0.01 52.22-42.48 94.67-94.67 94.67zM196.47 335.19c-8.82 0-15.98 7.18-15.98 15.98v479.49c0 8.8 7.17 15.98 15.98 15.98h479.49c8.82 0 15.98-7.18 15.98-15.98V351.17c0-8.8-7.17-15.98-15.98-15.98H196.47z" fill="#333333" p-id="19465"></path></svg>
-        <svg v-else <svg t="1782397489476" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="20511" width="12" height="12"><path d="M896 288a32 32 0 0 0-54.656-22.592L418.656 688.096 184.992 396l-0.112 0.08a31.872 31.872 0 1 0-49.76 39.824l-0.112 0.096 256 320 0.112-0.08a31.872 31.872 0 0 0 47.52 2.688l447.952-447.952c5.824-5.808 9.408-13.808 9.408-22.656z" fill="#231815" p-id="20512"></path></svg>
+        <svg v-else t="1782397489476" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="20511" width="12" height="12"><path d="M896 288a32 32 0 0 0-54.656-22.592L418.656 688.096 184.992 396l-0.112 0.08a31.872 31.872 0 1 0-49.76 39.824l-0.112 0.096 256 320 0.112-0.08a31.872 31.872 0 0 0 47.52 2.688l447.952-447.952c5.824-5.808 9.408-13.808 9.408-22.656z" fill="#231815" p-id="20512"></path></svg>
       </button>
     </div>
   </div>
@@ -74,7 +74,72 @@ const md = new MarkdownIt({
   },
 })
 
-// ── KaTeX 插件：渲染 $$...$$ 和 $...$ ─────────────────────
+// ── KaTeX 渲染辅助 ──────────────────────────────────────
+function renderKatex(formula: string, displayMode: boolean): string {
+  try {
+    return katex.renderToString(formula.trim(), {
+      displayMode,
+      throwOnError: false,
+      strict: 'ignore',
+    })
+  } catch {
+    return displayMode ? `$$${formula}$$` : `$${formula}$`
+  }
+}
+
+const LATEX_HINT = /\\(?:frac|sqrt|sum|int|cdot|times|implies|text|left|right|begin|end|alpha|beta|gamma|pi|theta|leq|geq|neq|pm|mp|infty|partial|nabla)/
+
+function looksLikeLatex(body: string): boolean {
+  const s = body.trim()
+  if (!s) return false
+  if (LATEX_HINT.test(s)) return true
+  if (/[\^_]\{/.test(s)) return true
+  if (/\\[a-zA-Z]+/.test(s)) return true
+  return false
+}
+
+/** 在 markdown-it 之前统一处理各类 LaTeX 定界符 */
+function preprocessMath(raw: string): string {
+  const codeBlocks: string[] = []
+  let text = raw.replace(/```[\s\S]*?```/g, (m) => {
+    codeBlocks.push(m)
+    return `\x00CODE${codeBlocks.length - 1}\x00`
+  })
+  const inlineCodes: string[] = []
+  text = text.replace(/`[^`\n]+`/g, (m) => {
+    inlineCodes.push(m)
+    return `\x00INLINE${inlineCodes.length - 1}\x00`
+  })
+
+  // 块级：\[ ... \]、$$ ... $$
+  text = text.replace(/\\\[([\s\S]+?)\\\]/g, (_m, f) => renderKatex(f, true))
+  text = text.replace(/\$\$([\s\S]+?)\$\$/g, (_m, f) => renderKatex(f, true))
+
+  // 块级：单独一行的 [ ... ]（模型常用）
+  text = text.replace(/^\[\s*\n([\s\S]*?)\n\s*\]\s*$/gm, (match, f) =>
+    looksLikeLatex(f) ? renderKatex(f, true) : match,
+  )
+  text = text.replace(/^\[\s*((?:\\[\s\S]|[^\]])+?)\s*\]\s*$/gm, (match, f) =>
+    looksLikeLatex(f) ? renderKatex(f, true) : match,
+  )
+
+  // 行内：\( ... \)
+  text = text.replace(/\\\(([\s\S]+?)\\\)/g, (_m, f) => renderKatex(f, false))
+
+  // 行内：$ ... $（不含换行）
+  text = text.replace(/(?<!\$)\$(?!\$)([^\$\n]+?)(?<!\$)\$(?!\$)/g, (_m, f) => renderKatex(f, false))
+
+  // 行内：( \frac{...} ) 等带 LaTeX 命令的圆括号
+  text = text.replace(/\(\s*((?:\\(?:[a-zA-Z]+|\{[^}]*\})|[\^_{}\d\s=+\-*/().,|<>!:])+?)\s*\)/g, (match, f) =>
+    looksLikeLatex(f) ? renderKatex(f, false) : match,
+  )
+
+  text = text.replace(/\x00INLINE(\d+)\x00/g, (_m, i) => inlineCodes[Number(i)] ?? _m)
+  text = text.replace(/\x00CODE(\d+)\x00/g, (_m, i) => codeBlocks[Number(i)] ?? _m)
+  return text
+}
+
+// ── KaTeX 插件：渲染 ```math / ```latex 代码块 ─────────────
 const defaultFence = md.renderer.rules.fence
 md.renderer.rules.fence = function (tokens, idx, options, env, self) {
   const token = tokens[idx]
@@ -92,50 +157,15 @@ md.renderer.rules.fence = function (tokens, idx, options, env, self) {
   return defaultFence ? defaultFence(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options)
 }
 
-// 行内公式 $...$ 交给 markdown-it 的 inline 规则
-const defaultInline = md.renderer.rules.text
-md.renderer.rules.text = function (tokens, idx, options, env, self) {
-  const token = tokens[idx]
-  const text = token.content
-  if (text && text.includes('$')) {
-    // 用 katex 替换行内公式
-    const rendered = text.replace(/(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)/g, (_m, formula) => {
-      try {
-        return katex.renderToString(formula.trim(), {
-          displayMode: false,
-          throwOnError: false,
-        })
-      } catch (_) {
-        return _m
-      }
-    })
-    if (rendered !== text) return rendered
-  }
-  return defaultInline ? defaultInline(tokens, idx, options, env, self) : md.utils.escapeHtml(text)
-}
-
 // ── 渲染管道 ──────────────────────────────────────────
 function renderMarkdownToHtml(raw: string): string {
   if (!raw) return ''
-  // 预提取代码块，避免 KaTeX 干扰
-  let html = raw
-  // 块级公式
-  html = html.replace(/\$\$([\s\S]+?)\$\$/g, (_m, formula) => {
-    try {
-      return katex.renderToString(formula.trim(), {
-        displayMode: true,
-        throwOnError: false,
-      })
-    } catch (_) {
-      return _m
-    }
-  })
+  const html = preprocessMath(raw)
   const rendered = md.render(html)
 
-  // DOMPurify 过滤 XSS
   return DOMPurify.sanitize(rendered, {
-    ADD_ATTR: ['target', 'rel'],
-    ADD_TAGS: ['use'],
+    ADD_ATTR: ['target', 'rel', 'class', 'style', 'aria-hidden'],
+    ADD_TAGS: ['span', 'math', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'msup', 'msub', 'mfrac', 'mspace', 'annotation', 'svg', 'path', 'line', 'rect', 'g', 'use'],
   })
 }
 

@@ -36,6 +36,7 @@ from .todo_handler import get_todos, format_todos_for_context, purge_todo_messag
 from .system_prompt import build_agent_system_prompt_parts, get_agent_skills_and_tools
 from .tool_runner import run_single_tool, run_delegate_items, build_tool_result_event, is_parallel_safe
 from utils.terminal_output import format_tool_result_for_model
+from utils.tool_result_image import split_tool_result_image, tool_result_for_logging
 from prompt.agent_prompts import filter_tools_for_agent as _filter_tools_for_agent_mode
 from api.chat.agent_modes import build_agent_mode_context as _build_agent_mode_context
 
@@ -71,16 +72,8 @@ def _strip_image_base64(tr: dict) -> tuple[dict, str]:
     tool 消息的 content 始终为纯文本字符串（兼容所有 API）。
     """
     content = tr.get("content", "")
-    image_b64 = ""
-    if isinstance(content, str):
-        try:
-            parsed = json.loads(content)
-            if isinstance(parsed, dict) and parsed.get("image_base64"):
-                image_b64 = str(parsed.pop("image_base64") or "")
-                content = json.dumps(parsed, ensure_ascii=False)
-        except (json.JSONDecodeError, TypeError):
-            pass
-    return {"role": "tool", "tool_call_id": tr["tool_call_id"], "content": content}, image_b64
+    slim, image_b64 = split_tool_result_image(content if isinstance(content, str) else "")
+    return {"role": "tool", "tool_call_id": tr["tool_call_id"], "content": slim}, image_b64
 
 
 class _LLMStreamResult:
@@ -127,8 +120,9 @@ async def _handle_llm_stream(
                         usage = extract_usage_from_stream_chunk(chunk)
                         if usage:
                             logger.add_token_usage(usage)
-                        choices = chunk.get("choices", [])
+                        choices = chunk.get("choices") or []
                         if not choices:
+                            # 部分网关最后一包仅含 usage、无 choices
                             continue
 
                         delta = choices[0].get("delta", {})
@@ -211,7 +205,7 @@ async def stream_agent_mode(
     assistant_message_id = None
     logger = None
     snapshot = ""
-    _esc_listener_started = False  # ESC 监听是否已启动（computer-use 期间）
+    _esc_listener_started = False  # ESC 监听（Agent 流式期间全局紧急停止）
     is_subagent_mode = bool(override_system_prompt)
 
     try:
@@ -369,6 +363,25 @@ async def stream_agent_mode(
         base_url = normalize_base_url(request.baseUrl)
         llm_timeout = httpx.Timeout(connect=LLM_CONNECT_TIMEOUT_SECONDS, read=LLM_READ_TIMEOUT_SECONDS, write=LLM_WRITE_TIMEOUT_SECONDS, pool=30.0)
 
+        # ESC 全局紧急停止（Windows 后台监听；等同前端停止 + 终端 Ctrl+C）
+        if cancel_event and not _esc_listener_started and not is_subagent_mode:
+            try:
+                import platform as _plat
+                if _plat.system() == "Windows":
+                    from plugins.skills.computer_use import win_backend as _cu_win
+                    from services.emergency_stop import emergency_stop_session_sync
+                    _sid, _wd, _ce = session_id, work_dir, cancel_event
+
+                    def _on_esc() -> None:
+                        if not _ce.is_set():
+                            emergency_stop_session_sync(_sid, _wd)
+                            _ce.set()
+
+                    _cu_win.start_esc_listener(_on_esc)
+                    _esc_listener_started = True
+            except Exception:
+                pass
+
         async with httpx.AsyncClient(timeout=llm_timeout, trust_env=False) as client:
             last_tool_name: str = ""
             repeat_count: int = 0
@@ -409,6 +422,12 @@ async def stream_agent_mode(
                 ):
                     yield event
 
+                if logger:
+                    api = (logger.get_run_metadata().get("token_usage") or {}).get("api_usage") or {}
+                    if api.get("prompt_tokens") or api.get("completion_tokens"):
+                        logger.emit_run_metadata_snapshot()
+                        yield f"data: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
+
                 full_content = stream_result.full_content
                 tool_calls_buffer = stream_result.tool_calls_buffer
 
@@ -448,23 +467,6 @@ async def stream_agent_mode(
                 # 分组：并行安全的只读工具 vs 需串行的工具
                 parallel_tasks: list[dict[str, Any]] = []
                 serial_items: list[dict[str, Any]] = []
-
-                # ===== ESC 热键监听（computer-use 期间按 ESC 强制中断 AI）=====
-                _has_cu_tool = any(
-                    tc.get("function", {}).get("name", "").startswith("computer_")
-                    for tc in tool_calls_buffer
-                )
-                if _has_cu_tool and not _esc_listener_started and cancel_event:
-                    try:
-                        from plugins.skills.computer_use import win_backend as _cu_win
-                        def _on_esc():
-                            if not cancel_event.is_set():
-                                cancel_event.set()
-                        _cu_win.start_esc_listener(_on_esc)
-                        _esc_listener_started = True
-                        yield f"data: {json.dumps({'hint': 'ESC 监听已启动，按下 ESC 键可随时中断 AI 桌面操作'}, ensure_ascii=False)}\n\n"
-                    except Exception:
-                        pass
 
                 for tc in tool_calls_buffer:
                     tool_name = tc.get("function", {}).get("name", "")
@@ -542,16 +544,21 @@ async def stream_agent_mode(
                         error_msg = result.get("error", "") if isinstance(result, dict) else ""
                         output = result.get("output", "") if isinstance(result, dict) else str(result)
                         _file_change = result.get("file_change") if isinstance(result, dict) else None
+                        is_cached = bool(isinstance(result, dict) and result.get("_cached"))
+                        log_payload = tool_result_for_logging(result) if isinstance(result, dict) else {"output": str(result)}
                         logger.write_tool_result(
                             item['tool_id'], item['tool_name'], status,
-                            result=json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result),
+                            result=json.dumps(log_payload, ensure_ascii=False),
                             error=error_msg, session_id=result.get("session_id", "") if isinstance(result, dict) else "",
                             file_change=_file_change,
+                            cached=is_cached,
                         )
                         if segment_sink:
-                            await segment_sink.on_tool_done(item['tool_name'], status, output)
+                            await segment_sink.on_tool_done(item['tool_name'], status, log_payload.get("output", output))
 
-                        result_event = build_tool_result_event(item['tool_name'], item['tool_id'], status, output, round_no, result)
+                        result_event = build_tool_result_event(
+                            item['tool_name'], item['tool_id'], status, log_payload.get("output", output), round_no, result, cached=is_cached,
+                        )
                         yield f"data: {json.dumps({'tool_result': result_event}, ensure_ascii=False)}\n\n"
 
                         try:
@@ -594,16 +601,21 @@ async def stream_agent_mode(
                     error_msg = result.get("error", "") if isinstance(result, dict) else ""
                     output = result.get("output", "") if isinstance(result, dict) else str(result)
                     _file_change = result.get("file_change") if isinstance(result, dict) else None
+                    is_cached = bool(isinstance(result, dict) and result.get("_cached"))
+                    log_payload = tool_result_for_logging(result) if isinstance(result, dict) else {"output": str(result)}
                     logger.write_tool_result(
                         tool_id, tool_name, status,
-                        result=json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result),
+                        result=json.dumps(log_payload, ensure_ascii=False),
                         error=error_msg, session_id=result.get("session_id", "") if isinstance(result, dict) else "",
                         file_change=_file_change,
+                        cached=is_cached,
                     )
                     if segment_sink:
-                        await segment_sink.on_tool_done(tool_name, status, output)
+                        await segment_sink.on_tool_done(tool_name, status, log_payload.get("output", output))
 
-                    result_event = build_tool_result_event(tool_name, tool_id, status, output, round_no, result)
+                    result_event = build_tool_result_event(
+                        tool_name, tool_id, status, log_payload.get("output", output), round_no, result, cached=is_cached,
+                    )
                     yield f"data: {json.dumps({'tool_result': result_event}, ensure_ascii=False)}\n\n"
 
                     try:

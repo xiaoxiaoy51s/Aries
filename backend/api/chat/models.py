@@ -69,6 +69,7 @@ class VisionRequest(BaseModel):
 
 class StopChatRequest(BaseModel):
     session_id: str
+    work_dir: Optional[str] = None
 
 
 class ConfirmToolRequest(BaseModel):

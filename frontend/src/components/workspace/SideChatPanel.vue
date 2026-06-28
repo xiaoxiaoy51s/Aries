@@ -117,10 +117,10 @@ const modelStore = useModelStore()
 const textColor = computed(() => '#1a1a1a')
 const fontSize = computed(() => 15)
 const modelList = computed(() => modelStore.modelList)
-const selectedModel = ref(modelStore.activeModel?.model || '')
+const selectedModel = ref(modelStore.activeModel?.id || '')
 
-watch(() => modelStore.activeModel, (m) => {
-  if (m) selectedModel.value = m.model
+watch(() => modelStore.activeModel?.id, (id) => {
+  if (id) selectedModel.value = id
 }, { immediate: true })
 
 const sideMessages = ref<SideMessage[]>([])

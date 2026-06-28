@@ -192,10 +192,10 @@
         <select
           :value="selectedModel"
           class="model-select"
-          @change="$emit('update:selectedModel', ($event.target as HTMLSelectElement).value)"
+          @change="onModelSelectChange"
         >
           <option v-if="modelList.length === 0" value="" disabled>暂无模型</option>
-          <option v-for="model in modelList" :key="model.id" :value="model.model">
+          <option v-for="model in modelList" :key="model.id" :value="model.id">
             {{ model.name }}
           </option>
         </select>
@@ -536,6 +536,21 @@ const emit = defineEmits<{
   toggleSideChat: []
   compactDone: []
 }>()
+
+const modelStore = useModelStore()
+
+/** 与设置页 ModelsTab 一致：按 model.id 激活并持久化到后端 config */
+async function onModelSelectChange(event: Event) {
+  const id = (event.target as HTMLSelectElement).value
+  if (!id) return
+  emit('update:selectedModel', id)
+  if (modelStore.activeModel?.id === id) return
+  try {
+    await modelStore.setActiveModel(id)
+  } catch (e) {
+    console.error('切换模型失败', e)
+  }
+}
 
 const composerRef = ref<InstanceType<typeof SlashComposerInput>>()
 const workDirMenuOpen = ref(false)
@@ -925,7 +940,7 @@ function skillIcon(name: string): string {
 
 async function loadSkillItems() {
   try {
-    const list = await listSkills()
+    const { skills: list } = await listSkills()
     skillItems.value = list.map((s: ApiSkillItem) => ({
       id: s.folder_name,
       icon: skillIcon(s.name),

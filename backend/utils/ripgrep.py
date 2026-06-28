@@ -63,10 +63,18 @@ class RipgrepService:
         if not binary:
             return None
 
+        cwd_path = Path(cwd)
+        if not cwd_path.is_dir():
+            if cwd_path.is_file():
+                logger.debug("ripgrep cwd 为文件而非目录，跳过: %s", cwd)
+            else:
+                logger.debug("ripgrep cwd 无效: %s", cwd)
+            return None
+
         try:
             result = subprocess.run(
                 [binary] + args,
-                cwd=cwd,
+                cwd=str(cwd_path),
                 capture_output=True,
                 text=True,
                 timeout=timeout,

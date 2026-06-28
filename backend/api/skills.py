@@ -1,9 +1,15 @@
 ﻿from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from pathlib import Path
+from fastapi import APIRouter, HTTPException, UploadFile, File
 import shutil
 
-from engine.skills_manager import discover_skills, get_skill_by_folder_name
+from engine.skills_manager import (
+    SKILLS_ROOT,
+    discover_skills,
+    get_skill_by_folder_name,
+    install_skill_from_zip,
+)
 from engine.plugin_manager import discover_plugins
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
@@ -34,7 +40,7 @@ async def list_skills():
     except Exception:
         pass
 
-    return {"skills": result}
+    return {"skills": result, "skills_root": str(SKILLS_ROOT), "plugins_skills_root": str(Path.home() / ".Aries" / "plugins" / "skills")}
 
 
 @router.get("/{folder_name}")
@@ -78,6 +84,24 @@ async def get_skill_detail(folder_name: str):
         pass
 
     raise HTTPException(status_code=404, detail=f"技能 {folder_name} 不存在")
+
+
+@router.post("/upload")
+async def upload_skill_package(file: UploadFile = File(...)):
+    """上传技能 zip 包，解压到 ~/.Aries/skills/。"""
+    filename = (file.filename or "").strip()
+    if not filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="仅支持 .zip 格式的技能安装包")
+
+    content = await file.read()
+    try:
+        result = install_skill_from_zip(content, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"安装失败: {exc}") from exc
+
+    return {"success": True, **result}
 
 
 @router.delete("/{folder_name}")

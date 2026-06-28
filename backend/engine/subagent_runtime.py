@@ -624,6 +624,8 @@ async def _run_subagent_loop(
                 "tools": tool_definitions,
                 "tool_choice": "auto",
             }
+            from utils.token_counter import attach_stream_usage_options
+            attach_stream_usage_options(payload)
 
             full_content = ""
             tool_calls_buffer: list[dict[str, Any]] = []
@@ -670,7 +672,7 @@ async def _run_subagent_loop(
                         if usage:
                             sub_logger.add_token_usage(usage)
 
-                        choices = chunk.get("choices", [])
+                        choices = chunk.get("choices") or []
                         if not choices:
                             continue
                         delta = choices[0].get("delta", {}) or {}
@@ -1122,6 +1124,8 @@ async def run_subagent_direct(
                 "tools": tool_definitions,
                 "tool_choice": "auto",
             }
+            from utils.token_counter import attach_stream_usage_options
+            attach_stream_usage_options(payload)
 
             full_content = ""
             tool_calls_buffer: list[dict] = []

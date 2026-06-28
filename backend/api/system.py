@@ -99,6 +99,47 @@ def home_path() -> HomePathResponse:
     )
 
 
+@router.get("/cache-stats")
+def cache_stats() -> dict:
+    """各层进程内缓存运行指标（L1–L4）。"""
+    from utils.cache_metrics import collect_cache_stats
+    return collect_cache_stats()
+
+
+class VersionResponse(BaseModel):
+    version: str
+    github_repo: str
+
+
+class CheckUpdateResponse(BaseModel):
+    current_version: str
+    github_repo: str
+    latest_version: Optional[str] = None
+    update_available: bool = False
+    release_name: Optional[str] = None
+    release_url: str
+    release_notes: Optional[str] = None
+    published_at: Optional[str] = None
+    error: Optional[str] = None
+
+
+@router.get("/version", response_model=VersionResponse)
+def app_version() -> VersionResponse:
+    """返回当前应用版本。"""
+    from utils.version_manager import get_app_version, GITHUB_OWNER, GITHUB_REPO
+    return VersionResponse(
+        version=get_app_version(),
+        github_repo=f"{GITHUB_OWNER}/{GITHUB_REPO}",
+    )
+
+
+@router.get("/check-update", response_model=CheckUpdateResponse)
+async def check_update() -> CheckUpdateResponse:
+    """对比 GitHub Releases 检查是否有新版本。"""
+    from utils.version_manager import check_for_update
+    return CheckUpdateResponse(**await check_for_update())
+
+
 @router.post("/select-directory", response_model=SelectDirectoryResponse)
 def select_directory() -> SelectDirectoryResponse:
     """弹出系统原生文件夹选择对话框（Windows / macOS / Linux）。"""

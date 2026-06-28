@@ -1247,10 +1247,10 @@ function clearConfirmCountdownTimer() {
 const textColor = computed(() => '#1a1a1a')
 const fontSize = computed(() => 15)
 
-// 同步默认模型
-watch(() => modelStore.activeModel, (model) => {
-  if (model) {
-    selectedModel.value = model.model
+// 同步默认模型（与设置页一致：selectedModel 存 model.id）
+watch(() => modelStore.activeModel?.id, (id) => {
+  if (id) {
+    selectedModel.value = id
   }
 }, { immediate: true })
 
@@ -2022,6 +2022,8 @@ onMounted(() => {
   window.addEventListener('aries:toast', onToast)
   window.addEventListener('aries:add-to-chat', onAddToChat)
   window.addEventListener('aries:select-work-dir', onSelectWorkDir)
+  window.addEventListener('aries:emergency-stop', onEmergencyStopEvent)
+  window.addEventListener('keydown', onGlobalEscKey, true)
   loadWorkDir()
   // 确保模型列表已加载（避免 MainLayout 加载未完成导致下拉框为空）
   void modelStore.loadModels()
@@ -2076,6 +2078,8 @@ onUnmounted(() => {
   window.removeEventListener('aries:toast', onToast)
   window.removeEventListener('aries:add-to-chat', onAddToChat)
   window.removeEventListener('aries:select-work-dir', onSelectWorkDir)
+  window.removeEventListener('aries:emergency-stop', onEmergencyStopEvent)
+  window.removeEventListener('keydown', onGlobalEscKey, true)
 })
 
 function onSelectWorkDir() {
@@ -2625,13 +2629,19 @@ async function stopGeneration() {
     dismissPendingConfirmations('已停止')
   }
   const sessionId = currentSessionId.value
+  const wd = (workDir.value || resolveWorkDirForSend() || '').trim()
   if (sessionId) {
-    stopChat(sessionId).catch(() => {})
+    stopChat(sessionId, wd || undefined).catch(() => {})
     markSessionIdle(sessionId)
     syncSessionWorkingState(sessionId)
   }
   isSending.value = false
   clearPetStatus()
+  for (const sa of sessionSubagents.value) {
+    if (sa.status === 'running' || sa.status === 'pending' || sa.status === 'stalled') {
+      sa.status = 'cancelled'
+    }
+  }
   const lastAssistant = [...messages.value].reverse().find((m) => m.role === 'assistant')
   if (lastAssistant) {
     lastAssistant.isLoading = false
@@ -2651,6 +2661,20 @@ async function stopGeneration() {
         }
       }
     }
+  }
+}
+
+function onGlobalEscKey(e: KeyboardEvent) {
+  if (e.key !== 'Escape' || e.repeat) return
+  if (!composerIsSending.value) return
+  e.preventDefault()
+  e.stopPropagation()
+  void stopGeneration()
+}
+
+function onEmergencyStopEvent() {
+  if (composerIsSending.value) {
+    void stopGeneration()
   }
 }
 

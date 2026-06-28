@@ -407,7 +407,7 @@ async function loadAll() {
   try {
     const [agents, sk, pl] = await Promise.all([
       listSubagents(),
-      listSkills(),
+      listSkills().then((r) => r.skills),
       listPlugins(),
     ])
     subagents.value = agents

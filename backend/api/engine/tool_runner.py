@@ -16,6 +16,12 @@ from .todo_handler import update_todos, clear_todos
 from .stream_constants import TOOL_EXECUTION_TIMEOUT_SECONDS
 from .tool_hooks import run_pre_tool_hooks, run_post_tool_hooks
 from .approval_cache import cache_approval, is_approved
+from utils.tool_cache import (
+    get_cached_tool_result,
+    store_tool_result,
+    invalidate_work_dir_cache,
+    is_cache_busting_tool,
+)
 
 # 工具错误级别
 TOOL_ERROR_RESPOND_TO_MODEL = "respond_to_model"  # 软错误：回传模型，继续对话
@@ -88,6 +94,11 @@ async def run_single_tool(
         return result, {}, False
     if "updated_args" in hook_ret:
         args = hook_ret["updated_args"]
+
+    # ===== L2 工具结果缓存（只读/幂等工具） =====
+    cached_result = get_cached_tool_result(tool_name, args, work_dir)
+    if cached_result is not None:
+        return cached_result, {}, False
 
     # todo_write 拦截
     if tool_name == "todo_write":
@@ -191,6 +202,13 @@ async def run_single_tool(
             result = dict(result)
             result["output"] = post_ret["feedback"]
 
+    # ===== L2 缓存写入 / 写操作后失效 =====
+    if isinstance(result, dict):
+        if is_cache_busting_tool(tool_name, args) and result.get("success") is not False and not result.get("error"):
+            invalidate_work_dir_cache(work_dir)
+        else:
+            store_tool_result(tool_name, args, work_dir, result)
+
     # ===== 错误级别标记 =====
     # 工具执行超时、hook 阻断 → 软错误（回传模型继续）
     # execute_tool 抛异常且非超时 → 硬错误（标记 fatal）
@@ -212,6 +230,7 @@ def build_tool_result_event(
     output: str,
     round_no: int,
     result: dict | None = None,
+    cached: bool = False,
 ) -> dict[str, Any]:
     """构建工具结果事件。"""
     event = {
@@ -221,6 +240,8 @@ def build_tool_result_event(
         "output": output,
         "round": round_no,
     }
+    if cached:
+        event["cached"] = True
     if result:
         result_session_id = result.get("session_id") if isinstance(result, dict) else None
         if result_session_id:

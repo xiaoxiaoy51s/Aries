@@ -479,6 +479,9 @@ class FileManagerTool:
         oob = self._check_out_of_bounds(target_dir, skip_confirmation)
         if oob:
             return oob
+        list_cwd = target_dir
+        if target_dir.is_file():
+            list_cwd = target_dir.parent
         if "pattenrn" in extra and pattern == "*":
             pattern = str(extra.pop("pattenrn") or "*")
         if "patern" in extra and pattern == "*":
@@ -492,7 +495,7 @@ class FileManagerTool:
             try:
                 files = ripgrep_service.glob(
                     pattern=pattern,
-                    cwd=str(target_dir),
+                    cwd=str(list_cwd),
                     limit=1000,
                     exclude_patterns=["__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build"],
                 )
@@ -642,6 +645,11 @@ class FileManagerTool:
                 "total_matches": 0,
                 "files_matched": 0,
             }
+        search_cwd = search_path
+        if search_path.is_file():
+            if glob == "*":
+                glob = search_path.name
+            search_cwd = search_path.parent
         
         # 尝试使用 ripgrep 进行高性能搜索
         ripgrep_service = self._get_ripgrep_service()
@@ -649,7 +657,7 @@ class FileManagerTool:
             try:
                 ripgrep_matches = ripgrep_service.grep(
                     pattern=pattern,
-                    cwd=str(search_path),
+                    cwd=str(search_cwd),
                     include=glob if glob != "*" else None,
                     limit=max_results,
                     context_lines=context_lines,

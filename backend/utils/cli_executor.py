@@ -164,6 +164,19 @@ class CLIExecutor:
             event.set()
 
     @classmethod
+    def cancel_session_invocations(cls, session_id: str) -> list[str]:
+        """取消某 chat session 下所有进行中的 cli_executor 调用。"""
+        if not session_id:
+            return []
+        prefix = f"{session_id}:"
+        cancelled: list[str] = []
+        for inv_id in list(cls._cancel_events.keys()):
+            if inv_id.startswith(prefix):
+                cls.signal_cancel(inv_id)
+                cancelled.append(inv_id)
+        return cancelled
+
+    @classmethod
     def get_active_invocations(cls) -> list[str]:
         return []
 

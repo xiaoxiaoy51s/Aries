@@ -16,6 +16,7 @@ export interface RunMeta {
       total_tokens?: number
       cached_tokens?: number
       estimated?: boolean
+      from_api?: boolean
     }
     prompt_cache?: {
       enabled?: boolean
@@ -72,6 +73,7 @@ export function normalizeRunMetadata(raw: unknown): RunMeta {
           total_tokens: total || prompt + completion,
           ...(cached ? { cached_tokens: cached } : {}),
           ...(apiObj.estimated === true ? { estimated: true } : {}),
+          ...(apiObj.from_api === true ? { from_api: true } : {}),
         }
       : undefined
 
@@ -154,12 +156,13 @@ export function formatTokenInOutLabels(
 
   const api = tokenUsage.api_usage
   const ctx = tokenUsage.context
+  const fromApi = api?.from_api === true
 
   let inputTokens = Number(api?.prompt_tokens ?? 0) || 0
   let outputTokens = Number(api?.completion_tokens ?? 0) || 0
 
-  // API 未返回 usage 时，用 context 估算作为输入量
-  if (!inputTokens && ctx?.estimated_tokens) {
+  // 无 API 累计数据时才用 context 估算输入
+  if (!fromApi && !inputTokens && ctx?.estimated_tokens) {
     inputTokens = Number(ctx.estimated_tokens) || 0
   }
 
@@ -175,7 +178,7 @@ export function formatTokenInOutLabels(
   if (cached) cache = `⚡${formatCompactNum(cached)}`
   else if (hitRate) cache = `⚡${hitRate}%`
 
-  const approx = api?.estimated === true ? '≈' : ''
+  const approx = api?.estimated === true && !fromApi ? '≈' : ''
 
   return {
     input: inputTokens ? `${approx}↑${formatCompactNum(inputTokens)}` : '',

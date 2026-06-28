@@ -287,6 +287,14 @@ function createTerminal(tab: TerminalTab) {
       }
       // 无选中则允许 \x03 发送给 PTY（中断命令）
     }
+    // ESC：中断当前终端命令，并触发全局紧急停止（等同停止 AI 生成）
+    if (event.type === 'keydown' && event.key === 'Escape') {
+      if (tab.ws?.readyState === WebSocket.OPEN && tab.attached) {
+        tab.ws.send(JSON.stringify({ type: 'input', data: '\x03' }))
+      }
+      window.dispatchEvent(new CustomEvent('aries:emergency-stop'))
+      return false
+    }
     // Ctrl+V 粘贴：手动读取剪贴板并发送，阻止 xterm 默认粘贴（避免重复）
     if (event.type === 'keydown' && event.ctrlKey && event.key.toLowerCase() === 'v') {
       isPasting = true

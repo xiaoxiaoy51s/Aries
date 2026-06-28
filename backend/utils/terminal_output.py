@@ -32,11 +32,7 @@ def sanitize_terminal_output_for_ai(raw: str) -> str:
 
 
 def format_tool_result_for_model(result: dict) -> str:
-    """构建发给 LLM 的工具结果 JSON，去掉前端专用字段并清理 output。"""
-    import json
+    """构建发给 LLM 的工具结果 JSON（截图类结果见 tool_result_image）。"""
+    from utils.tool_result_image import format_tool_result_for_model as _fmt
 
-    payload = {k: v for k, v in result.items() if k != "captured_output"}
-    output = payload.get("output")
-    if isinstance(output, str):
-        payload["output"] = sanitize_terminal_output_for_ai(output)
-    return json.dumps(payload, ensure_ascii=False)
+    return _fmt(result)

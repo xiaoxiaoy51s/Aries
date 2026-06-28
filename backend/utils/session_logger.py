@@ -148,6 +148,7 @@ class SessionLogger:
         ended_at: str | None = None,
         session_id: str = "",
         file_change: dict[str, Any] | None = None,
+        cached: bool = False,
     ) -> None:
         ts = ended_at or _utc_now()
         for entry in self._tool_log:
@@ -164,6 +165,8 @@ class SessionLogger:
             "error": error,
             "ended_at": ts,
         }
+        if cached:
+            event["cached"] = True
         if session_id:
             event["session_id"] = session_id
         if file_change:
@@ -225,7 +228,10 @@ class SessionLogger:
     def add_token_usage(self, usage: dict[str, Any] | None) -> None:
         if not usage:
             return
+        from utils.token_counter import recalc_api_usage_totals
+
         api_usage = self._token_usage.setdefault("api_usage", {})
+        touched = False
         for key in (
             "prompt_tokens",
             "completion_tokens",
@@ -233,10 +239,27 @@ class SessionLogger:
             "cached_tokens",
             "cache_read_input_tokens",
             "cache_creation_input_tokens",
+            "reasoning_tokens",
         ):
             val = int(usage.get(key) or 0)
             if val:
                 api_usage[key] = int(api_usage.get(key, 0) or 0) + val
+                touched = True
+        if touched:
+            recalc_api_usage_totals(api_usage)
+            api_usage["from_api"] = True
+            api_usage.pop("estimated", None)
+
+    def emit_run_metadata_snapshot(self) -> None:
+        """流式过程中推送累计 API usage（可多次，finalize 前不写盘标记）。"""
+        event = {
+            "type": "run_metadata",
+            "model": self._model,
+            "duration_ms": self.duration_ms(),
+            "token_usage": self._token_usage,
+            "timestamp": _utc_now(),
+        }
+        self._emit(event)
 
     def duration_ms(self) -> int:
         return int((time.perf_counter() - self._started_perf) * 1000)
@@ -356,7 +379,11 @@ class SessionLogger:
         return self._assistant_all
 
     def apply_api_usage_estimate(self) -> None:
-        """API 未返回 usage 时，用 context 估算输入、用已生成文本估算输出。"""
+        """API 未返回 usage 时，用 context 估算输入、用已生成文本估算输出。
+
+        MiMo / DeepSeek 等 OpenAI 兼容接口在流式最后一包会返回 usage；
+        completion_tokens 已包含 reasoning，无需单独累加 reasoning_tokens。
+        """
         from utils.token_counter import estimate_tokens
 
         api = dict(self._token_usage.get("api_usage") or {})
@@ -366,6 +393,10 @@ class SessionLogger:
 
         had_api_prompt = bool(api.get("prompt_tokens"))
         had_api_completion = bool(api.get("completion_tokens"))
+        if api.get("from_api") or (had_api_prompt and had_api_completion):
+            api.pop("estimated", None)
+            self._token_usage["api_usage"] = api
+            return
 
         prompt = int(api.get("prompt_tokens") or 0)
         completion = int(api.get("completion_tokens") or 0)
@@ -385,10 +416,7 @@ class SessionLogger:
         if completion:
             merged["completion_tokens"] = completion
         merged["total_tokens"] = int(merged.get("prompt_tokens") or 0) + int(merged.get("completion_tokens") or 0)
-        if not had_api_prompt or not had_api_completion:
-            merged["estimated"] = True
-        else:
-            merged.pop("estimated", None)
+        merged["estimated"] = True
 
         self._token_usage["api_usage"] = merged
 

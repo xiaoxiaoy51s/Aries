@@ -79,6 +79,9 @@
         配置文件：<code>{{ configPath }}</code>
         <span class="config-hint">（也可直接编辑该文件，参考同目录下的 mcp.example.json）</span>
       </p>
+      <p v-if="activeTab === 'skills' && skillsRoot" class="config-path">
+        技能目录：<code>{{ skillsRoot }}</code>
+      </p>
     </header>
 
     <div class="toolbar">
@@ -100,12 +103,76 @@
     <div v-else class="content">
       <div v-if="activeTab === 'plugins' && currentItems.length === 0" class="empty-panel">
         <p>尚未配置 MCP 插件。</p>
-        <p>请在 <code>{{ configPath || '~/.ariesClaw/mcp.json' }}</code> 中自行添加，或点击右上角 + 通过界面添加。</p>
+        <p>请在 <code>{{ configPath || '~/.Aries/mcp.json' }}</code> 中自行添加，或点击右上角 + 通过界面添加。</p>
       </div>
 
+      <div v-else-if="activeTab === 'skills' && skillItemsTotal === 0" class="empty-panel">
+        <p>尚未安装技能。</p>
+        <p>点击右上角 + 上传 <code>.zip</code> 技能安装包，将自动解压到 <code>{{ skillsRoot || '~/.Aries/skills' }}</code>。</p>
+      </div>
+
+      <template v-else-if="activeTab === 'skills'">
+        <section v-if="builtinSkillItems.length" class="group-section">
+          <h2 class="group-title">官方</h2>
+          <p v-if="pluginsSkillsRoot" class="group-path">
+            目录：<code>{{ pluginsSkillsRoot }}</code>
+          </p>
+          <ul class="item-list">
+            <li
+              v-for="item in visibleBuiltinItems"
+              :key="item.key"
+              class="item-row"
+              @click="openDetail(item)"
+            >
+              <div class="item-icon kind-skills">{{ item.icon }}</div>
+              <div class="item-body">
+                <div class="item-name">{{ item.name }}</div>
+                <div class="item-desc">{{ item.description || '无描述' }}</div>
+              </div>
+            </li>
+          </ul>
+          <button
+            v-if="hiddenBuiltinCount > 0"
+            type="button"
+            class="show-more"
+            @click="expandedBuiltin = true"
+          >
+            查看 {{ hiddenBuiltinPreview }} 等另外 {{ hiddenBuiltinCount }} 项
+          </button>
+        </section>
+
+        <section v-if="personalSkillItems.length" class="group-section">
+          <h2 class="group-title">个人</h2>
+          <p v-if="skillsRoot" class="group-path">
+            目录：<code>{{ skillsRoot }}</code>
+          </p>
+          <ul class="item-list">
+            <li
+              v-for="item in visiblePersonalItems"
+              :key="item.key"
+              class="item-row"
+              @click="openDetail(item)"
+            >
+              <div class="item-icon kind-skills">{{ item.icon }}</div>
+              <div class="item-body">
+                <div class="item-name">{{ item.name }}</div>
+                <div class="item-desc">{{ item.description || '无描述' }}</div>
+              </div>
+            </li>
+          </ul>
+          <button
+            v-if="hiddenPersonalCount > 0"
+            type="button"
+            class="show-more"
+            @click="expandedPersonal = true"
+          >
+            查看 {{ hiddenPersonalPreview }} 等另外 {{ hiddenPersonalCount }} 项
+          </button>
+        </section>
+      </template>
+
       <section v-else class="group-section">
-        <h2 v-if="activeTab === 'skills'" class="group-title">个人</h2>
-        <h2 v-else class="group-title">已配置</h2>
+        <h2 class="group-title">已配置</h2>
         <ul class="item-list">
           <li
             v-for="item in visibleItems"
@@ -153,7 +220,7 @@
           <template v-if="activeTab === 'plugins'">
             <p class="hint-text">
               请从 MCP Servers 介绍页复制配置 JSON（优先使用 NPX 或 UVX 配置），粘贴到下方输入框。
-              保存到 <code>{{ configPath || '~/.ariesClaw/mcp.json' }}</code>，名称自动取 <code>mcpServers</code> 中的键名。
+              保存到 <code>{{ configPath || '~/.Aries/mcp.json' }}</code>，名称自动取 <code>mcpServers</code> 中的键名。
             </p>
             <label class="field">
               <textarea
@@ -182,8 +249,21 @@
           </template>
           <template v-else>
             <p class="hint-text">
-              请将技能目录放入 <code>~/.ariesClaw/skills/available/</code>，并确保包含 <code>SKILL.md</code> 文件，然后点击刷新。
+              上传技能安装包（<code>.zip</code>），后端将自动解压到
+              <code>{{ skillsRoot || '~/.Aries/skills' }}</code>。压缩包内需包含 <code>SKILL.md</code>。
             </p>
+            <label class="field skill-upload-field">
+              <input
+                ref="skillFileInputRef"
+                type="file"
+                accept=".zip,application/zip"
+                class="skill-file-input"
+                @change="onSkillFileChange"
+              />
+              <button type="button" class="skill-upload-picker" @click="pickSkillFile">
+                {{ skillUploadFile ? skillUploadFile.name : '选择 .zip 安装包' }}
+              </button>
+            </label>
           </template>
           <p v-if="addError" class="add-error">{{ addError }}</p>
         </div>
@@ -197,6 +277,15 @@
             @click="submitImportPlugins"
           >
             {{ addBusy ? '保存中...' : '确认' }}
+          </button>
+          <button
+            v-else
+            type="button"
+            class="btn-primary"
+            :disabled="addBusy || !skillUploadFile"
+            @click="submitUploadSkill"
+          >
+            {{ addBusy ? '安装中...' : '安装' }}
           </button>
         </div>
       </div>
@@ -248,6 +337,7 @@
               打开文件位置
             </button>
             <button
+              v-if="detailKind === 'plugins' || (detailKind === 'skills' && !detailIsBuiltin)"
               type="button"
               class="btn-delete-item"
               :disabled="detailLoading"
@@ -286,7 +376,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
-import { getSkillDetail, listSkills, type SkillItem } from '@/api/skills'
+import { getSkillDetail, listSkills, uploadSkillPackage, type SkillItem } from '@/api/skills'
 import { getPluginDetail, importPlugins, listPlugins, refreshPlugins, type PluginItem } from '@/api/plugins'
 import { openPath } from '@/api/system'
 import { useModelStore } from '@/stores/model'
@@ -307,12 +397,13 @@ interface ListItem {
   description: string
   enabled: boolean
   icon: string
+  skillGroup?: 'builtin' | 'personal'
   toolCount?: number
   hasError?: boolean
   errorHint?: string
 }
 
-const SECTION_LIMIT = 5
+const SECTION_LIMIT = 9
 
 const activeTab = ref<TabKind>('skills')
 const query = ref('')
@@ -321,12 +412,18 @@ const error = ref('')
 const skills = ref<SkillItem[]>([])
 const plugins = ref<PluginItem[]>([])
 const configPath = ref('')
+const skillsRoot = ref('')
+const pluginsSkillsRoot = ref('')
 const cacheRoot = ref('')
 const expanded = ref(false)
+const expandedBuiltin = ref(false)
+const expandedPersonal = ref(false)
 const showAddDialog = ref(false)
 const addBusy = ref(false)
 const addError = ref('')
 const configJsonText = ref('')
+const skillUploadFile = ref<File | null>(null)
+const skillFileInputRef = ref<HTMLInputElement | null>(null)
 
 const showDetail = ref(false)
 const detailLoading = ref(false)
@@ -341,6 +438,7 @@ const detailOpenPath = ref('')
 const detailPathHint = ref('')
 const detailMeta = ref('')
 const detailIcon = ref('⚡')
+const detailIsBuiltin = ref(false)
 const showDeleteConfirm = ref(false)
 const deleteBusy = ref(false)
 
@@ -353,8 +451,9 @@ function pluginIcon(id: string): string {
   return id.trim().charAt(0).toUpperCase() || '🔌'
 }
 
-function mapSkills(): ListItem[] {
-  return skills.value.map((skill) => ({
+function mapSkillToItem(skill: SkillItem): ListItem {
+  const isBuiltin = skill.group === 'builtin'
+  return {
     key: `skill:${skill.folder_name}`,
     kind: 'skills',
     id: skill.folder_name,
@@ -362,7 +461,55 @@ function mapSkills(): ListItem[] {
     description: skill.description,
     enabled: skill.enabled,
     icon: skillIcon(skill.name),
-  }))
+    skillGroup: isBuiltin ? 'builtin' : 'personal',
+  }
+}
+
+function filterItemsByQuery(items: ListItem[]): ListItem[] {
+  const normalized = query.value.trim().toLowerCase()
+  if (!normalized) return items
+  return items.filter((item) =>
+    item.name.toLowerCase().includes(normalized) ||
+    item.description.toLowerCase().includes(normalized) ||
+    item.id.toLowerCase().includes(normalized),
+  )
+}
+
+const builtinSkillItems = computed(() =>
+  filterItemsByQuery(skills.value.filter((s) => s.group === 'builtin').map(mapSkillToItem)),
+)
+
+const personalSkillItems = computed(() =>
+  filterItemsByQuery(skills.value.filter((s) => s.group !== 'builtin').map(mapSkillToItem)),
+)
+
+const skillItemsTotal = computed(() => builtinSkillItems.value.length + personalSkillItems.value.length)
+
+function sliceVisible(items: ListItem[], expandedFlag: boolean) {
+  if (expandedFlag) return items
+  return items.slice(0, SECTION_LIMIT)
+}
+
+const visibleBuiltinItems = computed(() => sliceVisible(builtinSkillItems.value, expandedBuiltin.value))
+const visiblePersonalItems = computed(() => sliceVisible(personalSkillItems.value, expandedPersonal.value))
+
+function hiddenCountFor(items: ListItem[], expandedFlag: boolean) {
+  if (expandedFlag) return 0
+  return Math.max(0, items.length - SECTION_LIMIT)
+}
+
+const hiddenBuiltinCount = computed(() => hiddenCountFor(builtinSkillItems.value, expandedBuiltin.value))
+const hiddenPersonalCount = computed(() => hiddenCountFor(personalSkillItems.value, expandedPersonal.value))
+
+const hiddenBuiltinPreview = computed(() =>
+  builtinSkillItems.value.slice(SECTION_LIMIT, SECTION_LIMIT + 2).map((i) => i.name).join(', '),
+)
+const hiddenPersonalPreview = computed(() =>
+  personalSkillItems.value.slice(SECTION_LIMIT, SECTION_LIMIT + 2).map((i) => i.name).join(', '),
+)
+
+function mapSkills(): ListItem[] {
+  return [...builtinSkillItems.value, ...personalSkillItems.value]
 }
 
 function mapPlugins(): ListItem[] {
@@ -417,8 +564,10 @@ async function fetchAll() {
   try {
     loading.value = true
     error.value = ''
-    const [skillData, pluginResult] = await Promise.all([listSkills(), listPlugins()])
-    skills.value = skillData
+    const [skillResult, pluginResult] = await Promise.all([listSkills(), listPlugins()])
+    skills.value = skillResult.skills
+    skillsRoot.value = skillResult.skillsRoot
+    pluginsSkillsRoot.value = skillResult.pluginsSkillsRoot
     plugins.value = pluginResult.plugins
     configPath.value = pluginResult.configPath
     cacheRoot.value = pluginResult.cacheRoot
@@ -451,6 +600,7 @@ async function openDetail(item: ListItem) {
   showDetail.value = true
   detailKind.value = item.kind
   detailId.value = item.id
+  detailIsBuiltin.value = item.skillGroup === 'builtin'
   detailTitle.value = item.name
   detailSubtitle.value = item.description || (item.kind === 'plugins' ? 'MCP 插件' : 'Agent 技能')
   detailIcon.value = item.icon
@@ -541,15 +691,56 @@ async function submitImportPlugins() {
   }
 }
 
+function pickSkillFile() {
+  skillFileInputRef.value?.click()
+}
+
+function onSkillFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0] || null
+  if (file && !file.name.toLowerCase().endsWith('.zip')) {
+    addError.value = '请选择 .zip 格式的安装包'
+    skillUploadFile.value = null
+    input.value = ''
+    return
+  }
+  addError.value = ''
+  skillUploadFile.value = file
+}
+
+async function submitUploadSkill() {
+  addError.value = ''
+  if (!skillUploadFile.value) {
+    addError.value = '请选择技能安装包'
+    return
+  }
+  addBusy.value = true
+  try {
+    await uploadSkillPackage(skillUploadFile.value)
+    skillUploadFile.value = null
+    if (skillFileInputRef.value) skillFileInputRef.value.value = ''
+    showAddDialog.value = false
+    await fetchAll()
+  } catch (e: unknown) {
+    addError.value = e instanceof Error ? e.message : '安装失败'
+  } finally {
+    addBusy.value = false
+  }
+}
+
 watch(activeTab, () => {
   query.value = ''
   expanded.value = false
+  expandedBuiltin.value = false
+  expandedPersonal.value = false
   addError.value = ''
 })
 
 watch(showAddDialog, (open) => {
   if (!open) {
     addError.value = ''
+    skillUploadFile.value = null
+    if (skillFileInputRef.value) skillFileInputRef.value.value = ''
   }
 })
 
@@ -766,23 +957,46 @@ onMounted(fetchAll)
   margin-bottom: 4px;
 }
 
+.group-path {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 8px 0 12px;
+}
+
+.group-path code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  background: #f3f3f1;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
 .item-list {
   list-style: none;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 12px;
 }
 
 .item-row {
   display: flex;
-  align-items: center;
-  gap: 14px;
-  min-height: 72px;
-  padding: 14px 0;
-  border-bottom: 1px solid var(--border);
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 128px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-panel);
   cursor: pointer;
-  transition: background 0.12s;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.12s;
 }
 
 .item-row:hover {
-  background: rgba(0, 0, 0, 0.015);
+  border-color: #c8d9f8;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.05);
+  background: var(--bg-panel);
 }
 
 .item-icon {
@@ -804,34 +1018,39 @@ onMounted(fetchAll)
 .item-body {
   flex: 1;
   min-width: 0;
+  width: 100%;
 }
 
 .item-name {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 15px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 14px;
   font-weight: 600;
-  margin-bottom: 2px;
+  margin-bottom: 4px;
+  line-height: 1.35;
 }
 
 .item-desc {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-secondary);
-  line-height: 1.45;
+  line-height: 1.5;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
 .item-row-error {
-  background: rgba(220, 38, 38, 0.04);
+  background: rgba(220, 38, 38, 0.03);
+  border-color: rgba(220, 38, 38, 0.25);
 }
 
 .item-row-error:hover {
-  background: rgba(220, 38, 38, 0.08);
+  background: rgba(220, 38, 38, 0.06);
+  border-color: rgba(220, 38, 38, 0.35);
 }
 
 .item-error-hint {
@@ -863,7 +1082,7 @@ onMounted(fetchAll)
 }
 
 .show-more {
-  margin-top: 8px;
+  margin-top: 14px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
@@ -874,6 +1093,18 @@ onMounted(fetchAll)
 
 .show-more:hover {
   color: var(--text);
+}
+
+@media (max-width: 1100px) {
+  .item-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .item-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .group-empty,
@@ -999,6 +1230,34 @@ onMounted(fetchAll)
   background: #f3f3f1;
   padding: 1px 5px;
   border-radius: 4px;
+}
+
+.skill-upload-field {
+  margin-top: 12px;
+}
+
+.skill-file-input {
+  display: none;
+}
+
+.skill-upload-picker {
+  display: block;
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: var(--bg-sidebar);
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.skill-upload-picker:hover {
+  border-color: #c8d9f8;
+  background: var(--accent-hover);
+  color: var(--text);
 }
 
 .modal-footer {

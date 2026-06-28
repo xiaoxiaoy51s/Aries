@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
+import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -134,6 +137,95 @@ def get_skill_by_name(name: str) -> SkillEntry | None:
         if entry.name == name or entry.folder_name == name:
             return entry
     return None
+
+
+def _sanitize_folder_name(name: str) -> str:
+    cleaned = re.sub(r"[^\w\-]+", "-", (name or "").strip()).strip("-_")
+    return cleaned or "skill"
+
+
+def _find_skill_md(root: Path) -> Path | None:
+    """在解压目录中查找 SKILL.md / skill.md（优先最浅层）。"""
+    candidates: list[tuple[int, Path]] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        if path.name.lower() not in {"skill.md"}:
+            continue
+        depth = len(path.relative_to(root).parts)
+        candidates.append((depth, path))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def _safe_extract_zip(zf: zipfile.ZipFile, dest: Path) -> None:
+    dest = dest.resolve()
+    for member in zf.infolist():
+        member_path = (dest / member.filename).resolve()
+        if not str(member_path).startswith(str(dest)):
+            raise ValueError("压缩包包含非法路径，已拒绝解压")
+    zf.extractall(dest)
+
+
+def install_skill_from_zip(content: bytes, filename: str, *, overwrite: bool = True) -> dict[str, Any]:
+    """解压技能 zip 包到 ~/.Aries/skills/<folder_name>/。"""
+    if not filename.lower().endswith(".zip"):
+        raise ValueError("仅支持 .zip 格式的技能安装包")
+
+    max_size = 50 * 1024 * 1024
+    if len(content) > max_size:
+        raise ValueError("安装包过大（上限 50MB）")
+
+    SKILLS_ROOT.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix="aries-skill-") as tmp:
+        tmp_path = Path(tmp)
+        zip_path = tmp_path / "upload.zip"
+        zip_path.write_bytes(content)
+        extract_root = tmp_path / "extracted"
+        extract_root.mkdir(parents=True, exist_ok=True)
+
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            _safe_extract_zip(zf, extract_root)
+
+        skill_md = _find_skill_md(extract_root)
+        if skill_md is None:
+            raise ValueError("安装包中未找到 SKILL.md 或 skill.md")
+
+        skill_dir = skill_md.parent
+        if skill_dir == extract_root:
+            parsed = parse_skill_markdown(skill_md, default_name=Path(filename).stem)
+            folder_name = _sanitize_folder_name(parsed["name"] or Path(filename).stem)
+        else:
+            folder_name = _sanitize_folder_name(skill_dir.name)
+
+        target = SKILLS_ROOT / folder_name
+        if target.exists():
+            if not overwrite:
+                raise ValueError(f"技能目录已存在: {folder_name}")
+            shutil.rmtree(target)
+
+        if skill_dir == extract_root:
+            target.mkdir(parents=True, exist_ok=True)
+            for item in skill_dir.iterdir():
+                dest = target / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dest)
+                else:
+                    shutil.copy2(item, dest)
+        else:
+            shutil.copytree(skill_dir, target)
+
+        parsed = parse_skill_markdown(target / skill_md.name, default_name=folder_name)
+        return {
+            "folder_name": folder_name,
+            "name": parsed["name"],
+            "description": parsed["description"],
+            "path": str(target),
+            "skill_md_path": str(target / skill_md.name),
+        }
 
 
 def build_skill_runtime_context(entry: SkillEntry, task: str = "") -> str:

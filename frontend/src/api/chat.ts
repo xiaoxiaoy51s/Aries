@@ -171,11 +171,14 @@ export async function startVision(
   return (await res.json()) as StartChatResponse
 }
 
-export function stopChat(sessionId: string): Promise<void> {
+export function stopChat(sessionId: string, workDir?: string): Promise<void> {
   return fetch(`${getBaseUrl()}/chat/stop`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId }),
+    body: JSON.stringify({
+      session_id: sessionId,
+      ...(workDir ? { work_dir: workDir } : {}),
+    }),
   })
     .then(() => undefined)
     .catch((e) => {

@@ -31,7 +31,8 @@ async def stop_chat(body: StopChatRequest):
     session_id = (body.session_id or "").strip()
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id 不能为空")
-    return await stop_chat_handler(session_id)
+    work_dir = (body.work_dir or "").strip() or None
+    return await stop_chat_handler(session_id, work_dir)
 
 
 @router.get("/status/{session_id}")

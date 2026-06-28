@@ -12,17 +12,21 @@ export interface SkillItem {
   path: string
   skill_md_path: string
   enabled: boolean
-  group?: 'personal' | 'system'
+  group?: 'personal' | 'system' | 'builtin'
 }
 
-export async function listSkills(): Promise<SkillItem[]> {
+export async function listSkills(): Promise<{ skills: SkillItem[]; skillsRoot: string; pluginsSkillsRoot: string }> {
   try {
     const res = await fetch(`${getBaseUrl()}/api/skills`)
-    if (!res.ok) return []
+    if (!res.ok) return { skills: [], skillsRoot: '', pluginsSkillsRoot: '' }
     const data = await res.json()
-    return data.skills || []
+    return {
+      skills: data.skills || [],
+      skillsRoot: data.skills_root || '',
+      pluginsSkillsRoot: data.plugins_skills_root || '',
+    }
   } catch {
-    return []
+    return { skills: [], skillsRoot: '', pluginsSkillsRoot: '' }
   }
 }
 
@@ -41,6 +45,29 @@ export async function getSkillDetail(folder_name: string): Promise<SkillDetail> 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
     throw new Error(data.detail || '加载技能详情失败')
+  }
+  return res.json()
+}
+
+export interface UploadSkillResult {
+  success: boolean
+  folder_name: string
+  name: string
+  description: string
+  path: string
+  skill_md_path: string
+}
+
+export async function uploadSkillPackage(file: File): Promise<UploadSkillResult> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`${getBaseUrl()}/api/skills/upload`, {
+    method: 'POST',
+    body: form,
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.detail || '上传技能失败')
   }
   return res.json()
 }

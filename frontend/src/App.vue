@@ -45,7 +45,6 @@
           </svg>
         </button>
 
-        <img src="@/assets/logo.png" alt="" class="title-bar-logo" />
         <span class="title-bar-brand">Aries</span>
 
         <TitleBarMenu :menus="menus" @select="onMenuSelect" />
@@ -338,17 +337,6 @@ body {
   opacity: 0.35;
   cursor: default;
   pointer-events: none;
-}
-
-.title-bar-logo {
-  width: 20px;
-  height: 20px;
-  border-radius: 5px;
-  object-fit: cover;
-  flex-shrink: 0;
-  margin-left: 4px;
-  user-select: none;
-  -webkit-user-drag: none;
 }
 
 .title-bar-brand {

@@ -98,13 +98,14 @@
         <button 
           type="button" 
           class="sidebar-action"
-          @click="showSettings = true"
+          @click="openSettings()"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"/>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
           </svg>
           <span>设置</span>
+          <span v-if="hasUpdate" class="sidebar-update-dot" title="有新版本" />
         </button>
       </div>
     </aside>
@@ -130,7 +131,11 @@
     </main>
 
     <!-- 设置弹窗 -->
-    <SettingsPanel :visible="showSettings" @close="showSettings = false" />
+    <SettingsPanel
+      :visible="showSettings"
+      :initial-tab="settingsInitialTab"
+      @close="showSettings = false"
+    />
 
     <!-- 搜索弹窗 -->
     <SearchDialog :visible="showSearch" @close="showSearch = false" @select="onSearchSelect" />
@@ -197,11 +202,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import ChatPage from './chatPage.vue'
 import SkillsPage from './SkillsPage.vue'
 import AutomationPage from './AutomationPage.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
+import { useUpdateStore } from '@/stores/update'
 import SearchDialog from '@/components/SearchDialog.vue'
 import SessionLoadingDots from '@/components/SessionLoadingDots.vue'
 import { listProjects, updateSessionMeta, deleteSession } from '@/api/sessions'
@@ -230,6 +236,9 @@ interface Project {
 
 const currentPage = ref<'chat' | 'skills' | 'scheduled-tasks'>('chat')
 const showSettings = ref(false)
+const settingsInitialTab = ref<'models' | 'accounts' | 'paths' | 'pets' | 'network' | 'dev-env' | 'subagents' | 'updates' | undefined>(undefined)
+const updateStore = useUpdateStore()
+const hasUpdate = computed(() => updateStore.result?.update_available === true)
 const showSearch = ref(false)
 
 const currentSessionId = ref<string | null>(null)
@@ -410,8 +419,14 @@ function onOpenSession(e: Event) {
   }
 }
 
-function onOpenSettings() {
+function openSettings(tab?: typeof settingsInitialTab.value) {
+  settingsInitialTab.value = tab
   showSettings.value = true
+}
+
+function onOpenSettings(e?: Event) {
+  const tab = (e as CustomEvent<{ tab?: typeof settingsInitialTab.value }> | undefined)?.detail?.tab
+  openSettings(tab)
 }
 
 function onSearchSelect(sessionId: string) {
@@ -579,6 +594,15 @@ function cancelDelete() {
 .sidebar-action svg {
   flex-shrink: 0;
   color: var(--text-secondary);
+}
+
+.sidebar-update-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #2563eb;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .sidebar-section {

@@ -185,7 +185,10 @@ def extract_usage_from_response(response: dict[str, Any]) -> dict[str, int] | No
     usage = response.get("usage")
     if not usage or not isinstance(usage, dict):
         return None
-    return _normalize_api_usage(usage)
+    result = _normalize_api_usage(usage)
+    if not usage_has_tokens(result):
+        return None
+    return result
 
 
 def extract_usage_from_stream_chunk(chunk: dict[str, Any]) -> dict[str, int] | None:
@@ -193,22 +196,80 @@ def extract_usage_from_stream_chunk(chunk: dict[str, Any]) -> dict[str, int] | N
     usage = chunk.get("usage")
     if not usage or not isinstance(usage, dict):
         return None
-    return _normalize_api_usage(usage)
+    result = _normalize_api_usage(usage)
+    if not usage_has_tokens(result):
+        return None
+    return result
 
 
 def _normalize_api_usage(usage: dict[str, Any]) -> dict[str, int]:
+    """归一化 OpenAI 兼容 usage（MiMo / DeepSeek / 多数国产网关结构一致）。
+
+    - completion_tokens 已含 reasoning，勿再与 reasoning_tokens 相加
+    - reasoning_tokens 仅作元数据留存，UI 不单独展示
+    """
     result: dict[str, int] = {
         "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
         "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
         "total_tokens": int(usage.get("total_tokens", 0) or 0),
     }
-    details = usage.get("prompt_tokens_details") or {}
-    if isinstance(details, dict):
-        cached = int(details.get("cached_tokens") or 0)
-        if cached:
-            result["cached_tokens"] = cached
-    for key in ("cached_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+    if not result["total_tokens"] and (result["prompt_tokens"] or result["completion_tokens"]):
+        result["total_tokens"] = result["prompt_tokens"] + result["completion_tokens"]
+
+    completion_details = usage.get("completion_tokens_details") or {}
+    if isinstance(completion_details, dict):
+        reasoning = int(completion_details.get("reasoning_tokens") or 0)
+        if reasoning:
+            result["reasoning_tokens"] = reasoning
+
+    cached = 0
+    prompt_details = usage.get("prompt_tokens_details") or {}
+    if isinstance(prompt_details, dict):
+        cached = int(prompt_details.get("cached_tokens") or 0)
+    if not cached:
+        cached = int(usage.get("prompt_cache_hit_tokens") or 0)
+    if cached:
+        result["cached_tokens"] = cached
+
+    for key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
         val = int(usage.get(key) or 0)
-        if val:
+        if val and key == "cache_read_input_tokens":
+            result["cached_tokens"] = result.get("cached_tokens", 0) + val
+        elif val:
             result[key] = val
+
+    if not result.get("cached_tokens"):
+        for key in ("cached_tokens",):
+            val = int(usage.get(key) or 0)
+            if val:
+                result["cached_tokens"] = val
+
     return result
+
+
+def usage_has_tokens(usage: dict[str, int] | None) -> bool:
+    if not usage:
+        return False
+    return bool(
+        usage.get("prompt_tokens")
+        or usage.get("completion_tokens")
+        or usage.get("total_tokens")
+    )
+
+
+def attach_stream_usage_options(payload: dict[str, Any]) -> dict[str, Any]:
+    """OpenAI / DeepSeek / MiMo：流式最后一包返回 usage。"""
+    if payload.get("stream"):
+        opts = payload.get("stream_options")
+        if not isinstance(opts, dict):
+            opts = {}
+        opts.setdefault("include_usage", True)
+        payload["stream_options"] = opts
+    return payload
+
+
+def recalc_api_usage_totals(api_usage: dict[str, Any]) -> None:
+    prompt = int(api_usage.get("prompt_tokens") or 0)
+    completion = int(api_usage.get("completion_tokens") or 0)
+    if prompt or completion:
+        api_usage["total_tokens"] = prompt + completion

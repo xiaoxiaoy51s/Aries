@@ -1,33 +1,79 @@
 """会话级审批缓存：已批准的命令在当前会话内不再重复确认。
 
-借鉴 Codex 的 ApprovalStore 设计，按 session_id + 命令指纹缓存审批结果。
-命令指纹 = 命令文本的归一化哈希，忽略工作目录等可变参数。
+按 session_id + 命令指纹缓存；带 TTL 与单会话条目上限。
 """
-import hashlib
-from typing import Optional
+from __future__ import annotations
 
-# {session_id: {command_fingerprint: True}}
-_approval_cache: dict[str, set[str]] = {}
+import hashlib
+import re
+import time
+from typing import Any
+
+# {session_id: {command_fingerprint: expires_at_monotonic}}
+_approval_cache: dict[str, dict[str, float]] = {}
+
+APPROVAL_TTL_SECONDS = 3600
+MAX_APPROVALS_PER_SESSION = 64
+
+# 统计
+_stats = {"hits": 0, "misses": 0, "stores": 0, "expired": 0}
+
+
+def _normalize_command(command: str) -> str:
+    text = " ".join(command.strip().lower().split())
+    # 路径末尾斜杠归一：ls /tmp/ → ls /tmp
+    text = re.sub(r"(\S)/+(?=\s|$)", r"\1", text)
+    return text
 
 
 def _make_fingerprint(command: str) -> str:
-    """生成命令指纹：去空白、转小写后取 md5 前 16 位。"""
-    normalized = " ".join(command.strip().lower().split())
-    return hashlib.md5(normalized.encode("utf-8")).hexdigest()[:16]
+    normalized = _normalize_command(command)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _prune_session(session_id: str, now: float | None = None) -> None:
+    entries = _approval_cache.get(session_id)
+    if not entries:
+        return
+    ts = now if now is not None else time.monotonic()
+    expired_keys = [fp for fp, exp in entries.items() if exp <= ts]
+    for fp in expired_keys:
+        entries.pop(fp, None)
+        _stats["expired"] += 1
+    if not entries:
+        _approval_cache.pop(session_id, None)
 
 
 def cache_approval(session_id: str, command: str) -> None:
-    """记录一条命令已获批准，后续同会话内不再确认。"""
+    """记录一条命令已获批准，后续同会话内不再确认（TTL 内）。"""
     fp = _make_fingerprint(command)
-    if session_id not in _approval_cache:
-        _approval_cache[session_id] = set()
-    _approval_cache[session_id].add(fp)
+    now = time.monotonic()
+    _prune_session(session_id, now)
+    entries = _approval_cache.setdefault(session_id, {})
+    if len(entries) >= MAX_APPROVALS_PER_SESSION:
+        oldest_fp = min(entries, key=entries.get)
+        entries.pop(oldest_fp, None)
+    entries[fp] = now + APPROVAL_TTL_SECONDS
+    _stats["stores"] += 1
 
 
 def is_approved(session_id: str, command: str) -> bool:
-    """检查命令是否已在当前会话中获批准。"""
+    """检查命令是否已在当前会话中获批准且未过期。"""
     fp = _make_fingerprint(command)
-    return fp in _approval_cache.get(session_id, set())
+    entries = _approval_cache.get(session_id)
+    if not entries:
+        _stats["misses"] += 1
+        return False
+    exp = entries.get(fp)
+    now = time.monotonic()
+    if exp is None or exp <= now:
+        if exp is not None:
+            entries.pop(fp, None)
+            _stats["expired"] += 1
+        _stats["misses"] += 1
+        return False
+    _stats["hits"] += 1
+    return True
 
 
 def clear_session(session_id: str) -> None:
@@ -40,9 +86,34 @@ def clear_all() -> None:
     _approval_cache.clear()
 
 
+def approval_stats() -> dict[str, Any]:
+    now = time.monotonic()
+    alive = sum(
+        1
+        for entries in _approval_cache.values()
+        for exp in entries.values()
+        if exp > now
+    )
+    total = _stats["hits"] + _stats["misses"]
+    hit_rate = round(_stats["hits"] / total * 100, 1) if total else 0.0
+    return {
+        "sessions": len(_approval_cache),
+        "entries_alive": alive,
+        "ttl_seconds": APPROVAL_TTL_SECONDS,
+        "max_per_session": MAX_APPROVALS_PER_SESSION,
+        "hits": _stats["hits"],
+        "misses": _stats["misses"],
+        "stores": _stats["stores"],
+        "expired": _stats["expired"],
+        "hit_rate_percent": hit_rate,
+    }
+
+
 __all__ = [
     "cache_approval",
     "is_approved",
     "clear_session",
     "clear_all",
+    "approval_stats",
+    "APPROVAL_TTL_SECONDS",
 ]

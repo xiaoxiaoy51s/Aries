@@ -89,6 +89,18 @@
               </svg>
               智能体
             </li>
+            <li
+              :class="{ active: activeTab === 'updates' }"
+              @click="activeTab = 'updates'"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              检查更新
+              <span v-if="hasUpdate" class="nav-update-dot" title="有新版本" />
+            </li>
           </ul>
         </nav>
 
@@ -111,6 +123,7 @@
             <NetworkTab v-else-if="activeTab === 'network'" />
             <DevEnvTab v-else-if="activeTab === 'dev-env'" />
             <SubagentsTab v-else-if="activeTab === 'subagents'" />
+            <UpdatesTab v-else-if="activeTab === 'updates'" />
           </div>
         </div>
       </div>
@@ -119,7 +132,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import ModelsTab from './tabs/ModelsTab.vue'
 import AccountsTab from './tabs/AccountsTab.vue'
 import PathsTab from './tabs/PathsTab.vue'
@@ -127,11 +140,29 @@ import PetsTab from './tabs/PetsTab.vue'
 import NetworkTab from './tabs/NetworkTab.vue'
 import DevEnvTab from './tabs/DevEnvTab.vue'
 import SubagentsTab from './tabs/SubagentsTab.vue'
+import UpdatesTab from './tabs/UpdatesTab.vue'
+import { useUpdateStore } from '@/stores/update'
 
-defineProps<{ visible: boolean }>()
+const props = defineProps<{
+  visible: boolean
+  initialTab?: 'models' | 'accounts' | 'paths' | 'pets' | 'network' | 'dev-env' | 'subagents' | 'updates'
+}>()
 defineEmits<{ close: [] }>()
 
-const activeTab = ref<'models' | 'accounts' | 'paths' | 'pets' | 'network' | 'dev-env' | 'subagents'>('models')
+const updateStore = useUpdateStore()
+const hasUpdate = computed(() => updateStore.result?.update_available === true)
+
+type TabId = 'models' | 'accounts' | 'paths' | 'pets' | 'network' | 'dev-env' | 'subagents' | 'updates'
+const activeTab = ref<TabId>('models')
+
+watch(
+  () => props.visible,
+  (visible) => {
+    if (visible && props.initialTab) {
+      activeTab.value = props.initialTab
+    }
+  },
+)
 
 const tabTitle = computed(() => {
   const map = {
@@ -142,6 +173,7 @@ const tabTitle = computed(() => {
     network: '网络代理',
     'dev-env': '开发环境',
     subagents: '智能体',
+    updates: '检查更新',
   } as const
   return map[activeTab.value]
 })
@@ -221,6 +253,15 @@ const tabTitle = computed(() => {
 }
 
 .modal-nav-list li svg {
+  flex-shrink: 0;
+}
+
+.nav-update-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #2563eb;
+  margin-left: auto;
   flex-shrink: 0;
 }
 

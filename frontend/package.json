@@ -64,7 +64,12 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
       "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "Aries-Setup-${version}.${ext}",
       "installerIcon": "public/logo.ico",
       "uninstallerIcon": "public/logo.ico"
     },

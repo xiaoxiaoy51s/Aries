@@ -107,9 +107,17 @@ def _cache_server_tools(server_id: str, tools: list[Any]) -> None:
     tools_dir = cache_dir / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
 
+    schemas = [_tool_schema_dict(tool) for tool in tools if getattr(tool, "name", None)]
+    fingerprint = _catalog_fingerprint([s["name"] for s in schemas])
+
     metadata_path = cache_dir / "SERVER_METADATA.json"
     metadata_path.write_text(
-        json.dumps({"server_name": server_id}, ensure_ascii=False, indent=2) + "\n",
+        json.dumps({
+            "server_name": server_id,
+            "cached_at": _now_iso(),
+            "catalog_fingerprint": fingerprint,
+            "tool_count": len(schemas),
+        }, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
 
@@ -511,50 +519,60 @@ class McpConnectionPool:
         self._diagnostics.clear()
 
         all_servers = get_all_servers()
+        if not all_servers:
+            self._rebuild_registry()
+            return
 
-        for server_id, server in all_servers.items():
-            try:
-                conn = await self._connect_server(server_id, server)
-                self._connections[server_id] = conn
-                self._diagnostics.append(
-                    McpServerDiagnostic(
-                        id=server_id,
-                        transport=_server_transport(server),
-                        status="connected",
-                        tool_count=len(conn.tools),
-                        last_connected_at=conn.last_connected_at,
-                        catalog_fingerprint=conn.catalog_fingerprint,
+        sem = asyncio.Semaphore(5)
+
+        async def _connect_one(server_id: str, server: dict[str, Any]) -> None:
+            async with sem:
+                try:
+                    conn = await self._connect_server(server_id, server)
+                    self._connections[server_id] = conn
+                    self._diagnostics.append(
+                        McpServerDiagnostic(
+                            id=server_id,
+                            transport=_server_transport(server),
+                            status="connected",
+                            tool_count=len(conn.tools),
+                            last_connected_at=conn.last_connected_at,
+                            catalog_fingerprint=conn.catalog_fingerprint,
+                        )
                     )
-                )
-                print(f"[mcp] 已连接 {server_id}，{len(conn.tools)} 个工具")
-            except Exception as exc:
-                exc_type = type(exc).__name__
-                message = str(exc) or exc_type
-                # 超时类错误补充提示
-                if exc_type in ("TimeoutError", "TimeoutCancellationError"):
-                    message = f"连接超时（可能需要网络代理或服务未启动）"
-                cached = _load_cached_tool_schemas(server_id)
-                self._diagnostics.append(
-                    McpServerDiagnostic(
-                        id=server_id,
-                        transport=_server_transport(server),
-                        status="error",
-                        tool_count=len(cached),
-                        last_error=message,
+                    print(f"[mcp] 已连接 {server_id}，{len(conn.tools)} 个工具")
+                except Exception as exc:
+                    exc_type = type(exc).__name__
+                    message = str(exc) or exc_type
+                    if exc_type in ("TimeoutError", "TimeoutCancellationError"):
+                        message = "连接超时（可能需要网络代理或服务未启动）"
+                    cached = _load_cached_tool_schemas(server_id)
+                    self._diagnostics.append(
+                        McpServerDiagnostic(
+                            id=server_id,
+                            transport=_server_transport(server),
+                            status="error",
+                            tool_count=len(cached),
+                            last_error=message,
+                        )
                     )
-                )
-                if cached:
-                    fallback = _ServerConnection(
-                        server_id=server_id,
-                        server=server,
-                        stack=AsyncExitStack(),
-                        session=None,
-                        tools=cached,
-                        status="error",
-                        last_error=message,
-                    )
-                    self._connections[server_id] = fallback
-                print(f"[mcp] 连接服务 {server_id} 失败: {message}")
+                    if cached:
+                        fallback = _ServerConnection(
+                            server_id=server_id,
+                            server=server,
+                            stack=AsyncExitStack(),
+                            session=None,
+                            tools=cached,
+                            status="error",
+                            last_error=message,
+                        )
+                        self._connections[server_id] = fallback
+                    print(f"[mcp] 连接服务 {server_id} 失败: {message}")
+
+        await asyncio.gather(*(
+            _connect_one(server_id, server)
+            for server_id, server in all_servers.items()
+        ))
 
         self._rebuild_registry()
 
