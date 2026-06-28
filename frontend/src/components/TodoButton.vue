@@ -18,10 +18,15 @@
     <Transition name="todo-panel">
       <div v-if="panelOpen" class="todo-panel">
         <div class="todo-header">
-          <span class="todo-title">任务清单</span>
+          <div class="todo-title-wrap">
+            <span class="todo-title">{{ panelTitle }}</span>
+            <span v-if="panelSnapshotMode && snapshotMerge !== undefined" class="todo-subtitle">
+              {{ snapshotMerge ? '合并更新' : '全量替换' }}
+            </span>
+          </div>
           <div class="todo-actions">
             <button
-              v-if="hasTodos"
+              v-if="hasTodos && !panelSnapshotMode"
               type="button"
               class="todo-clear"
               title="清除任务清单"
@@ -29,7 +34,7 @@
             >
               清除
             </button>
-            <button type="button" class="todo-close" title="关闭" @click="panelOpen = false">
+            <button type="button" class="todo-close" title="关闭" @click="closePanel">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M18 6L6 18M6 6l12 12"/>
               </svg>
@@ -82,6 +87,12 @@ interface Todo {
 const todos = ref<Todo[]>([])
 const panelOpen = ref(false)
 const currentSessionId = ref('')
+const panelSnapshotMode = ref(false)
+const snapshotMerge = ref<boolean | undefined>(undefined)
+
+const panelTitle = computed(() => (
+  panelSnapshotMode.value ? '本次任务更新' : '任务清单'
+))
 
 const hasTodos = computed(() => todos.value.length > 0)
 const todoCount = computed(() => todos.value.length)
@@ -101,8 +112,27 @@ const sortedTodos = computed(() => {
   })
 })
 
-function togglePanel() {
-  panelOpen.value = !panelOpen.value
+function closePanel() {
+  panelOpen.value = false
+  panelSnapshotMode.value = false
+  snapshotMerge.value = undefined
+}
+
+async function togglePanel() {
+  if (panelOpen.value) {
+    closePanel()
+    return
+  }
+  panelSnapshotMode.value = false
+  snapshotMerge.value = undefined
+  if (currentSessionId.value) {
+    try {
+      todos.value = await getTodos(currentSessionId.value)
+    } catch {
+      todos.value = []
+    }
+  }
+  panelOpen.value = true
 }
 
 async function handleClear() {
@@ -142,7 +172,23 @@ function onNewChat() {
   todos.value = []
 }
 
-function onOpenTodoPanel() {
+function onOpenTodoPanel(e: Event) {
+  const detail = (e as CustomEvent).detail as {
+    todos?: Todo[]
+    merge?: boolean
+    snapshot?: boolean
+  } | undefined
+
+  if (detail?.snapshot && Array.isArray(detail.todos)) {
+    panelSnapshotMode.value = true
+    snapshotMerge.value = detail.merge
+    todos.value = detail.todos
+    panelOpen.value = true
+    return
+  }
+
+  panelSnapshotMode.value = false
+  snapshotMerge.value = undefined
   panelOpen.value = true
 }
 
@@ -237,6 +283,19 @@ onUnmounted(() => {
 .todo-title {
   font-weight: 600;
   font-size: 14px;
+}
+
+.todo-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.todo-subtitle {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
 }
 
 .todo-actions {

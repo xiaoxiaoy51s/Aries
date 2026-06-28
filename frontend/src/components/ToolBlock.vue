@@ -1,5 +1,31 @@
 <template>
-  <div class="tool-block" :class="{ 'tool-block--expanded': isExpanded, 'tool-block--confirm': pendingConfirmation }">
+  <div class="tool-block" :class="{ 'tool-block--expanded': isExpanded, 'tool-block--confirm': pendingConfirmation, 'tool-block--file-edit': !!fileEditPreview }">
+    <!-- 文件编辑/写入：diff 卡片样式 -->
+    <template v-if="fileEditPreview">
+      <div class="file-edit-wrap">
+        <FileEditPreviewCard
+          :data="fileEditPreview"
+          :expanded="isExpanded"
+          :error="error"
+          @click="toggleExpand"
+        />
+        <div v-if="hasTerminalSession || isSubagentDelegate || isTodoWrite" class="tool-actions tool-actions--overlay">
+          <button
+            v-if="isTodoWrite"
+            type="button"
+            class="view-terminal-btn"
+            title="查看任务清单"
+            @click.stop="openTodos"
+          >查看任务</button>
+        </div>
+      </div>
+      <div v-if="isExpanded && status === 'running' && !pendingConfirmation && !result && !error" class="file-edit-running">
+        运行中...
+      </div>
+    </template>
+
+    <!-- 其他工具：原有样式 -->
+    <template v-else>
     <!-- 折叠状态：显示工具名和参数预览 -->
     <div v-if="!isExpanded" class="tool-header" @click="toggleExpand">
       <div class="tool-title">
@@ -103,13 +129,15 @@
         </div>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { backgroundTerminalCommand, getTerminalSessionId, stopTerminalCommand } from '@/api/terminal'
-import MarkdownRenderer from './MarkdownRenderer.vue'
+import FileEditPreviewCard from './FileEditPreviewCard.vue'
+import { buildFileEditPreview } from '@/utils/fileEditPreview'
 
 defineOptions({ name: 'ToolBlock' })
 
@@ -128,6 +156,7 @@ const props = defineProps<{
   autoDetached?: boolean
   sessionId?: string
   toolCallId?: string
+  chatSessionId?: string
   subagent?: {
     task_id?: string
     subagent?: string
@@ -161,6 +190,8 @@ const isOpeningTerminal = ref(false)
 
 const isSubagentDelegate = computed(() => props.toolName === 'delegate_to_subagent')
 const isTodoWrite = computed(() => props.toolName === 'todo_write')
+
+const fileEditPreview = computed(() => buildFileEditPreview(props.toolName, props.args))
 const subagentStatusLabel = computed(() => {
   const s = props.subagent?.status || ''
   switch (s) {
@@ -237,7 +268,17 @@ async function openTerminal() {
   try {
     let sessionId = props.sessionId || ''
     if (!sessionId && props.toolCallId) {
-      sessionId = await getTerminalSessionId(props.toolCallId) || ''
+      // 后端 Python 端用 `${chatSessionId}:${toolCallId}` 作 invocation key
+      // 兼容兜底：先按复合 key 查，再按 toolCallId 单独查
+      const candidates: string[] = []
+      if (props.chatSessionId) {
+        candidates.push(`${props.chatSessionId}:${props.toolCallId}`)
+      }
+      candidates.push(props.toolCallId)
+      for (const inv of candidates) {
+        const sid = await getTerminalSessionId(inv) || ''
+        if (sid) { sessionId = sid; break }
+      }
     }
     if (!sessionId) {
       window.dispatchEvent(new CustomEvent('aries:toast', {
@@ -257,7 +298,62 @@ async function openTerminal() {
 }
 
 function openTodos() {
-  window.dispatchEvent(new CustomEvent('aries:open-todo-panel'))
+  const toolTodos = extractToolTodos()
+  if (toolTodos.length === 0) {
+    window.dispatchEvent(new CustomEvent('aries:toast', {
+      detail: { message: '该工具调用没有任务数据', type: 'warning' },
+    }))
+    return
+  }
+  window.dispatchEvent(new CustomEvent('aries:open-todo-panel', {
+    detail: {
+      snapshot: true,
+      todos: toolTodos,
+      merge: props.args?.merge,
+    },
+  }))
+}
+
+interface TodoItem {
+  id: string
+  content: string
+  priority: 'high' | 'medium' | 'low'
+  status: 'pending' | 'in_progress' | 'completed'
+}
+
+function normalizeTodoItem(raw: unknown): TodoItem | null {
+  if (!raw || typeof raw !== 'object') return null
+  const t = raw as Record<string, unknown>
+  const content = String(t.content ?? '').trim()
+  if (!content) return null
+  const priority = String(t.priority ?? 'medium')
+  const status = String(t.status ?? 'pending')
+  return {
+    id: String(t.id ?? content),
+    content,
+    priority: (priority === 'high' || priority === 'low' ? priority : 'medium'),
+    status: (
+      status === 'completed' || status === 'in_progress' ? status : 'pending'
+    ),
+  }
+}
+
+function extractToolTodos(): TodoItem[] {
+  const args = props.args
+  if (args && Array.isArray(args.todos)) {
+    return args.todos.map(normalizeTodoItem).filter((t): t is TodoItem => t !== null)
+  }
+  if (props.result) {
+    try {
+      const parsed = JSON.parse(props.result) as { todos?: unknown[] }
+      if (Array.isArray(parsed?.todos)) {
+        return parsed.todos.map(normalizeTodoItem).filter((t): t is TodoItem => t !== null)
+      }
+    } catch {
+      // ignore malformed result
+    }
+  }
+  return []
 }
 
 function viewSubagent() {
@@ -294,10 +390,19 @@ function viewSubagent() {
   }))
 }
 
+// 后端 Python 端用 `${chatSessionId}:${toolCallId}` 作为 invocation key
+// 前端调用 background/stop 时必须用这个复合 key，否则 signal_detach 找不到事件
+function buildInvocationId(): string {
+  if (!props.toolCallId) return ''
+  if (props.chatSessionId) return `${props.chatSessionId}:${props.toolCallId}`
+  return props.toolCallId
+}
+
 async function doBackground() {
-  if (!props.toolCallId) return
+  const invocationId = buildInvocationId()
+  if (!invocationId) return
   try {
-    await backgroundTerminalCommand(props.toolCallId)
+    await backgroundTerminalCommand(invocationId)
     isBackgrounded.value = true
   } catch (e) {
     console.error('Background failed', e)
@@ -305,9 +410,10 @@ async function doBackground() {
 }
 
 async function stopService() {
-  if (!props.toolCallId) return
+  const invocationId = buildInvocationId()
+  if (!invocationId) return
   try {
-    await stopTerminalCommand(props.toolCallId)
+    await stopTerminalCommand(invocationId)
     isStopped.value = true
   } catch (e) {
     console.error('Stop service failed', e)
@@ -316,6 +422,36 @@ async function stopService() {
 </script>
 
 <style scoped>
+.tool-block--file-edit {
+  border-left: none;
+  padding-left: 0;
+  margin: 6px 0;
+}
+
+.file-edit-wrap {
+  position: relative;
+}
+
+.tool-actions--overlay {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 1;
+}
+
+.tool-body--file-edit {
+  margin-top: 8px;
+  border-top: 1px solid #f1f5f9;
+  padding-top: 4px;
+}
+
+.file-edit-running {
+  padding: 4px 2px 0;
+  font-size: 11px;
+  color: #3b82f6;
+  font-style: italic;
+}
+
 .tool-block {
   background: transparent;
   border-radius: 4px;

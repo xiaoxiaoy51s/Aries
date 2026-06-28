@@ -20,7 +20,13 @@
             @click.stop="closeTab(tab.id)"
           >×</span>
         </button>
-        <button type="button" class="tab-add" title="新建终端" @click="addTerminal()">
+        <button
+          type="button"
+          class="tab-add"
+          :class="{ 'at-limit': isConsoleTabLimitReached }"
+          :title="isConsoleTabLimitReached ? `已达上限 ${MAX_CONSOLE_TABS} 个，点击可查看提示` : '新建终端'"
+          @click="onAddTerminalClick"
+        >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="12" y1="5" x2="12" y2="19"></line>
             <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -66,6 +72,12 @@
     </div>
 
     <div v-if="!workDir" class="console-empty">请先选择工作目录</div>
+
+    <Transition name="console-toast">
+      <div v-if="limitToastVisible" class="console-limit-toast">
+        已达终端上限（{{ MAX_CONSOLE_TABS }} 个），请先关闭某个终端后再新建
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -98,6 +110,9 @@ interface TerminalTab {
   initialized: boolean
 }
 
+/** 与 chat WS 池（3 并行 + 1 当前）合计不超过浏览器 ~6 条同源 WS 上限 */
+const MAX_CONSOLE_TABS = 5
+
 const tabs = ref<TerminalTab[]>([])
 const activeTabId = ref('')
 const hostRefs = new Map<string, HTMLElement>()
@@ -107,6 +122,37 @@ let resizeTimer: ReturnType<typeof setTimeout> | null = null
 const URL_RE = /https?:\/\/[^\s\]\)>'\"]+/g
 
 const activeTab = computed(() => tabs.value.find(t => t.id === activeTabId.value) || null)
+const isConsoleTabLimitReached = computed(() => tabs.value.length >= MAX_CONSOLE_TABS)
+const limitToastVisible = ref(false)
+let limitToastTimer: ReturnType<typeof setTimeout> | null = null
+
+function showConsoleLimitToast() {
+  if (limitToastTimer) clearTimeout(limitToastTimer)
+  limitToastVisible.value = true
+  limitToastTimer = setTimeout(() => {
+    limitToastVisible.value = false
+  }, 3500)
+}
+
+function onAddTerminalClick() {
+  if (isConsoleTabLimitReached.value) {
+    showConsoleLimitToast()
+    return
+  }
+  addTerminal()
+}
+
+function evictOldestConsoleTab(exceptId?: string): boolean {
+  const victim = tabs.value.find(t => t.id !== exceptId)
+  if (!victim) return false
+  closeTab(victim.id)
+  return true
+}
+
+function ensureConsoleTabSlot(exceptId?: string): boolean {
+  if (tabs.value.length < MAX_CONSOLE_TABS) return true
+  return evictOldestConsoleTab(exceptId)
+}
 
 function newTabId() {
   return crypto.randomUUID()
@@ -365,6 +411,7 @@ function connectTab(tab: TerminalTab, reset = true) {
 
 function addTerminal(reset = true, sessionIdOverride?: string, isAgentTerminal = false) {
   if (!workDir.value) return
+  if (tabs.value.length >= MAX_CONSOLE_TABS) return
   tabCounter++
   // agent 终端复用 agent session；用户手动新建的终端生成唯一 session ID
   const tabSessionId = sessionIdOverride || (isAgentTerminal ? getAgentSessionId(workDir.value) : `user-${crypto.randomUUID().slice(0, 8)}`)
@@ -459,6 +506,8 @@ function onOpenTerminal(e: Event) {
     return
   }
 
+  if (!ensureConsoleTabSlot()) return
+
   tabCounter++
   const tab: TerminalTab = {
     id: newTabId(),
@@ -495,7 +544,8 @@ watch(() => props.visible, (visible) => {
 watch(workDir, (newDir) => {
   disposeAllTabs()
   if (newDir) {
-    nextTick(() => addTerminal(true, undefined, true))
+    // reset=false：保留 CLI server 端 session 状态（避免打断正在跑的命令）
+    nextTick(() => addTerminal(false, undefined, true))
   }
 })
 
@@ -504,8 +554,9 @@ onMounted(() => {
   window.addEventListener('aries:open-terminal', onOpenTerminal)
 
   // 组件挂载且有 workDir 时，自动创建一个默认终端，避免空面板
+  // 关键：reset=false，避免杀掉 AI 正在使用的 agent 终端 session
   if (workDir.value && tabs.value.length === 0) {
-    addTerminal(true, undefined, true)
+    addTerminal(false, undefined, true)
   }
 
   resizeObserver = new ResizeObserver(() => {
@@ -531,6 +582,7 @@ onUnmounted(() => {
   window.removeEventListener('aries:open-terminal', onOpenTerminal)
   resizeObserver?.disconnect()
   if (resizeTimer) clearTimeout(resizeTimer)
+  if (limitToastTimer) clearTimeout(limitToastTimer)
   disposeAllTabs()
 })
 </script>
@@ -652,6 +704,48 @@ onUnmounted(() => {
 .tab-add:hover {
   background: #ffffff;
   color: #424242;
+}
+
+.tab-add.at-limit {
+  opacity: 0.55;
+}
+
+.tab-add.at-limit:hover {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.console-limit-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 20;
+  max-width: calc(100% - 24px);
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+  color: #856404;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  pointer-events: none;
+}
+
+.console-toast-enter-active {
+  transition: all 0.22s ease-out;
+}
+
+.console-toast-leave-active {
+  transition: all 0.18s ease-in;
+}
+
+.console-toast-enter-from,
+.console-toast-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(8px);
 }
 
 .console-actions {

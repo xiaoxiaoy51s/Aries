@@ -1,4 +1,4 @@
-# NonoClaw Backend Dependencies
+# Aries Backend Dependencies
 # Generated from pyproject.toml, use `uv pip compile` to update
 
 # Web Framework

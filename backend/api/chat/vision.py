@@ -1,12 +1,10 @@
 """多模态处理模块"""
-from fastapi import Request
-
 from .models import VisionRequest, ChatRequest
 from .utils import load_file_as_base64_url
 from .chat import chat_completions
 
 
-async def chat_vision(request: VisionRequest, http_request: Request):
+async def chat_vision(request: VisionRequest):
     """处理多模态请求（图片+文本）"""
     content = []
 
@@ -42,4 +40,4 @@ async def chat_vision(request: VisionRequest, http_request: Request):
         stream=request.stream,
     )
 
-    return await chat_completions(chat_req, http_request)
+    return await chat_completions(chat_req)

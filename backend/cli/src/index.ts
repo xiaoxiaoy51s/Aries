@@ -275,6 +275,29 @@ process.on('uncaughtException', (err) => {
   logger.error(err.stack || '')
 })
 
+// ---- 父进程监控 ----
+// Python 后端被 IDE 强制停止时，lifespan 不会执行，stop_cli_server() 不被调用。
+// Node.js 通过定期检查父进程 PID 是否存活来检测，父进程退出时主动 closeAll()
+// 清理所有 PTY 进程树（taskkill /T /F），防止 vite 等子进程变成孤儿占用端口。
+const parentPid = process.ppid
+if (parentPid) {
+  const parentWatch = setInterval(() => {
+    try {
+      process.kill(parentPid, 0) // signal 0: 不发信号，仅检查进程是否存在
+    } catch {
+      // 父进程已退出，立即清理所有终端会话
+      logger.info('Parent process exited, cleaning up all terminal sessions...')
+      clearInterval(parentWatch)
+      try { termManager.closeAll() } catch { /* ignore */ }
+      try { wss.close() } catch { /* ignore */ }
+      try { server.close() } catch { /* ignore */ }
+      process.exit(0)
+    }
+  }, 2000)
+  // 不阻止 Node.js 退出
+  parentWatch.unref()
+}
+
 // ---- Start ----
 server.listen(port, host, () => {
   printBannerHeader('MIMO CLI Server', 0)

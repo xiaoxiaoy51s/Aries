@@ -234,11 +234,34 @@ def start_cli_server(
 
 
 def stop_cli_server() -> None:
-    """停止 Node.js CLI Server"""
+    """停止 Node.js CLI Server
+
+    关键：先让 Node.js 主动调用 closeAll()，由 Node.js 用 taskkill /T /F
+    杀光所有 PTY 子进程树（包括 npm run dev 启动的 vite 等 dev server）。
+    然后再 taskkill Node.js 本身。否则 Node.js 启动的 vite 进程会变成孤儿
+    继续占用端口（如 React 项目的 5173），下次启动会跳到 5174/5176。
+    """
     global _CLI_PROCESS, _CLI_PORT
     if _CLI_PROCESS and _CLI_PROCESS.poll() is None:
         pid = _CLI_PROCESS.pid
-        logger.info("正在停止 Node.js CLI Server (PID=%d)...", pid)
+        port = _CLI_PORT
+        logger.info("正在停止 Node.js CLI Server (PID=%d, port=%d)...", pid, port)
+
+        # 1) 先通知 Node.js 主动清理：触发 shutdown() 的等价路径
+        #    /reset-agent 端点会调用 termManager.closeAll()，
+        #    内部对每个 session 的 PTY 用 taskkill /T /F 杀整棵进程树
+        if port:
+            try:
+                import httpx
+                httpx.post(
+                    f"http://127.0.0.1:{port}/reset-agent",
+                    json={"work_dir": ""},
+                    timeout=3,
+                )
+            except Exception as e:
+                logger.debug("reset-agent 调用失败（继续 taskkill）: %s", e)
+
+        # 2) 再强制杀 Node.js 进程本身
         try:
             if sys.platform == "win32":
                 subprocess.run(
@@ -270,6 +293,9 @@ class TerminalManager:
 
     _instance: TerminalManager | None = None
     _lock = threading.Lock()
+    # invocation_id → terminal_session_id 映射（Python 端内存表，跨进程不共享）
+    # 用于前端通过 toolCallId 找到对应的终端 session
+    _invocation_sessions: dict[str, str] = {}
 
     def __init__(self) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -307,7 +333,19 @@ class TerminalManager:
 
     @classmethod
     def register_invocation_session(cls, inv_id: str, session_id: str) -> None:
-        pass
+        """记录 invocation_id → terminal_session_id 映射，供前端查询。"""
+        if not inv_id or not session_id:
+            return
+        with cls._lock:
+            cls._invocation_sessions[inv_id] = session_id
+
+    @classmethod
+    def resolve_invocation_session(cls, inv_id: str) -> str | None:
+        """通过 invocation_id 查 terminal session_id，未找到返回 None。"""
+        if not inv_id:
+            return None
+        with cls._lock:
+            return cls._invocation_sessions.get(inv_id)
 
 
 # 占位对象，保持引用兼容

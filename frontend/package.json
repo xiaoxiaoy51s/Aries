@@ -1,7 +1,17 @@
 {
   "name": "aries-desktop",
   "version": "1.0.0",
-  "private": true,
+  "description": "Aries — 本地 AI 编程助手桌面应用",
+  "author": "xiaoxiaoy51s",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaoxiaoy51s/Aries.git"
+  },
+  "homepage": "https://github.com/xiaoxiaoy51s/Aries#readme",
+  "bugs": {
+    "url": "https://github.com/xiaoxiaoy51s/Aries/issues"
+  },
   "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -55,11 +65,11 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "installerIcon": "public/favicon.ico",
-      "uninstallerIcon": "public/favicon.ico"
+      "installerIcon": "public/logo.ico",
+      "uninstallerIcon": "public/logo.ico"
     },
     "win": {
-      "icon": "public/favicon.png",
+      "icon": "public/logo.png",
       "target": [
         "nsis",
         "7z"
@@ -67,10 +77,15 @@
       "sign": "./no-sign.js"
     },
     "mac": {
-      "icon": "public/favicon.png"
+      "icon": "public/logo.png"
     },
     "linux": {
-      "icon": "public/favicon.png"
+      "icon": "public/logo.png"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "xiaoxiaoy51s",
+      "repo": "Aries"
     }
   }
 }

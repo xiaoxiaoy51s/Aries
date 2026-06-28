@@ -179,7 +179,11 @@ export function eventsToRenderableContent(events: SnapshotEvent[]): {
   for (const event of events) {
     switch (event.type) {
       case 'reasoning':
-        reasoning.push(event.content)
+        if (reasoning.length === 0) {
+          reasoning.push(event.content)
+        } else {
+          reasoning[reasoning.length - 1] += event.content
+        }
         break
 
       case 'tool_call':

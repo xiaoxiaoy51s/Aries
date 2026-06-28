@@ -78,11 +78,15 @@
                 v-for="session in project.sessions"
                 :key="session.session_id"
                 class="session-item session-sub"
-                :class="{ active: currentSessionId === session.session_id }"
+                :class="{
+                  active: currentSessionId === session.session_id,
+                  working: workingSessionIds.has(session.session_id),
+                }"
                 :title="session.title"
                 @click="selectSession(session.session_id)"
                 @contextmenu.prevent="onSessionContextMenu($event, session)"
               >
+                <SessionLoadingDots v-if="workingSessionIds.has(session.session_id)" />
                 <span class="session-title">{{ session.title || '空对话' }}</span>
               </li>
             </ul>
@@ -199,7 +203,9 @@ import SkillsPage from './SkillsPage.vue'
 import AutomationPage from './AutomationPage.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import SearchDialog from '@/components/SearchDialog.vue'
+import SessionLoadingDots from '@/components/SessionLoadingDots.vue'
 import { listProjects, updateSessionMeta, deleteSession } from '@/api/sessions'
+import { workingSessionIds } from '@/utils/sessionWorkStore'
 import { useModelStore } from '@/stores/model'
 import { useSidebar } from '@/composables/useSidebar'
 
@@ -392,7 +398,7 @@ async function selectSession(id: string) {
     const proj = projects.value.find(p => p.sessions.some(s => s.session_id === id))
     currentProject.value = proj || null
   }
-  await nextTick()
+  // 通知 Todo 等组件；ChatPage 通过 sessionIdToLoad prop 加载，避免重复请求
   window.dispatchEvent(new CustomEvent('aries:load-session', { detail: id }))
 }
 
@@ -475,41 +481,66 @@ function cancelDelete() {
 
 <style scoped>
 .app-container {
-  display: flex;
+  display: block;
   height: 100vh;
   width: 100%;
   padding-top: 40px;
   box-sizing: border-box;
+  position: relative;
 }
 
 .app-container.sidebar-collapsed .sidebar {
-  width: 0;
-  min-width: 0;
-  padding-left: 0;
-  padding-right: 0;
-  border-right-color: transparent;
-  overflow: hidden;
+  transform: translateX(calc(-1 * var(--sidebar-width)));
+  opacity: 0;
   pointer-events: none;
+  border-right-color: transparent;
 }
 
 .app-container.sidebar-collapsed .workspace {
   padding-left: 12px;
 }
 
-/* —— 侧边栏 —— */
+/* —— 侧边栏（浮层叠在内容区上方，才能透出模糊） —— */
 .sidebar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 50;
   width: var(--sidebar-width);
   min-width: var(--sidebar-width);
-  background: rgba(255, 255, 255, 0.82);
-  border-right: 1px solid rgba(255, 255, 255, 0.6);
+  background: var(--glass-surface);
+  border-right: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
   display: flex;
   flex-direction: column;
-  padding: 12px 10px 12px;
+  /* 40px 标题栏 + 12px 内边距，避免顶部按钮被标题栏遮住 */
+  padding: 52px 10px 12px;
   gap: 4px;
-  transition: width 0.2s ease, min-width 0.2s ease, padding 0.2s ease, border-color 0.2s ease;
+  box-sizing: border-box;
+  transition: transform 0.25s ease, opacity 0.2s ease, border-color 0.2s ease;
   flex-shrink: 0;
-  backdrop-filter: blur(16px) saturate(1.2);
-  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+}
+
+.sidebar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    155deg,
+    rgba(255, 255, 255, 0.55) 0%,
+    rgba(255, 255, 255, 0.12) 42%,
+    transparent 72%
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+.sidebar > * {
+  position: relative;
+  z-index: 1;
 }
 
 .sidebar-actions {
@@ -542,6 +573,7 @@ function cancelDelete() {
 .sidebar-action.active {
   background: var(--accent-active);
   font-weight: 500;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
 .sidebar-action svg {
@@ -590,6 +622,7 @@ function cancelDelete() {
   background: var(--accent-active);
   color: var(--text);
   font-weight: 500;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
 .project-row {
@@ -686,6 +719,7 @@ function cancelDelete() {
 .session-sub {
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 4px;
   padding: 5px 8px 5px 12px;
   font-size: 12px;
@@ -694,6 +728,10 @@ function cancelDelete() {
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
   margin-left: 28px;
+}
+
+.session-sub.working .session-title {
+  color: var(--text);
 }
 
 .session-sub:hover {
@@ -705,6 +743,7 @@ function cancelDelete() {
   background: var(--accent-active);
   color: var(--text);
   font-weight: 500;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
 .session-title {
@@ -805,6 +844,7 @@ function cancelDelete() {
   background: var(--accent-active);
   color: var(--text);
   font-weight: 500;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
 .session-item .time {
@@ -847,7 +887,7 @@ function cancelDelete() {
 .sidebar-footer {
   margin-top: auto;
   padding-top: 8px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--glass-border);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -855,19 +895,21 @@ function cancelDelete() {
 
 /* —— 主工作区 —— */
 .workspace {
-  flex: 1;
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  padding: 10px 12px 12px 0;
-  transition: padding 0.2s ease;
+  padding: 10px 12px 12px calc(var(--sidebar-width) + 10px);
+  box-sizing: border-box;
+  transition: padding 0.25s ease;
   position: relative;
 }
 
 .workspace-panel {
   flex: 1;
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: var(--bg-content);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-panel);
   display: flex;
@@ -875,8 +917,6 @@ function cancelDelete() {
   overflow: hidden;
   min-height: 0;
   min-width: 0;
-  backdrop-filter: blur(20px) saturate(1.15);
-  -webkit-backdrop-filter: blur(20px) saturate(1.15);
 }
 
 /* —— 模态框 —— */

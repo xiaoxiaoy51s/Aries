@@ -993,3 +993,288 @@ async def _run_subagent_loop(
             "status": "failed",
             "log_path": execution.log_path,
         }
+
+
+# ──────────────────────────────────────────────
+#  直接执行模式 — 用户通过 @subagent:name 直接调用子 Agent
+#  与 run_subagent 的区别：
+#    1. 子 Agent 直接作为对话主体，不经过主 Agent 委派
+#    2. 不需要 report_to_main，纯文本响应即有效
+#    3. 事件流格式对标普通 LLM SSE，前端无需特殊处理
+# ──────────────────────────────────────────────
+
+async def run_subagent_direct(
+    *,
+    subagent_name: str,
+    user_message: str,
+    conversation_context: list[dict] | None = None,
+    work_dir: str | None = None,
+    cancel_event: asyncio.Event | None = None,
+    on_event: EventEmitter | None = None,
+) -> dict[str, Any]:
+    """直接运行子 Agent（用户通过 @subagent:name 调用）。
+
+    返回结构：
+        {"status": "success", "content": "...", "tool_results": [...]}
+        或
+        {"status": "error", "error": "..."}
+    """
+    try:
+        from engine.subagent_manager import build_subagent_runtime
+        runtime = build_subagent_runtime(subagent_name)
+    except ValueError as exc:
+        return {"status": "error", "error": str(exc)}
+
+    entry = runtime["entry"]
+    skills_context = runtime["skills_context"]
+    skill_entries = runtime["skill_entries"]
+    mcp_servers = runtime["mcp_servers"]
+    model_name = runtime["effective_model"]
+
+    # 解析模型凭证
+    base_url, api_key, real_model = _resolve_model_credentials(model_name)
+    if not base_url or not api_key or not real_model:
+        return {"status": "error", "error": "无法解析子 Agent 的模型凭证"}
+
+    # 构建直接模式 system prompt（非委派）
+    today = datetime.now().strftime("%Y-%m-%d")
+    system_parts = [
+        f"# 你的身份\n你是一个 AI 助手：`{subagent_name}`。今天的日期是 {today}，当前操作系统：{platform.system()}。\n",
+    ]
+    if entry.system_prompt.strip():
+        system_parts.append(f"# 详细职责\n{entry.system_prompt.strip()}\n")
+
+    # 注入项目记忆
+    if work_dir and work_dir.strip():
+        try:
+            from memory.agent_memory import build_agent_memory_system_section
+            memory_section = build_agent_memory_system_section(work_dir)
+            if memory_section:
+                system_parts.append(memory_section)
+        except Exception:
+            pass
+
+    # 注入编码行为约束
+    try:
+        from prompt.coding_agent_prompts import (
+            DOING_TASKS_RULES,
+            CODE_STYLE_RULES,
+            COMPLETION_HONESTY_RULES,
+        )
+        system_parts.append(
+            "# 编码行为约束\n"
+            + DOING_TASKS_RULES + "\n\n"
+            + CODE_STYLE_RULES + "\n\n"
+            + COMPLETION_HONESTY_RULES
+        )
+    except Exception:
+        pass
+
+    # 注入可用工具说明
+    if skills_context:
+        system_parts.append("# 可用本地 Skills\n" + skills_context)
+
+    system_prompt = "\n\n".join(system_parts)
+
+    # 构造工具集
+    core_tools = _build_core_tool_definitions()
+    skill_tools, skill_tool_table = _build_skill_tool_definitions(skill_entries)
+    try:
+        from aries_mcp.runtime import get_mcp_tool_definitions
+        all_mcp_tools = get_mcp_tool_definitions()
+    except Exception:
+        all_mcp_tools = []
+    mcp_tools = _filter_mcp_tools(all_mcp_tools, mcp_servers)
+    tool_definitions: list[dict] = []
+    tool_definitions.extend(core_tools)
+    tool_definitions.extend(skill_tools)
+    tool_definitions.extend(mcp_tools)
+
+    messages: list[dict] = [
+        {"role": "system", "content": system_prompt},
+    ]
+    if conversation_context:
+        messages.extend(conversation_context)
+    messages.append({"role": "user", "content": user_message})
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    timeout = httpx.Timeout(
+        connect=SUBAGENT_LLM_CONNECT_TIMEOUT,
+        read=SUBAGENT_LLM_READ_TIMEOUT,
+        write=SUBAGENT_LLM_WRITE_TIMEOUT,
+        pool=30.0,
+    )
+    normalized_base = normalize_base_url(base_url)
+    tool_results: list[dict] = []
+
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+        for round_no in range(1, min(SUBAGENT_MAX_ROUNDS, 5) + 1):  # 直接模式最多 5 轮
+            if cancel_event and cancel_event.is_set():
+                return {"status": "cancelled", "error": "用户取消了请求", "tool_results": tool_results}
+
+            payload: dict = {
+                "model": real_model,
+                "messages": messages,
+                "stream": True,
+                "tools": tool_definitions,
+                "tool_choice": "auto",
+            }
+
+            full_content = ""
+            tool_calls_buffer: list[dict] = []
+
+            try:
+                async with client.stream(
+                    "POST", f"{normalized_base}/chat/completions",
+                    headers=headers, json=payload,
+                ) as response:
+                    if response.status_code != 200:
+                        text = await response.aread()
+                        return {"status": "error", "error": f"模型 API 错误：{response.status_code}"}
+
+                    async for line in response.aiter_lines():
+                        if cancel_event and cancel_event.is_set():
+                            return {"status": "cancelled", "error": "用户取消了请求", "tool_results": tool_results}
+                        if not line.startswith("data: "):
+                            continue
+                        data = line[6:]
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+
+                        choices = chunk.get("choices", [])
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta", {}) or {}
+                        finish_reason = choices[0].get("finish_reason")
+
+                        if delta.get("tool_calls"):
+                            for tc_delta in delta["tool_calls"]:
+                                idx = tc_delta.get("index", 0)
+                                while len(tool_calls_buffer) <= idx:
+                                    tool_calls_buffer.append({
+                                        "id": "", "type": "function",
+                                        "function": {"name": "", "arguments": ""},
+                                    })
+                                tc = tool_calls_buffer[idx]
+                                if tc_delta.get("id"):
+                                    tc["id"] = tc_delta["id"]
+                                fn = tc_delta.get("function") or {}
+                                if fn.get("name"):
+                                    tc["function"]["name"] = fn["name"]
+                                if fn.get("arguments"):
+                                    tc["function"]["arguments"] += fn["arguments"]
+                            continue
+
+                        if delta.get("reasoning_content") and on_event:
+                            try:
+                                await on_event({
+                                    "type": "reasoning",
+                                    "delta": delta["reasoning_content"],
+                                })
+                            except Exception:
+                                pass
+
+                        if delta.get("content") and on_event:
+                            try:
+                                await on_event({
+                                    "type": "content",
+                                    "delta": delta["content"],
+                                })
+                            except Exception:
+                                pass
+
+                        if finish_reason in ("tool_calls", "stop"):
+                            break
+            except Exception as exc:
+                return {"status": "error", "error": str(exc), "tool_results": tool_results}
+
+            # 没有工具调用 → 纯文本响应，直接返回
+            if not tool_calls_buffer:
+                return {"status": "success", "content": full_content, "tool_results": tool_results}
+
+            messages.append({
+                "role": "assistant",
+                "content": full_content if full_content else None,
+                "tool_calls": tool_calls_buffer,
+            })
+
+            # 执行所有工具调用
+            from engine.skills_manager import execute_tool as execute_global_tool
+
+            for tc in tool_calls_buffer:
+                tool_name = tc.get("function", {}).get("name", "")
+                tool_id = tc.get("id") or f"direct_{round_no}_{uuid.uuid4().hex[:6]}"
+                args_str = tc.get("function", {}).get("arguments", "{}")
+                try:
+                    args = json.loads(args_str) if args_str else {}
+                except json.JSONDecodeError:
+                    args = {}
+
+                if tool_name == "delegate_to_subagent":
+                    blocked = {"success": False, "error": f"子 Agent 不允许调用 {tool_name}", "output": ""}
+                    messages.append({
+                        "role": "tool", "tool_call_id": tool_id,
+                        "content": json.dumps(blocked, ensure_ascii=False),
+                    })
+                    tool_results.append({"tool": tool_name, "status": "blocked"})
+                    if on_event:
+                        try:
+                            await on_event({"type": "tool_result", "tool": tool_name, "status": "blocked"})
+                        except Exception:
+                            pass
+                    continue
+
+                if on_event:
+                    try:
+                        await on_event({"type": "tool_call", "tool": tool_name, "args": args})
+                    except Exception:
+                        pass
+
+                loop = asyncio.get_running_loop()
+                skill_mod = skill_tool_table.get(tool_name)
+                try:
+                    if skill_mod is not None:
+                        tool_result = await asyncio.wait_for(
+                            loop.run_in_executor(
+                                None,
+                                lambda m=skill_mod, tn=tool_name, a=args: _execute_skill_tool(m, tn, a),
+                            ),
+                            timeout=SUBAGENT_TOOL_TIMEOUT,
+                        )
+                    else:
+                        tool_result = await asyncio.wait_for(
+                            loop.run_in_executor(
+                                None,
+                                lambda tn=tool_name, a=args, wd=work_dir: execute_global_tool(tn, a, work_dir=wd),
+                            ),
+                            timeout=SUBAGENT_TOOL_TIMEOUT,
+                        )
+                except asyncio.TimeoutError:
+                    tool_result = {"success": False, "error": "tool_timeout", "output": f"工具 {tool_name} 执行超时"}
+                except Exception as exc:
+                    tool_result = {"success": False, "error": str(exc), "output": str(exc)}
+
+                messages.append({
+                    "role": "tool", "tool_call_id": tool_id,
+                    "content": json.dumps(tool_result, ensure_ascii=False),
+                })
+                tool_results.append({"tool": tool_name, "status": "ok", "result": tool_result})
+                if on_event:
+                    try:
+                        await on_event({
+                            "type": "tool_result",
+                            "tool": tool_name,
+                            "result": tool_result,
+                        })
+                    except Exception:
+                        pass
+
+    # 超出轮数但仍未结束 → 返回已有内容
+    return {"status": "success", "content": full_content or "（工具调用已完成）", "tool_results": tool_results}

@@ -1,10 +1,10 @@
 <template>
   <div class="assistant-message" @click="onMessageClick">
     <!-- 运行元数据栏：模型、处理时长、token 使用 -->
-    <div v-if="props.meta && hasMetaInfo" class="meta-bar">
-      <span v-if="props.meta.model" class="meta-item meta-model">
+    <div v-if="hasMetaInfo" class="meta-bar">
+      <span v-if="props.meta?.model" class="meta-item meta-model">
         <svg t="1781949967022" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="4962" width="12" height="12"><path d="M229.0688 665.4464l183.1424-102.7072 3.1232-8.9088-3.1232-4.9664h-8.9088l-30.6688-1.8432-104.704-2.816-90.7776-3.7888-87.9104-4.7104-22.1696-4.7104-20.7872-27.3408 2.1504-13.6704 18.6368-12.4416 26.624 2.304 58.9824 3.9936 88.3712 6.144 64.1024 3.7888 95.0272 9.8816h15.104l2.1504-6.0928-5.2224-3.7888-3.9936-3.7888-91.4944-61.952-99.0208-65.4848-51.8144-37.7344-28.1088-19.0464-14.1312-17.92-6.144-39.1168 25.4464-28.0064 34.2016 2.304 8.7552 2.3552 34.6624 26.624 74.0352 57.2928L391.2704 380.416l14.1824 11.776 5.632-3.9936 0.7168-2.816-6.3488-10.6496-52.5824-94.9248-56.1152-96.6144-24.9856-40.0384-6.6048-24.0128c-2.5088-9.216-3.8912-18.7392-4.0448-28.2624l29.0304-39.3216 16.0256-5.2224 38.656 5.2224 16.2816 14.1312 24.064 54.8864 38.8608 86.4768L484.352 324.608l17.7152 34.8672 9.4208 32.3072 3.5328 9.8816h6.144v-5.6832l4.9664-66.2016 9.216-81.3056 8.9088-104.5504 3.1232-29.4912 14.592-35.328 28.9792-19.0976 22.6816 10.8544 18.6368 26.5728-2.6112 17.2032-11.1104 71.8336-21.7088 112.64-14.1312 75.3664h8.2432l9.4208-9.3696 38.1952-50.688 64.1024-80.0768 28.3136-31.7952 32.9728-35.072 21.248-16.7424h40.0896l29.4912 43.8272-13.2096 45.2608-41.2672 52.2752-34.2016 44.288-49.0496 65.9456-30.6688 52.7872 2.816 4.2496 7.2704-0.768 110.7968-23.5008 59.8528-10.8544 71.424-12.2368 32.3072 15.0528 3.5328 15.3088-12.7488 31.3344-76.3904 18.8416-89.6 17.92-133.4272 31.5392-1.6384 1.1776 1.8944 2.3552 60.1088 5.6832 25.7024 1.3824h62.9248l117.1968 8.7552 30.6688 20.2752 18.3808 24.7808-3.072 18.8416-47.1552 24.064-63.6416-15.104-148.5824-35.328-50.8928-12.7488h-7.0656v4.2496l42.3936 41.4208 77.824 70.2464 97.3312 90.4192 4.9152 22.4256-12.4928 17.664-13.2096-1.8944-85.5552-64.3072-33.024-28.9792-74.752-62.8736h-4.9664v6.6048l17.2032 25.1904 90.9824 136.6016 4.7104 41.8816-6.6048 13.7216-23.6032 8.2432-25.9072-4.7104-53.2992-74.7008-54.8864-84.0704-44.3392-75.4176-5.4272 3.1232-26.1632 281.4976-12.2368 14.336-28.2624 10.8544-23.552-17.8688-12.4928-28.9792 12.4928-57.2928 15.104-74.6496 12.2368-59.392 11.1104-73.728 6.6048-24.5248-0.4608-1.6384-5.4272 0.7168-55.6544 76.3392-84.5824 114.2784-66.9696 71.5776-16.0768 6.3488-27.8016-14.336 2.6112-25.7024 15.5648-22.8352 92.672-117.8112 55.8592-73.0112 36.096-42.1376-0.256-6.144h-2.1504l-246.1184 159.6928-43.8272 5.6832-18.8928-17.7152 2.3552-28.928 8.96-9.4208 74.0352-50.8928-0.256 0.256z" fill="#D97757" p-id="4963"></path></svg>
-        {{ props.meta.model }}
+        {{ props.meta?.model }}
       </span>
       <span v-if="formattedDuration" class="meta-item">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -30,7 +30,7 @@
             <span class="work-title">{{ isLoading && groupIndex === groupedBlocks.length - 1 ? '思考中…' : '思考过程' }}</span>
           </div>
           <div v-show="isWorkOpen(groupIndex)" class="work-content">
-            <template v-for="(block, idx) in group.items" :key="idx">
+            <template v-for="(block, idx) in group.items" :key="`${block.type}-${block.tool_call_id || idx}`">
               <ToolBlock
                 v-if="block.type === 'tool'"
                 :tool-name="block.tool_name || 'unknown'"
@@ -46,6 +46,7 @@
                 :danger-info="block.danger_info || ''"
                 :session-id="block.session_id || ''"
                 :tool-call-id="block.tool_call_id || ''"
+                :chat-session-id="chatSessionId || ''"
                 :subagent="block.subagent"
               />
               <div v-else class="reasoning-text">
@@ -187,10 +188,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import ToolBlock from './ToolBlock.vue'
 import { getIconForFile, DEFAULT_FILE } from 'vscode-icons-js'
+import {
+  streamDurationTick,
+  startStreamDuration,
+  stopStreamDuration,
+  bindStreamDuration,
+  getStreamDurationMs,
+} from '@/utils/streamDurationStore'
+import { formatTokenUsageLabel } from '@/utils/runMetadata'
 
 const FILE_ICON_CDN = '/file-icons'
 
@@ -272,6 +281,8 @@ const props = withDefaults(defineProps<{
   textColor?: string
   fontSize?: number
   meta?: MessageMeta
+  chatSessionId?: string
+  messageId?: number
 }>(), {
   content: '',
   reasoning: () => [],
@@ -419,9 +430,31 @@ const artifactStats = computed(() => {
   return { added, removed }
 })
 
-// ---------- 实时计时 ----------
-// 使用后端通过 WebSocket 推送的 meta（duration_ms + token_usage）
-// 不再使用前端计时器
+// ---------- 实时计时（sessionId + messageId 全局 store，切换目录/卸载组件不重置） ----------
+function syncStreamDurationState() {
+  const sid = props.chatSessionId
+  if (!sid || !props.isLoading) return
+  if (props.messageId) {
+    bindStreamDuration(sid, props.messageId)
+    startStreamDuration(sid, props.messageId)
+  } else {
+    startStreamDuration(sid, '__pending__')
+  }
+}
+
+watch(
+  () => [props.isLoading, props.chatSessionId, props.messageId] as const,
+  ([loading]) => {
+    const sid = props.chatSessionId
+    if (!sid) return
+    if (loading) {
+      syncStreamDurationState()
+    } else {
+      stopStreamDuration(sid, props.messageId ?? undefined)
+    }
+  },
+  { immediate: true },
+)
 
 const textColor = computed(() => props.textColor || '#1a1a1a')
 const fontSize = computed(() => props.fontSize || 15)
@@ -432,7 +465,19 @@ const hasMetaInfo = computed(() => {
 })
 
 const formattedDuration = computed(() => {
-  const ms = props.meta?.duration_ms ?? 0
+  streamDurationTick.value // 订阅全局 ticker 刷新
+  const sid = props.chatSessionId
+  let ms = 0
+  if (sid) {
+    if (props.messageId) {
+      ms = getStreamDurationMs(sid, props.messageId)
+    } else if (props.isLoading) {
+      ms = getStreamDurationMs(sid, '__pending__')
+    }
+  }
+  if (!ms && !props.isLoading) {
+    ms = props.meta?.duration_ms || 0
+  }
   if (!ms || ms <= 0) return ''
   if (ms < 1000) return `${ms}ms`
   const s = ms / 1000
@@ -442,25 +487,13 @@ const formattedDuration = computed(() => {
   return `${m}m${rest}s`
 })
 
-const formattedTokens = computed(() => {
-  const api = props.meta?.token_usage?.api_usage
-  if (!api) return ''
-  const parts: string[] = []
-  if (api.prompt_tokens) parts.push(`↑${formatNum(api.prompt_tokens)}`)
-  if (api.completion_tokens) parts.push(`↓${formatNum(api.completion_tokens)}`)
-  return parts.join(' ')
-})
+const formattedTokens = computed(() => formatTokenUsageLabel(props.meta?.token_usage))
 
 const contextPercent = computed(() => {
   const pct = props.meta?.token_usage?.context?.usage_percent
   if (typeof pct !== 'number') return null
   return Math.round(pct)
 })
-
-function formatNum(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
-  return String(n)
-}
 
 // 计算最后一个 text/summary block 的索引，用于控制复制按钮只出现在最后一条
 const lastTextBlockIndex = computed(() => {
@@ -635,7 +668,91 @@ function onMessageClick(e: MouseEvent) {
   border-left: 2px solid rgba(0, 0, 0, 0.06);
   display: flex;
   flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  max-height: 360px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+
+.work-content > * {
+  flex-shrink: 0;
+}
+
+.work-content :deep(.tool-block),
+.work-content :deep(.file-edit-card) {
+  flex-shrink: 0;
+}
+
+.work-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.work-content::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.14);
+  border-radius: 3px;
+}
+
+.work-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.reasoning-block {
+  margin: 4px 0 8px;
+}
+
+.reasoning-header {
+  display: inline-flex;
+  align-items: center;
   gap: 4px;
+  padding: 2px 6px 2px 0;
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-muted, #9ca3af);
+  font-size: 12px;
+}
+
+.reasoning-icon {
+  transition: transform 0.18s;
+  flex-shrink: 0;
+}
+
+.reasoning-icon.expanded {
+  transform: rotate(90deg);
+}
+
+.reasoning-title {
+  font-weight: 400;
+}
+
+.reasoning-count {
+  font-size: 11px;
+  color: var(--text-muted, #9ca3af);
+}
+
+.reasoning-content {
+  margin-top: 5px;
+  padding-left: 12px;
+  border-left: 2px solid rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 280px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+
+.reasoning-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.reasoning-content::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.14);
+  border-radius: 3px;
 }
 
 .reasoning-text {

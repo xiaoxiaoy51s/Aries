@@ -220,9 +220,8 @@ async def _handle_check_command_status(kwargs: dict) -> dict:
             if resp.status_code == 200:
                 data = resp.json()
                 raw_output = data.get("output", "")
-                # 去除 ANSI 转义序列，截取最后 N 行
-                import re as _re
-                clean = _re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", raw_output)
+                from utils.terminal_output import sanitize_terminal_output_for_ai
+                clean = sanitize_terminal_output_for_ai(raw_output)
                 all_lines = clean.strip().split("\n")
                 if tail_lines and len(all_lines) > tail_lines:
                     shown = "\n".join(all_lines[-tail_lines:])

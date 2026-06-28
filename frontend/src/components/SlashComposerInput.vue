@@ -109,6 +109,8 @@ const agentModeAnyPattern = /@(ask|explore|plan)/g
 const agentModeLabels: Record<string, string> = { ask: '问答', explore: '探索', plan: '规划' }
 // 技能引用：@skill:<folder_name>，folder_name 由字母/数字/-/_/. 组成
 const skillRefPattern = /@skill:([A-Za-z0-9._-]+)/g
+// 子 Agent 引用：@subagent:<name>
+const subagentRefPattern = /@subagent:([A-Za-z0-9._-]+)/g
 
 // Slash menu state - delegated to ChatComposer; only emit open/close flags
 const showSlashMenu = computed(() => {
@@ -164,7 +166,7 @@ function renderText(text: string) {
 
   // 收集所有 ##包裹## 格式的匹配
   // value 存储捕获组（不带 ##），但区间是 ##...## 整体的长度
-  const matches: { type: 'file' | 'plain-file' | 'folder' | 'code-review' | 'agent-mode' | 'skill'; value: string; index: number; end: number }[] = []
+  const matches: { type: 'file' | 'plain-file' | 'folder' | 'code-review' | 'agent-mode' | 'skill' | 'subagent'; value: string; index: number; end: number }[] = []
 
   for (const m of text.matchAll(fileRefWithLinesPattern)) {
     matches.push({ type: 'file', value: m[1], index: m.index || 0, end: (m.index || 0) + m[0].length })
@@ -179,6 +181,9 @@ function renderText(text: string) {
     // value 存 folder_name；区间覆盖 "@skill:xxx"
     matches.push({ type: 'skill', value: m[1], index: m.index || 0, end: (m.index || 0) + m[0].length })
   }
+  for (const m of text.matchAll(subagentRefPattern)) {
+    matches.push({ type: 'subagent', value: m[1], index: m.index || 0, end: (m.index || 0) + m[0].length })
+  }
   const codeReviewMatch = text.match(codeReviewPattern)
   if (codeReviewMatch && codeReviewMatch.index !== undefined) {
     matches.push({ type: 'code-review', value: codeReviewMatch[0], index: codeReviewMatch.index, end: codeReviewMatch.index + codeReviewMatch[0].length })
@@ -190,8 +195,8 @@ function renderText(text: string) {
   }
 
   // 去重：区间长 + 类型优先级高 的优先保留
-  // 优先级：file(带行号) > folder > plain-file > code-review / agent-mode > skill
-  const typePriority: Record<string, number> = { 'file': 5, 'folder': 4, 'plain-file': 3, 'code-review': 2, 'agent-mode': 2, 'skill': 1 }
+  // 优先级：file(带行号) > folder > plain-file > code-review / agent-mode > skill / subagent
+  const typePriority: Record<string, number> = { 'file': 5, 'folder': 4, 'plain-file': 3, 'code-review': 2, 'agent-mode': 2, 'skill': 1, 'subagent': 1 }
   const sorted = matches.sort((a, b) => {
     const pa = typePriority[a.type] || 0
     const pb = typePriority[b.type] || 0
@@ -228,9 +233,11 @@ function renderText(text: string) {
             ? createFolderRefTag(match.value)
             : match.type === 'skill'
               ? createSkillTag(match.value)
-              : match.type === 'agent-mode'
-                ? createAgentModeTag(match.value)
-                : createCodeReviewTag(match.value)
+              : match.type === 'subagent'
+                ? createSubagentTag(match.value)
+                : match.type === 'agent-mode'
+                  ? createAgentModeTag(match.value)
+                  : createCodeReviewTag(match.value)
     )
     lastIndex = match.end
   }
@@ -281,6 +288,36 @@ function createSkillTag(folderName: string) {
   const name = document.createElement('span')
   name.className = 'skill-tag-name'
   name.textContent = label
+  tag.appendChild(name)
+
+  const remove = document.createElement('button')
+  remove.type = 'button'
+  remove.className = 'file-ref-remove'
+  remove.textContent = '\u00d7'
+  remove.addEventListener('click', (e) => {
+    e.stopPropagation()
+    tag.remove()
+    emit('update:plainText', extractText())
+  })
+  tag.appendChild(remove)
+
+  return tag
+}
+
+function createSubagentTag(agentName: string) {
+  const tag = document.createElement('span')
+  tag.className = 'subagent-tag'
+  tag.contentEditable = 'false'
+  tag.dataset.ref = agentName
+
+  const icon = document.createElement('span')
+  icon.className = 'subagent-tag-icon'
+  icon.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>'
+  tag.appendChild(icon)
+
+  const name = document.createElement('span')
+  name.className = 'subagent-tag-name'
+  name.textContent = agentName
   tag.appendChild(name)
 
   const remove = document.createElement('button')
@@ -432,6 +469,9 @@ function extractNodeText(node: ChildNode): string {
   if (el.tagName === 'BR') return '\n'
   if (el.classList.contains('skill-tag')) {
     return `@skill:${el.dataset.ref || ''}`
+  }
+  if (el.classList.contains('subagent-tag')) {
+    return `@subagent:${el.dataset.ref || ''}`
   }
   if (el.classList.contains('file-ref-tag') || el.classList.contains('code-review-tag') || el.classList.contains('folder-ref-tag') || el.classList.contains('agent-mode-tag')) {
     const ref = el.dataset.ref || ''
@@ -965,6 +1005,45 @@ defineExpose({ openFilePicker, clearImages, focus })
 
 :deep(.skill-tag-name) {
   padding: 0 4px 0 8px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+/* 子 Agent chip（@subagent:xxx），紫色系 */
+:deep(.subagent-tag) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  max-width: 100%;
+  height: 26px;
+  margin: 0 2px;
+  padding: 0;
+  background: rgba(139, 92, 246, 0.08);
+  border: 1px solid rgba(139, 92, 246, 0.25);
+  border-radius: 6px;
+  color: #7c3aed;
+  font-size: 13px;
+  line-height: 1;
+  vertical-align: middle;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+  overflow: hidden;
+}
+
+:deep(.subagent-tag-icon) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-left: 6px;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+:deep(.subagent-tag-name) {
+  padding: 0 4px 0 6px;
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;

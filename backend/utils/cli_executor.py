@@ -119,13 +119,7 @@ class CLIExecutor:
             )
 
             result = resp.json()
-
-            # 兼容原接口字段
-            if "captured_output" not in result:
-                result["captured_output"] = result.get("output", "")
-            result["working_dir"] = result.get("working_dir") or str(self.allowed_dir)
-
-            return result
+            return self._normalize_cli_result(result)
 
         except httpx.ConnectError:
             return {
@@ -333,10 +327,7 @@ class CLIExecutor:
             # /execute 先完成
             resp = await request_task
             result = resp.json()
-            if "captured_output" not in result:
-                result["captured_output"] = result.get("output", "")
-            result["working_dir"] = result.get("working_dir") or str(self.allowed_dir)
-            return result
+            return self._normalize_cli_result(result)
 
         except httpx.ConnectError:
             return {
@@ -367,6 +358,18 @@ class CLIExecutor:
             if invocation_id:
                 self._detach_events.pop(invocation_id, None)
                 self._cancel_events.pop(invocation_id, None)
+
+    def _normalize_cli_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        """清理 output 中的 ANSI 转义；captured_output 保留原始供前端回放。"""
+        from utils.terminal_output import sanitize_terminal_output_for_ai
+
+        output = result.get("output", "")
+        if isinstance(output, str):
+            result["output"] = sanitize_terminal_output_for_ai(output)
+        if "captured_output" not in result:
+            result["captured_output"] = result.get("output", "")
+        result["working_dir"] = result.get("working_dir") or str(self.allowed_dir)
+        return result
 
     async def _call_nodejs_detach(self, server_url: str, invocation_id: str | None) -> None:
         """调用 Node.js CLI 的 detach 端点。"""
@@ -410,6 +413,11 @@ _PERSISTENT_PATTERNS: list[_re.Pattern] = [
     _re.compile(r"^go\s+run\b", _re.IGNORECASE),
     _re.compile(r"^cargo\s+run\b", _re.IGNORECASE),
     _re.compile(r"^java\s+-jar\b", _re.IGNORECASE),
+    # 新增：Spring Boot / Gradle / .NET / PHP / Rails
+    _re.compile(r"^(?:mvn(?:\.cmd)?|gradle(?:\.bat)?)\s+(?:spring-boot:run|bootRun)\b", _re.IGNORECASE),
+    _re.compile(r"^dotnet\s+run\b", _re.IGNORECASE),
+    _re.compile(r"^php\s+artisan\s+serve\b", _re.IGNORECASE),
+    _re.compile(r"^(?:bundle\s+exec\s+)?rails\s+(?:s|server)\b", _re.IGNORECASE),
 ]
 
 

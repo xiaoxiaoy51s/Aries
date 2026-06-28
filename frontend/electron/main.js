@@ -122,7 +122,7 @@ async function startBackend() {
 function createWindow() {
   const win = new BrowserWindow({
     width: 1200, height: 800, minWidth: 800, minHeight: 600,
-    icon: path.join(__dirname, '..', 'public', 'favicon.png'),
+    icon: path.join(__dirname, '..', 'public', 'logo.png'),
     title: '',
     frame: false,
     titleBarStyle: 'hidden',
@@ -478,7 +478,7 @@ ipcMain.handle('dialog:select-file', async (event, opts = {}) => {
 
 app.whenReady().then(async () => {
   if (process.platform === 'darwin' && app.dock) {
-    app.dock.setIcon(path.join(__dirname, '..', 'public', 'favicon.png'))
+    app.dock.setIcon(path.join(__dirname, '..', 'public', 'logo.png'))
   }
   if (process.platform === 'darwin') {
     const template = [

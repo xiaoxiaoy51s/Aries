@@ -18,6 +18,12 @@ AGENT_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# @subagent:<name> 模式 — 让子 Agent 直接作为当前响应的主体
+SUBAGENT_MARKER_RE = re.compile(
+    r"^@subagent:(\S+)(?:\s|\n|$)",
+    re.IGNORECASE,
+)
+
 
 def extract_agent_marker(text: str) -> Tuple[Optional[str], str]:
     """Extract a leading fixed-agent marker from user text.
@@ -33,6 +39,22 @@ def extract_agent_marker(text: str) -> Tuple[Optional[str], str]:
     agent_name = match.group(1).lower()
     cleaned = (text[match.end():] or "").lstrip()
     return agent_name, cleaned
+
+
+def extract_subagent_marker(text: str) -> Tuple[Optional[str], str]:
+    """Extract a leading @subagent:<name> marker from user text.
+
+    Returns (subagent_name, cleaned_text). If no marker is found, returns
+    (None, original_text).
+
+    Supported markers: @subagent:<name>
+    """
+    match = SUBAGENT_MARKER_RE.match(text or "")
+    if not match:
+        return None, text
+    subagent_name = match.group(1)
+    cleaned = (text[match.end():] or "").lstrip()
+    return subagent_name, cleaned
 
 
 def build_agent_mode_context(agent_name: str) -> str:

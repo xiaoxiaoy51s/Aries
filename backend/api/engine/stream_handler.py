@@ -28,6 +28,7 @@ from .stream_constants import (
 from .todo_handler import get_todos, format_todos_for_context, purge_todo_messages
 from .system_prompt import build_agent_system_prompt_parts, get_agent_skills_and_tools
 from .tool_runner import run_single_tool, run_delegate_items, build_tool_result_event, is_parallel_safe
+from utils.terminal_output import format_tool_result_for_model
 from prompt.agent_prompts import filter_tools_for_agent as _filter_tools_for_agent_mode
 from api.chat.agent_modes import build_agent_mode_context as _build_agent_mode_context
 
@@ -96,7 +97,6 @@ async def _handle_llm_stream(
     result: _LLMStreamResult,
 ) -> AsyncGenerator[str, None]:
     """向 LLM 发起流式请求，yield SSE 事件，结果写入 result 容器。"""
-    reasoning_emitted_before_content = False
 
     try:
         async with client.stream("POST", f"{base_url}/chat/completions", headers=headers, json=payload) as response:
@@ -153,11 +153,6 @@ async def _handle_llm_stream(
                             continue
 
                         if "content" in delta and delta["content"]:
-                            if segment_sink and not reasoning_emitted_before_content:
-                                reasoning_text = logger.flush_reasoning_segment()
-                                if reasoning_text:
-                                    await segment_sink.on_reasoning(reasoning_text)
-                                reasoning_emitted_before_content = True
                             content = delta["content"]
                             result.full_content += content
                             logger.record_assistant_content(content)
@@ -192,19 +187,54 @@ async def stream_agent_mode(
     disconnect_check: Optional[Any] = None,
     segment_sink: Optional["PlatformStreamSink"] = None,
     agent_mode: str | None = None,
+    override_model: str | None = None,
+    override_system_prompt: str | None = None,
+    override_tools: list[dict[str, Any]] | None = None,
+    override_agent_mode_label: str | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Agent 模式 - 支持多轮工具调用"""
+    """Agent 模式 - 支持多轮工具调用。
+
+    当传入 override_* 参数时，进入"子 Agent 直接模式"：
+    - override_model: 使用子 Agent 的专属模型
+    - override_system_prompt: 使用子 Agent 的 system_prompt
+    - override_tools: 使用子 Agent 的专属工具集
+    """
     final_content = ""
     cancelled = False
     assistant_message_id = None
     logger = None
     snapshot = ""
     _esc_listener_started = False  # ESC 监听是否已启动（computer-use 期间）
+    is_subagent_mode = bool(override_system_prompt)
 
     try:
         assistant_message_id = save_message(session_id, "assistant", "", message_snapshot_json="", mode="agent")
-        logger = SessionLogger(session_id=session_id, message_id=assistant_message_id)
-        logger.set_model(getattr(request, "model", "") or "")
+        # 注入 WebSocket 广播回调：每个事件写入 JSONL 后实时推送给前端
+        from services.chat_ws import schedule_log_event_broadcast, notify_log_started
+        on_event_cb = schedule_log_event_broadcast(
+            session_id=session_id,
+            message_id=assistant_message_id,
+            jsonl_path="",  # 路径在 logger 初始化后确定，下面更新
+        )
+        logger = SessionLogger(
+            session_id=session_id,
+            message_id=assistant_message_id,
+            on_event=on_event_cb,
+        )
+        effective_model = override_model or getattr(request, "model", "") or ""
+        logger.set_model(effective_model)
+        jsonl_path = logger.jsonl_path_str()
+        # 立即将 JSONL 路径写入 DB，确保用户切回页面时能找到日志
+        update_message(assistant_message_id, message_snapshot_json=jsonl_path)
+        # 通知前端：assistant 回复已开始（前端据此创建/定位 placeholder 消息）
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(
+                    notify_log_started(session_id, assistant_message_id, jsonl_path)
+                )
+        except RuntimeError:
+            pass
         breakdown_inputs = base_payload.pop("context_breakdown_inputs", None) or {}
         base_payload.pop("context_token_info", None)
         snapshot = create_assistant_snapshot(session_id, logger)
@@ -214,19 +244,32 @@ async def stream_agent_mode(
             skills_context, work_dir=work_dir, session_id=session_id,
             mcp_context=mcp_context, subagents_context=subagents_context,
         )
-        system_prompt = prompt_parts["full"]
 
-        # 固定 Agent 模式：过滤工具 + 追加专用 prompt（与 @code_review 逻辑一致）
-        if agent_mode:
-            tool_definitions = _filter_tools_for_agent_mode(tool_definitions, agent_mode)
-            agent_ctx = _build_agent_mode_context(agent_mode)
-            if agent_ctx:
-                system_prompt = system_prompt + agent_ctx
-                prompt_parts["full"] = system_prompt
+        if is_subagent_mode:
+            # 子 Agent 直接模式：完全替换 system prompt 和工具集
+            system_prompt = override_system_prompt
+            prompt_parts = {
+                "base": override_system_prompt,
+                "full": override_system_prompt,
+                "mcp": "",
+                "subagents": "",
+                "rules": "",
+                "skills": "",
+            }
+            tool_definitions = override_tools or []
+        else:
+            system_prompt = prompt_parts["full"]
+            # 固定 Agent 模式：过滤工具 + 追加专用 prompt（与 @code_review 逻辑一致）
+            if agent_mode:
+                tool_definitions = _filter_tools_for_agent_mode(tool_definitions, agent_mode)
+                agent_ctx = _build_agent_mode_context(agent_mode)
+                if agent_ctx:
+                    system_prompt = system_prompt + agent_ctx
+                    prompt_parts["full"] = system_prompt
 
         # context usage breakdown
         from utils.token_counter import build_context_usage_breakdown
-        model_name = getattr(request, "model", "") or ""
+        model_name = effective_model
         context_breakdown = build_context_usage_breakdown(
             system_prompt_base=prompt_parts["base"] + (prompt_parts.get("mcp") or "") + (prompt_parts.get("subagents") or ""),
             tool_definitions=tool_definitions,
@@ -242,8 +285,8 @@ async def stream_agent_mode(
         logger.set_token_usage({"context": context_breakdown})
         yield f"data: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
 
-        # ===== 意图识别 =====（固定 Agent 模式下跳过，避免覆盖工具过滤）
-        if not agent_mode:
+        # ===== 意图识别 =====（固定 Agent / 子 Agent 模式下跳过）
+        if not agent_mode and not is_subagent_mode:
             try:
                 from prompt.edit_code_prompts import classify_intent, filter_tools_for_intent, get_prompt_for_intent, INTENT_AGENT
                 user_text = ""
@@ -267,7 +310,18 @@ async def stream_agent_mode(
             except Exception:
                 pass
         else:
-            yield f"data: {json.dumps({'intent': f'agent:{agent_mode}'}, ensure_ascii=False)}\n\n"
+            label = override_agent_mode_label or (f"agent:{agent_mode}" if agent_mode else "subagent")
+            yield f"data: {json.dumps({'intent': label}, ensure_ascii=False)}\n\n"
+
+        # 子 Agent 直接模式：防御性移除 messages 中可能存在的 system 消息，避免双 system prompt
+        if is_subagent_mode:
+            messages = [m for m in messages if m.get("role") != "system"]
+            # 防御性过滤：子 Agent 不允许再委派子 Agent
+            if tool_definitions:
+                tool_definitions = [
+                    t for t in tool_definitions
+                    if t.get("function", {}).get("name") != "delegate_to_subagent"
+                ]
 
         current_messages = [{"role": "system", "content": system_prompt}]
         current_messages.extend(messages)
@@ -299,7 +353,7 @@ async def stream_agent_mode(
                     yield f"data: {json.dumps({'hint': '工具调用即将达到上限，正在整理执行进度…'}, ensure_ascii=False)}\n\n"
 
                 payload = {
-                    "model": request.model, "messages": current_messages, "stream": True,
+                    "model": effective_model, "messages": current_messages, "stream": True,
                 }
                 if tool_definitions:
                     payload["tools"] = tool_definitions
@@ -443,7 +497,7 @@ async def stream_agent_mode(
                         tool_results.append({
                             "tool_call_id": item['tool_id'],
                             "role": "tool",
-                            "content": json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result),
+                            "content": format_tool_result_for_model(result) if isinstance(result, dict) else str(result),
                         })
 
                         status = "completed" if not isinstance(result, dict) or not result.get("error") else "error"
@@ -495,7 +549,7 @@ async def stream_agent_mode(
                     tool_results.append({
                         "tool_call_id": tool_id,
                         "role": "tool",
-                        "content": json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result),
+                        "content": format_tool_result_for_model(result) if isinstance(result, dict) else str(result),
                     })
 
                     status = "completed" if not isinstance(result, dict) or not result.get("error") else "error"

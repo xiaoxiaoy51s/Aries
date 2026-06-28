@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.0.0), only for manual runs without tag'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build & Release (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VER="${GITHUB_REF#refs/tags/v}"
+            TAG="${GITHUB_REF#refs/tags/}"
+          elif [[ -n "${{ inputs.version }}" ]]; then
+            VER="${{ inputs.version }}"
+            VER="${VER#v}"
+            TAG="v${VER}"
+          else
+            VER=$(node -p "require('./frontend/package.json').version")
+            TAG="v${VER}"
+          fi
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: ${VER} (tag: ${TAG})"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            backend/cli/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Build backend CLI
+        run: |
+          cd backend/cli
+          npm ci
+          npm run build
+
+      - name: Build backend executable (PyInstaller)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pyinstaller
+          cd backend
+          pyinstaller aries.spec --noconfirm
+          New-Item -ItemType Directory -Force -Path ../frontend/resources | Out-Null
+          Copy-Item dist/aries.exe ../frontend/resources/aries_backend.exe -Force
+
+      - name: Build Electron installer
+        run: |
+          cd frontend
+          npm ci
+          npm run electron:build
+
+      - name: Generate latest.json
+        run: node .github/scripts/generate-latest-json.mjs "${{ steps.version.outputs.version }}" frontend/release
+
+      - name: Upload build artifacts (CI)
+        uses: actions/upload-artifact@v4
+        with:
+          name: aries-windows-${{ steps.version.outputs.version }}
+          path: |
+            frontend/release/*.exe
+            frontend/release/*.7z
+            frontend/release/latest.json
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Aries ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            frontend/release/*.exe
+            frontend/release/*.7z
+            frontend/release/latest.json
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

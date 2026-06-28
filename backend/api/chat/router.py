@@ -1,6 +1,5 @@
 """聊天 API 路由"""
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
 
 from api.engine import resolve_confirmation, clear_todos
 
@@ -12,20 +11,19 @@ from .models import (
     ClearTodosRequest,
     TempChatRequest,
 )
-from .chat import stream_chat, chat_completions, temp_chat
+from .chat import chat_completions, temp_chat
 from .vision import chat_vision
 from .background import (
     stop_chat_handler,
     chat_status_handler,
-    resume_chat_handler,
 )
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.post("/completions")
-async def chat_completions_endpoint(request: ChatRequest, http_request: Request):
-    return await chat_completions(request, http_request)
+async def chat_completions_endpoint(request: ChatRequest):
+    return await chat_completions(request)
 
 
 @router.post("/stop")
@@ -42,15 +40,9 @@ async def chat_status(session_id: str):
     return await chat_status_handler(session_id)
 
 
-@router.get("/resume/{session_id}")
-async def resume_chat(session_id: str, http_request: Request):
-    """前端切回对话时恢复 SSE 流，从 session queue 中继续读取后台任务的事件。"""
-    return await resume_chat_handler(session_id, http_request)
-
-
 @router.post("/vision")
-async def chat_vision_endpoint(request: VisionRequest, http_request: Request):
-    return await chat_vision(request, http_request)
+async def chat_vision_endpoint(request: VisionRequest):
+    return await chat_vision(request)
 
 
 @router.get("/sessions/recent")

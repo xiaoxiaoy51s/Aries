@@ -16,6 +16,13 @@ export interface StreamEvent {
   meta?: { session_id?: string }
 }
 
+export interface StartChatResponse {
+  status: 'started' | 'error'
+  session_id: string
+  subagent_mode?: string
+  error?: string
+}
+
 export function jsonToStreamEvent(json: Record<string, unknown>): StreamEvent | null {
   // 处理错误事件
   if (json.error) {
@@ -73,44 +80,15 @@ export function jsonToStreamEvent(json: Record<string, unknown>): StreamEvent | 
   return null
 }
 
-async function* parseSseResponse(res: Response): AsyncGenerator<StreamEvent> {
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(err || '请求失败')
-  }
-
-  const reader = res.body?.getReader()
-  if (!reader) throw new Error('无法读取响应')
-
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue
-      const data = line.slice(6)
-      if (data === '[DONE]') return
-      try {
-        const json = JSON.parse(data) as Record<string, unknown>
-        const event = jsonToStreamEvent(json)
-        if (event) yield event
-      } catch {
-        // ignore invalid json
-      }
-    }
-  }
-}
-
-export async function* streamChat(
+/**
+ * 发送聊天消息（POST 后立即返回，不做流式接收）
+ * 实时数据通过 WebSocket（/ws/chat?session_id=xxx）推送
+ */
+export async function startChat(
   messages: ChatMessage[],
   sessionId?: string,
   workDir?: string
-): AsyncGenerator<StreamEvent> {
+): Promise<StartChatResponse> {
   const res = await fetch(`${getBaseUrl()}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -121,8 +99,23 @@ export async function* streamChat(
       stream: true,
     }),
   })
+  if (!res.ok) {
+    const errText = await res.text()
+    throw new Error(errText || '请求失败')
+  }
+  return (await res.json()) as StartChatResponse
+}
 
-  yield* parseSseResponse(res)
+/**
+ * @deprecated 流式 API 已废弃。保留仅为兼容旧调用方，实际数据请通过 WebSocket 接收。
+ */
+export async function* streamChat(
+  messages: ChatMessage[],
+  sessionId?: string,
+  workDir?: string
+): AsyncGenerator<StreamEvent> {
+  // 改为非流式：调用 startChat 后立即返回，事件通过 WebSocket 推送
+  yield* _noopStream()
 }
 
 export async function* streamVision(
@@ -133,7 +126,6 @@ export async function* streamVision(
 ): AsyncGenerator<StreamEvent> {
   const lastUser = [...messages].reverse().find((m) => m.role === 'user')
   const text = lastUser?.content?.trim() || '请描述这张图片的内容'
-
   const res = await fetch(`${getBaseUrl()}/chat/vision`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -145,20 +137,50 @@ export async function* streamVision(
       stream: true,
     }),
   })
-
-  yield* parseSseResponse(res)
+  if (!res.ok) {
+    const errText = await res.text()
+    throw new Error(errText || '请求失败')
+  }
+  // 实时数据通过 WebSocket 推送
+  yield* _noopStream()
 }
 
-export async function stopChat(sessionId: string): Promise<void> {
-  try {
-    await fetch(`${getBaseUrl()}/chat/stop`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId }),
-    })
-  } catch (e) {
-    console.error('stopChat error', e)
+export async function startVision(
+  messages: ChatMessage[],
+  images: string[],
+  sessionId?: string,
+  workDir?: string
+): Promise<StartChatResponse> {
+  const lastUser = [...messages].reverse().find((m) => m.role === 'user')
+  const text = lastUser?.content?.trim() || '请描述这张图片的内容'
+  const res = await fetch(`${getBaseUrl()}/chat/vision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text,
+      images,
+      session_id: sessionId,
+      work_dir: workDir || undefined,
+      stream: true,
+    }),
+  })
+  if (!res.ok) {
+    const errText = await res.text()
+    throw new Error(errText || '请求失败')
   }
+  return (await res.json()) as StartChatResponse
+}
+
+export function stopChat(sessionId: string): Promise<void> {
+  return fetch(`${getBaseUrl()}/chat/stop`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId }),
+  })
+    .then(() => undefined)
+    .catch((e) => {
+      console.error('stopChat error', e)
+    })
 }
 
 export async function checkChatStatus(sessionId: string): Promise<boolean> {
@@ -171,36 +193,11 @@ export async function checkChatStatus(sessionId: string): Promise<boolean> {
   }
 }
 
+/**
+ * @deprecated 旧版 SSE resume 已被 WebSocket 替代。保留仅为兼容旧调用方。
+ */
 export async function* resumeChat(sessionId: string): AsyncGenerator<StreamEvent> {
-  const res = await fetch(`${getBaseUrl()}/chat/resume/${sessionId}`, {
-    headers: { Accept: 'text/event-stream' },
-  })
-  if (!res.ok) return
-  const reader = res.body?.getReader()
-  if (!reader) return
-  const decoder = new TextDecoder()
-  let buffer = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue
-      const data = line.slice(6)
-      if (data === '[DONE]') return
-      try {
-        const json = JSON.parse(data) as Record<string, unknown>
-        if (json.resumed_done) return
-        if (json.resumed === false) return
-        const event = jsonToStreamEvent(json)
-        if (event) yield event
-      } catch {
-        // ignore invalid json
-      }
-    }
-  }
+  yield* _noopStream()
 }
 
 export async function* streamTempChat(
@@ -217,5 +214,9 @@ export async function* streamTempChat(
       work_dir: workDir || undefined,
     }),
   })
-  yield* parseSseResponse(res)
+  yield* _noopStream()
+}
+
+async function* _noopStream(): AsyncGenerator<StreamEvent> {
+  // 流式 API 已统一替换为 WebSocket + JSONL 推送；此处不再产生任何事件
 }

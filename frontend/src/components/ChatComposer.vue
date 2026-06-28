@@ -22,6 +22,26 @@
         </div>
       </div>
     </div>
+    <div v-if="skillsPanelOpen" class="mcp-panel">
+      <div class="mcp-panel-header">
+        <span class="mcp-panel-title">技能</span>
+        <button type="button" class="mcp-panel-close" @click="closeSkillsPanel">关闭</button>
+      </div>
+      <div v-if="!skillItems.length" class="mcp-panel-empty">暂无技能</div>
+      <div v-else class="mcp-panel-list">
+        <div
+          v-for="skill in skillItems"
+          :key="skill.id"
+          class="mcp-panel-item mcp-panel-item--clickable"
+          @click="applySkill(skill)"
+        >
+          <div class="mcp-panel-item-info">
+            <span class="mcp-panel-item-name">{{ skill.label }}</span>
+            <span class="mcp-panel-item-desc">{{ skill.description }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
     <div v-if="reviewPanelOpen" class="review-panel" @mousedown.prevent>
       <button type="button" class="review-panel-item" @click="applyReviewPrompt('unstaged')">
         <span class="review-panel-title">审查未暂存更改</span>
@@ -58,7 +78,7 @@
       placeholder="随心输入"
       :plugin-items="pluginItems"
       :skill-items="skillItems"
-      @send="$emit('send')"
+      @send="handleSend"
       @plugin-select="onPluginClick"
       @slash-keydown="onPluginKeydown"
     />
@@ -84,26 +104,26 @@
             <div v-if="item.badge" class="plugin-menu-badge">{{ item.badge }}</div>
           </div>
         </div>
-        <div v-if="filteredSkillItems.length" class="plugin-menu-divider"></div>
-        <div v-if="filteredSkillItems.length" class="plugin-menu-group">
-          <div class="plugin-menu-group-title">技能</div>
+        <div v-if="filteredSubagentItems.length" class="plugin-menu-divider"></div>
+        <div v-if="filteredSubagentItems.length" class="plugin-menu-group">
+          <div class="plugin-menu-group-title">子Agent</div>
           <div
-            v-for="(skill, sIdx) in filteredSkillItems"
-            :key="skill.id"
+            v-for="(agent, aIdx) in filteredSubagentItems"
+            :key="agent.id"
             class="plugin-menu-item"
             :class="{
-              'plugin-menu-item--active': filteredPluginItems.length + sIdx === pluginSelectedIndex,
-              'plugin-menu-item--disabled': skill.disabled,
+              'plugin-menu-item--active': filteredPluginItems.length + aIdx === pluginSelectedIndex,
+              'plugin-menu-item--disabled': agent.disabled,
             }"
-            @click="onPluginClick(skill)"
-            @mouseenter="pluginSelectedIndex = filteredPluginItems.length + sIdx"
+            @click="onSubagentClick(agent)"
+            @mouseenter="pluginSelectedIndex = filteredPluginItems.length + aIdx"
           >
-            <div class="plugin-menu-icon" v-html="pluginIconFor(skill.icon)"></div>
+            <div class="plugin-menu-icon" v-html="pluginIconFor(agent.icon)"></div>
             <div class="plugin-menu-text">
-              <span class="plugin-menu-label">{{ skill.label }}</span>
-              <span class="plugin-menu-desc">{{ skill.description }}</span>
+              <span class="plugin-menu-label">{{ agent.label }}</span>
+              <span class="plugin-menu-desc">{{ agent.description }}</span>
             </div>
-            <div v-if="skill.badge" class="plugin-menu-badge">{{ skill.badge }}</div>
+            <div v-if="agent.badge" class="plugin-menu-badge">{{ agent.badge }}</div>
           </div>
         </div>
       </div>
@@ -184,7 +204,7 @@
           type="button"
           class="send-btn"
           :disabled="!canSend"
-          @click="$emit('send')"
+          @click="handleSend"
         >
           <span class="send-icon-inner">
             <svg class="send-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -206,6 +226,12 @@
       </div>
     </div>
     </div>
+    <!-- 工作目录未选择提示 -->
+    <Transition name="fade">
+      <div v-if="workDirWarnVisible" class="workdir-warn-toast">
+        请先选择工作目录
+      </div>
+    </Transition>
     <!-- /composer 容器：边框仅包裹文本区与工具栏，底部标签栏脱离边框 -->
     <!-- 底部工具栏：仅在欢迎界面显示 -->
     <div v-if="!isBottom && showWorkDir" class="composer-bottom-bar">
@@ -437,6 +463,7 @@ import RoleEditorModal from '@/components/RoleEditorModal.vue'
 import { listPlugins, type PluginItem as McpPluginItem } from '@/api/plugins'
 import { listPets } from '@/api/pets'
 import { listSkills, type SkillItem as ApiSkillItem } from '@/api/skills'
+import { listSubagents, type SubagentItem as ApiSubagentItem } from '@/api/subagents'
 import { compactSession } from '@/api/sessions'
 import { getApprovalMode, setApprovalMode, type ApprovalMode } from '@/api/pathPermissions'
 import { useModelStore } from '@/stores/model'
@@ -514,7 +541,18 @@ const composerRef = ref<InstanceType<typeof SlashComposerInput>>()
 const workDirMenuOpen = ref(false)
 const roleModalVisible = ref(false)
 const reviewPanelOpen = ref(false)
+const workDirWarnVisible = ref(false)
+
+function handleSend() {
+  if (!props.workDir || !props.workDir.trim()) {
+    workDirWarnVisible.value = true
+    setTimeout(() => { workDirWarnVisible.value = false }, 3000)
+    return
+  }
+  emit('send')
+}
 const mcpPanelOpen = ref(false)
+const skillsPanelOpen = ref(false)
 const mcpPlugins = ref<McpPluginItem[]>([])
 const mcpLoading = ref(false)
 const compactModalOpen = ref(false)
@@ -842,6 +880,7 @@ const pluginItems = computed<PluginItem[]>(() => {
     { id: 'plan', icon: 'map', label: '规划', description: '制定实现计划，不修改代码' },
     { id: 'role', icon: 'shield', label: '规则', description: '设置 AI 行为约束规则' },
     { id: 'mcp', icon: 'cpu', label: 'MCP', description: '显示 MCP 服务器状态' },
+    { id: 'skill', icon: 'zap', label: '技能', description: '查看和调用可用技能' },
     { id: 'review', icon: 'code', label: '代码审查', description: '审查未暂存的更改' },
     { id: 'sidechat', icon: 'sidebar', label: '侧边聊天', description: '在临时分支中发起对话' },
     { id: 'compact', icon: 'zap', label: '压缩', description: '压缩此会话的上下文', badge: compactBadge },
@@ -877,6 +916,7 @@ function formatTokens(n: number): string {
 
 // 技能列表：从后端 /api/skills 获取，与 SkillsPage 数据源保持一致
 const skillItems = ref<PluginItem[]>([])
+const subagentItems = ref<PluginItem[]>([])
 
 function skillIcon(name: string): string {
   const ch = (name || '').trim().charAt(0).toUpperCase()
@@ -902,6 +942,23 @@ async function loadSkillItems() {
   }
 }
 
+async function loadSubagentItems() {
+  try {
+    const list = await listSubagents()
+    subagentItems.value = list.map((a: ApiSubagentItem) => ({
+      id: a.name,
+      icon: 'user',
+      label: a.name,
+      description: a.description || '无描述',
+      badge: a.enabled ? (a.available ? '可用' : '不可用') : '未启用',
+      disabled: !a.enabled || !a.available,
+    }))
+  } catch (e) {
+    console.error('加载子Agent列表失败', e)
+    subagentItems.value = []
+  }
+}
+
 function onApplyWorkDir(dir: string) {
   workDirMenuOpen.value = false
   emit('applyWorkDir', dir)
@@ -924,19 +981,19 @@ const filteredPluginItems = computed(() => {
   )
 })
 
-const filteredSkillItems = computed(() => {
+const filteredSubagentItems = computed(() => {
   const q = currentSlashQuery.value
-  if (!q) return skillItems.value
-  return skillItems.value.filter(
+  if (!q) return subagentItems.value
+  return subagentItems.value.filter(
     (i) => i.id.toLowerCase().includes(q) || i.label.toLowerCase().includes(q)
   )
 })
 
 const totalPluginItems = computed(
-  () => filteredPluginItems.value.length + filteredSkillItems.value.length
+  () => filteredPluginItems.value.length + filteredSubagentItems.value.length
 )
 
-watch([filteredPluginItems, filteredSkillItems], () => {
+watch([filteredPluginItems, filteredSubagentItems], () => {
   if (pluginSelectedIndex.value >= totalPluginItems.value) {
     pluginSelectedIndex.value = 0
   }
@@ -953,7 +1010,7 @@ function onPluginKeydown(e: KeyboardEvent) {
     const n = totalPluginItems.value
     if (n > 0) pluginSelectedIndex.value = (pluginSelectedIndex.value - 1 + n) % n
   } else if (e.key === 'Enter' || e.key === 'Tab') {
-    const list = [...filteredPluginItems.value, ...filteredSkillItems.value]
+    const list = [...filteredPluginItems.value, ...filteredSubagentItems.value]
     const item = list[pluginSelectedIndex.value]
     if (item) {
       e.preventDefault()
@@ -1014,15 +1071,6 @@ async function onPluginClick(item: PluginItem) {
   plainTextProxy.value = cleaned
   pluginMenuOpenProxy.value = false
 
-  // 技能项：插入 @skill:<id> 标签到输入框
-  const isSkill = skillItems.value.some((s) => s.id === item.id)
-  if (isSkill) {
-    const sep = cleaned && !cleaned.endsWith('\n') && !cleaned.endsWith(' ') ? ' ' : ''
-    plainTextProxy.value = `${cleaned}${sep}@skill:${item.id} `
-    nextTick(() => composerRef.value?.focus?.())
-    return
-  }
-
   if (item.id === 'ask' || item.id === 'explore' || item.id === 'plan') {
     plainTextProxy.value = `@${item.id}`
     nextTick(() => composerRef.value?.focus?.())
@@ -1035,14 +1083,23 @@ async function onPluginClick(item: PluginItem) {
   }
   if (item.id === 'mcp') {
     mcpPanelOpen.value = true
+    skillsPanelOpen.value = false
     reviewPanelOpen.value = false
     pluginMenuOpenProxy.value = false
     loadMcpPlugins()
     return
   }
+  if (item.id === 'skill') {
+    skillsPanelOpen.value = true
+    mcpPanelOpen.value = false
+    reviewPanelOpen.value = false
+    pluginMenuOpenProxy.value = false
+    return
+  }
   if (item.id === 'review') {
     reviewPanelOpen.value = true
     mcpPanelOpen.value = false
+    skillsPanelOpen.value = false
     pluginMenuOpenProxy.value = false
     return
   }
@@ -1153,6 +1210,32 @@ function closeMcpPanel() {
   mcpPanelOpen.value = false
 }
 
+function closeSkillsPanel() {
+  skillsPanelOpen.value = false
+}
+
+function applySkill(skill: PluginItem) {
+  skillsPanelOpen.value = false
+  const lines = (props.modelValue || '').split('\n')
+  const cleaned = lines.join('\n')
+  const sep = cleaned && !cleaned.endsWith('\n') && !cleaned.endsWith(' ') ? ' ' : ''
+  plainTextProxy.value = `${cleaned}${sep}@skill:${skill.id} `
+  nextTick(() => composerRef.value?.focus?.())
+}
+
+function onSubagentClick(agent: PluginItem) {
+  if (agent.disabled) return
+  pluginMenuOpenProxy.value = false
+  const lines = (props.modelValue || '').split('\n')
+  if (lines.length && lines[lines.length - 1].startsWith('/')) {
+    lines.pop()
+  }
+  const cleaned = lines.join('\n')
+  const sep = cleaned && !cleaned.endsWith('\n') && !cleaned.endsWith(' ') ? ' ' : ''
+  plainTextProxy.value = `${cleaned}${sep}@subagent:${agent.id} `
+  nextTick(() => composerRef.value?.focus?.())
+}
+
 function closeMenus(e: MouseEvent) {
   const target = e.target as HTMLElement | null
   if (!target) return
@@ -1164,6 +1247,7 @@ function closeMenus(e: MouseEvent) {
   }
   if (!target.closest('.mcp-panel')) {
     mcpPanelOpen.value = false
+    skillsPanelOpen.value = false
   }
   if (!target.closest('.review-panel')) {
     reviewPanelOpen.value = false
@@ -1179,6 +1263,7 @@ function onGlobalKeydown(e: KeyboardEvent) {
     if (workDirMenuOpen.value) workDirMenuOpen.value = false
     if (branchMenuOpen.value) branchMenuOpen.value = false
     if (mcpPanelOpen.value) mcpPanelOpen.value = false
+    if (skillsPanelOpen.value) skillsPanelOpen.value = false
     if (reviewPanelOpen.value) reviewPanelOpen.value = false
   }
 }
@@ -1186,8 +1271,9 @@ function onGlobalKeydown(e: KeyboardEvent) {
 onMounted(() => {
   document.addEventListener('mousedown', closeMenus)
   document.addEventListener('keydown', onGlobalKeydown)
-  // 首次加载技能列表
+  // 首次加载技能列表和子Agent列表
   loadSkillItems()
+  loadSubagentItems()
   // 同步全局批准模式
   getApprovalMode()
     .then(({ mode }) => {
@@ -1198,7 +1284,10 @@ onMounted(() => {
 
 // 每次打开插件/技能菜单时刷新一次，确保与设置页同步
 watch(pluginMenuOpenProxy, (open) => {
-  if (open) loadSkillItems()
+  if (open) {
+    loadSkillItems()
+    loadSubagentItems()
+  }
 })
 
 onUnmounted(() => {
@@ -1240,6 +1329,30 @@ defineExpose({
 
 .composer-shell-bottom {
   max-width: 900px;
+}
+
+.workdir-warn-toast {
+  position: absolute;
+  top: -36px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(239, 68, 68, 0.95);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 16px;
+  border-radius: 8px;
+  white-space: nowrap;
+  z-index: 100;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.fade-enter-active, .fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.fade-enter-from, .fade-leave-to {
+  opacity: 0;
 }
 
 .composer {
@@ -1288,19 +1401,24 @@ defineExpose({
   right: 0;
   bottom: calc(100% + 6px);
   max-height: 360px;
-  overflow-y: auto;
   background: color-mix(in srgb, var(--bg-panel) 90%, transparent);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
   backdrop-filter: blur(16px) saturate(1.2);
   -webkit-backdrop-filter: blur(16px) saturate(1.2);
-  overflow: hidden;
   z-index: 200;
+}
+
+.mcp-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .review-panel {
   padding: 6px;
+  overflow-y: auto;
 }
 
 .review-panel-item {
@@ -1337,6 +1455,7 @@ defineExpose({
   align-items: center;
   justify-content: space-between;
   padding: 8px 12px;
+  flex-shrink: 0;
 }
 
 .mcp-panel-title {
@@ -1369,6 +1488,9 @@ defineExpose({
 
 .mcp-panel-list {
   padding: 4px 0;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .mcp-panel-item {
@@ -1419,6 +1541,15 @@ defineExpose({
 .mcp-panel-item-status:disabled {
   cursor: default;
   opacity: 0.6;
+}
+
+.mcp-panel-item--clickable {
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.mcp-panel-item--clickable:hover {
+  background: var(--accent-hover);
 }
 
 .mcp-panel-item-status--enabled {

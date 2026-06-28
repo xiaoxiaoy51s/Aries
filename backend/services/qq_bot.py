@@ -23,6 +23,60 @@ except ImportError:
     BOTPY_AVAILABLE = False
     Message = Any  # type: ignore
 
+_last_qq_network_log_at = 0.0
+_QQ_NETWORK_LOG_INTERVAL = 60.0
+
+
+def _is_network_connect_error(exc: BaseException) -> bool:
+    if isinstance(exc, (ConnectionError, OSError, asyncio.TimeoutError)):
+        return True
+    name = type(exc).__name__
+    if name in (
+        "ClientConnectorError",
+        "ClientConnectorDNSError",
+        "ServerDisconnectedError",
+        "ClientOSError",
+        "ClientConnectionError",
+    ):
+        return True
+    try:
+        from aiohttp import client_exceptions
+
+        if isinstance(exc, client_exceptions.ClientError):
+            return True
+    except ImportError:
+        pass
+    return False
+
+
+def _patch_botpy_quiet_network_errors() -> None:
+    """botpy 断网时会 traceback.print_exc() 刷屏；网络类错误只记简短日志。"""
+    if not BOTPY_AVAILABLE:
+        return
+    try:
+        from botpy.gateway import BotWebSocket
+
+        if getattr(BotWebSocket.on_error, "_qq_quiet_patched", False):
+            return
+
+        _original_on_error = BotWebSocket.on_error
+
+        async def _quiet_on_error(self, exception: BaseException):
+            global _last_qq_network_log_at
+            if _is_network_connect_error(exception):
+                now = time.time()
+                if now - _last_qq_network_log_at >= _QQ_NETWORK_LOG_INTERVAL:
+                    _last_qq_network_log_at = now
+                    _log.warning("[QQ] 网络不可用，WebSocket 暂无法连接（将自动重试）")
+                self._connection.add(self._session)
+                return
+            await _original_on_error(self, exception)
+
+        _quiet_on_error._qq_quiet_patched = True  # type: ignore[attr-defined]
+        BotWebSocket.on_error = _quiet_on_error
+    except Exception as e:
+        _log.debug("[QQ] 无法 patch botpy 错误输出: %s", e)
+
 _runner: Optional[_QQRunner] = None
 _lock = threading.Lock()
 
@@ -71,7 +125,7 @@ async def _reply_qq_message(message, reply: str):
 class NonoQQBot(botpy.Client if BOTPY_AVAILABLE else object):
     def __init__(self, intents):
         if BOTPY_AVAILABLE:
-            super().__init__(intents=intents)
+            super().__init__(intents=intents, bot_log=False)
         self.last_user_openid = ""
         self.last_group_openid = ""
         self.last_chat_type = "c2c"
@@ -156,7 +210,8 @@ class _QQRunner:
 
         def _run():
             try:
-                logging.getLogger("botpy").addHandler(logging.NullHandler())
+                _patch_botpy_quiet_network_errors()
+                logging.getLogger("botpy").handlers.clear()
                 logging.getLogger("botpy").propagate = False
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)

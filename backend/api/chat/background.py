@@ -1,21 +1,18 @@
-"""后台 Agent 任务管理"""
-import asyncio
-import json
-from typing import AsyncGenerator
+"""后台 Agent 任务管理
 
-from fastapi import Request
-from fastapi.responses import StreamingResponse
+流式输出已切换为基于 JSONL 日志 + WebSocket 推送：
+  - 每次写入 JSONL 后通过 SessionLogger.on_event 回调经 services.chat_ws 广播
+  - 前端通过 /ws/chat?session_id=xxx 订阅；切换页面时直接读取 JSONL 文件
+  - 此处只负责启动后台任务并清理 cancel_event / bg_session
+"""
+import asyncio
+import logging
 
 from services.chat_stream_manager import (
     register as register_chat_stream,
     unregister as unregister_chat_stream,
     request_cancel as request_chat_cancel,
     register_bg_session,
-    get_bg_queue,
-    get_bg_history,
-    has_bg_event_file,
-    append_bg_history,
-    set_bg_task,
     mark_bg_done,
     is_bg_running,
     cleanup_bg_session,
@@ -23,7 +20,9 @@ from services.chat_stream_manager import (
 
 from api.engine import stream_agent_mode
 
-# 后台 agent 任务追踪：SSE 断开后任务继续运行，避免被 GC 回收
+_log = logging.getLogger(__name__)
+
+# 后台 agent 任务追踪：防止被 GC 回收
 _background_tasks: set[asyncio.Task] = set()
 
 
@@ -35,15 +34,20 @@ async def stream_chat_with_background(
     session_id: str,
     work_dir,
     cancel_event,
-    http_request: Request,
     agent_mode: str | None = None,
-) -> AsyncGenerator[str, None]:
-    """带后台任务管理的流式聊天"""
-    bg_queue = register_bg_session(session_id)
-    consumer_alive = True
+    override_model: str | None = None,
+    override_system_prompt: str | None = None,
+    override_tools: list | None = None,
+    override_agent_mode_label: str | None = None,
+) -> None:
+    """启动后台 agent 任务，实时数据通过 WebSocket + JSONL 推送。
+
+    调用方应在调用前完成 setup（保存 user 消息、注册 cancel_event 等）。
+    本函数返回时任务仍在运行；不需要返回值。
+    """
+    register_bg_session(session_id)
 
     async def background_runner():
-        nonlocal consumer_alive
         try:
             async for event in stream_agent_mode(
                 request,
@@ -55,52 +59,49 @@ async def stream_chat_with_background(
                 cancel_event=cancel_event,
                 disconnect_check=None,
                 agent_mode=agent_mode,
+                override_model=override_model,
+                override_system_prompt=override_system_prompt,
+                override_tools=override_tools,
+                override_agent_mode_label=override_agent_mode_label,
             ):
-                await bg_queue.put(event)
-                append_bg_history(session_id, event)
+                # SSE 字符串此处丢弃：所有数据已通过 SessionLogger.on_event 经 WebSocket 广播
+                _ = event
             mark_bg_done(session_id)
         except Exception as e:
-            print(f"[background_runner] error: {e}")
-            error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
-            error_event = f"data: {error_data}\n\n"
-            await bg_queue.put(error_event)
-            append_bg_history(session_id, error_event)
+            _log.exception("background_runner error: %s", e)
+            # 错误也写入 JSONL 日志（通过当前 logger 不可用，所以仅通知前端）
+            try:
+                from services.chat_ws import notify_log_event
+                from datetime import datetime, timezone
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(
+                        notify_log_event(
+                            session_id,
+                            0,
+                            {
+                                "type": "error_event",
+                                "error_type": "backend_error",
+                                "error_msg": str(e),
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            },
+                            jsonl_path="",
+                        )
+                    )
+            except Exception:
+                pass
             mark_bg_done(session_id)
         finally:
             unregister_chat_stream(session_id)
-            # 延迟清理 bg_session，给 resume 端点时间读取 sentinel
+            # 延迟清理 bg_session
             await asyncio.sleep(30)
             cleanup_bg_session(session_id)
 
     task = asyncio.create_task(background_runner())
+    from services.chat_stream_manager import set_bg_task
     set_bg_task(session_id, task)
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
-
-    try:
-        # 仅下发轻量摘要，避免把消息分组泄露到前端 SSE
-        _ctx_info = payload.get("context_token_info") or {}
-        _ctx_summary = {
-            "estimated_tokens": _ctx_info.get("estimated_tokens"),
-            "context_window": _ctx_info.get("context_window"),
-            "usage_percent": _ctx_info.get("usage_percent"),
-        }
-        yield f"data: {json.dumps({'context_token_usage': _ctx_summary}, ensure_ascii=False)}\n\n"
-
-        while True:
-            if await http_request.is_disconnected():
-                consumer_alive = False
-                break
-            try:
-                event = await asyncio.wait_for(bg_queue.get(), timeout=1.0)
-                if event is None:
-                    break
-                yield event
-            except asyncio.TimeoutError:
-                continue
-    finally:
-        consumer_alive = False
-        # 不取消后台任务，不反注册 stream（background_runner 的 finally 会处理）
 
 
 async def stop_chat_handler(session_id: str) -> dict:
@@ -115,72 +116,3 @@ async def chat_status_handler(session_id: str) -> dict:
     running = is_bg_running(session_id)
     return {"running": running, "session_id": session_id}
 
-
-async def empty_stream():
-    """空流"""
-    yield 'data: {"resumed": false}\n\n'
-
-
-async def resume_stream(session_id: str, bg_queue: asyncio.Queue, http_request: Request):
-    """从 session queue 中读取剩余事件并推送给前端。先重播历史事件，再读取新事件。"""
-    try:
-        # 1. 先一次性推送所有已累计的历史事件（避免前端逐条闪动）
-        history = get_bg_history(session_id)
-        if history:
-            for event in history:
-                yield event
-        # 2. 继续从 queue 读取新事件
-        while True:
-            if await http_request.is_disconnected():
-                break
-            try:
-                event = await asyncio.wait_for(bg_queue.get(), timeout=1.0)
-                if event is None:
-                    yield 'data: {"resumed_done": true}\n\n'
-                    break
-                yield event
-            except asyncio.TimeoutError:
-                if not is_bg_running(session_id):
-                    while not bg_queue.empty():
-                        event = bg_queue.get_nowait()
-                        if event is None:
-                            break
-                        yield event
-                    yield 'data: {"resumed_done": true}\n\n'
-                    break
-    finally:
-        pass
-
-
-async def resume_chat_handler(session_id: str, http_request: Request):
-    """前端切回对话时恢复 SSE 流"""
-    bg_queue = get_bg_queue(session_id)
-    if bg_queue is None:
-        # 内存中无活跃后台 session，但可能有事件文件残留
-        # （浏览器关闭后重新打开、或 task 刚结束文件尚未清理）
-        if has_bg_event_file(session_id):
-            return StreamingResponse(
-                _file_resume_stream(session_id),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-            )
-        # 没有后台任务，返回空流
-        return StreamingResponse(
-            empty_stream(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-        )
-    return StreamingResponse(
-        resume_stream(session_id, bg_queue, http_request),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
-
-
-async def _file_resume_stream(session_id: str):
-    """仅从文件恢复事件（内存队列已丢失时兜底）。"""
-    history = get_bg_history(session_id)
-    if history:
-        for event in history:
-            yield event
-    yield 'data: {"resumed_done": true}\n\n'

@@ -25,17 +25,46 @@ const PERSISTENT_PATTERNS: RegExp[] = [
   /^go\s+run\b/i,
   /^cargo\s+run\b/i,
   /^java\s+-jar\b/i,
+  // 新增：Spring Boot / Gradle / .NET / PHP / Rails
+  /^(?:mvn(?:\.cmd)?|gradle(?:\.bat)?)\s+(?:spring-boot:run|bootRun)\b/i,
+  /^dotnet\s+run\b/i,
+  /^php\s+artisan\s+serve\b/i,
+  /^(?:bundle\s+exec\s+)?rails\s+(?:s|server)\b/i,
 ]
 
-// 自动后台完成信号（对齐 AUTO_DETACH_READY_PATTERNS）
+// 自动后台完成信号：检测各框架启动成功的标志输出
+// 参考 VS Code problemMatcher 的 beginsPattern/endsPattern 思路
 const AUTO_DETACH_PATTERNS: RegExp[] = [
+  // 通用：监听端口 / 本地 URL
   /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):\d+\/?/,
   /\bLocal:\s+http:\/\//,
+  /\bListening on\s+(?:http:\/\/)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0):\d+/i,
+  // Vite / Next / Webpack
   /\bready in\b/i,
   /\bcompiled successfully\b/i,
+  // 通用 server 就绪
   /\bserver (?:running|started|listening)\b/i,
+  // Python
   /\buvicorn running\b/i,
+  /\bUvicorn running on\b/i,
   /\bApplication startup complete\b/i,
+  /\bServing Flask app\b/i,
+  /\bDjango version\b.*\bstarting development server\b/i,
+  // Spring Boot（Tomcat/Jetty/Netty）
+  /\bTomcat (?:started|initialized) on port\s+\d+/i,
+  /\bStarted \w+Application in\b/i,
+  /\bJetty started on port\s+\d+/i,
+  /\bNetty started on port\s+\d+/i,
+  // Go
+  /\bServer listening on\b/i,
+  /\bListening and serving (?:HTTP|TCP) on\b/i,
+  // .NET
+  /\bNow listening on:\s+http:\/\/localhost:\d+/i,
+  // PHP
+  /\bLaravel development server started\b/i,
+  /\bPHP\s+\d+\.\d+\.\d+\s+Development Server\b.*\bstarted\b/i,
+  // Rails
+  /\bRails\s+\d+.*\bstarted\b/i,
 ]
 
 interface SessionState {
@@ -52,14 +81,21 @@ interface SessionState {
 function sanitizeForAI(raw: string): string {
   if (!raw) return raw
   let cleaned = raw
+    // C1 CSI（Windows conhost 常用 \x9b 替代 \x1b[）
+    .replace(/\x9b[0-9;?]*[ -/]*[@-~]/g, '')
     // CSI 序列（颜色/光标移动/擦除等）
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    // C1 OSC（窗口标题等）
+    .replace(/\x9d[^\x07\x9b\x1b\[\n]*(?:\x07|\x9b|\\)/g, '')
     // OSC 序列（标题设置等）
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\][^\x07\x1b\[\n]*(?:\x07|\x1b\\)/g, '')
     // 其他单字符转义
-    .replace(/\x1b[=>78MNc]/g, '')
-    // 光标显示/隐藏、鼠标模式等
-    .replace(/\x1b\[\?(?:1004|9001|25|2004)[hl]/g, '')
+    .replace(/\x1b[=>78MNcD]/g, '')
+    // 控制字符（保留 \t \n）
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1a\x7f-\x9a\x9c\x9e-\x9f]/g, '')
+    // ESC 丢失后的残留 OSC/CSI（先 OSC 再 CSI，避免标题吞掉正文）
+    .replace(/\]0;[^\[\x07\x1b\n]+/g, '')
+    .replace(/\[[\?]?[0-9;]*[ -/]*[@-~]/g, '')
     // \r\n 统一为 \n，去除单独 \r
     .replace(/\r\n/g, '\n').replace(/\r/g, '')
     // 压缩连续空行
@@ -333,7 +369,17 @@ export class TerminalManager {
   closeSession(sessionId: string): void {
     const state = this.sessions.get(sessionId)
     if (state) {
-      try { state.pty.kill() } catch { /* ignore */ }
+      // Windows 上 pty.kill() 只杀 PTY 进程（conhost/cmd），不会杀它启动的孙子进程
+      // （如 npm run dev 启动的 vite，会变成孤儿继续占用端口）。
+      // 用 taskkill /T /F 杀整棵进程树，确保 dev server 等长运行进程一起退出。
+      const ptyPid = state.pty.pid
+      if (ptyPid && process.platform === 'win32') {
+        try {
+          require('child_process').execSync(`taskkill /PID ${ptyPid} /T /F`, { stdio: 'ignore' })
+        } catch { /* ignore */ }
+      } else {
+        try { state.pty.kill() } catch { /* ignore */ }
+      }
     }
     this.sessions.delete(sessionId)
   }
@@ -452,11 +498,15 @@ export class TerminalManager {
       let settled = false
       let lastOutputLen = 0
       let stableCount = 0
+      // 长运行命令 + 自定义 session_id 的 fallback detach 句柄
+      // 在 cleanup 阶段统一清理；fallbackDetach 闭包见下方
+      let fallbackDetach: NodeJS.Timeout | null = null
 
       const cleanup = () => {
         clearTimeout(timeoutHandle)
         clearInterval(detachCheck)
         clearInterval(stableCheck)
+        if (fallbackDetach) clearTimeout(fallbackDetach)
         state.callbacks.delete(captureCb)
         // 清理 detach 回调
         detachCallbacks.delete(sid)
@@ -561,6 +611,23 @@ export class TerminalManager {
       // 长运行命令不触发稳定检测完成（只靠 detach 或超时）
       if (this.isPersistent(normalizedCommand)) {
         clearInterval(stableCheck)
+      }
+
+      // 长运行命令 + 自定义 session_id 的 fallback detach：
+      // AI 显式传入 session_id（区别于默认 agent session）说明期望 dev server 等
+      // 持续运行。AUTO_DETACH_PATTERNS 是主要机制（检测各框架就绪输出），
+      // 这里是兜底：模式没匹配到时，PTY 仍存活就强制 detach 返回给 AI。
+      // 分阶段超时：快速命令 8s，慢启动命令（mvn/gradle/dotnet）给 30s。
+      if (this.isPersistent(normalizedCommand) && options.sessionId && !options.sessionId.startsWith('agent:')) {
+        const isSlowStartup = /^(?:mvn|gradle|dotnet)\b/i.test(normalizedCommand)
+        const fallbackMs = isSlowStartup ? 30000 : 8000
+        fallbackDetach = setTimeout(() => {
+          if (settled || autoDetached) return
+          // PTY 已退出（命令失败）则不强制 detach，让上层走 timeout 看到错误
+          if (!state.info.alive) return
+          autoDetached = true
+          finish()
+        }, fallbackMs)
       }
     })
   }

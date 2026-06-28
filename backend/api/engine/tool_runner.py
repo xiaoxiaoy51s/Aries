@@ -67,7 +67,12 @@ async def run_single_tool(
         except Exception:
             terminal_session_id = custom_sid or f"agent:{work_dir}"
 
-    reasoning_text = logger.write_tool_call(tool_id, tool_name, args)
+    reasoning_text = logger.write_tool_call(
+        tool_id,
+        tool_name,
+        args,
+        session_id=terminal_session_id,
+    )
     if segment_sink:
         if reasoning_text:
             await segment_sink.on_reasoning(reasoning_text)

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+import time
 
 from db.chat import (
     save_message,
@@ -27,10 +28,13 @@ from db.work_dirs import (
     rename_work_dir,
     get_latest_work_dir,
 )
-from services.chat_stream_manager import get_bg_history_events
-from utils.session_logger import resolve_message_log_events
+from utils.session_logger import resolve_message_log_events, load_messages_snapshots_batch
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
+
+# context-usage 计算较重，短 TTL 缓存避免切换会话时重复算
+_context_usage_cache: dict[str, tuple[float, dict]] = {}
+_CONTEXT_USAGE_TTL_SEC = 45.0
 
 
 class MessageCreate(BaseModel):
@@ -181,12 +185,48 @@ def get_session_detail(session_id: str):
 
 @router.put("/{session_id}")
 def update_session_meta_api(session_id: str, payload: SessionMetaUpdate):
+    from db.work_dirs import DEFAULT_WORK_DIR
+
+    work_dir = payload.work_dir
+    if work_dir is not None and not work_dir.strip():
+        meta = get_session_meta(session_id) or {}
+        if not (meta.get("work_dir") or "").strip():
+            work_dir = DEFAULT_WORK_DIR
     upsert_session(
         session_id=session_id,
         title=payload.title,
-        work_dir=payload.work_dir,
+        work_dir=work_dir,
     )
     return {"success": True, "session_id": session_id}
+
+
+@router.get("/{session_id}/bootstrap")
+def get_session_bootstrap(
+    session_id: str,
+    limit: int = 100,
+    include_snapshots: bool = True,
+):
+    """一次返回 session 元数据 + 消息列表 + 全部 JSONL 快照（切换对话专用）。"""
+    meta = get_session_meta(session_id) or {
+        "session_id": session_id,
+        "title": "",
+        "work_dir": "",
+        "created_at": "",
+        "updated_at": "",
+    }
+    messages = get_session_messages(session_id, limit=limit)
+    snapshots = (
+        load_messages_snapshots_batch(messages)
+        if include_snapshots
+        else {}
+    )
+    return {
+        "session_id": session_id,
+        "session": meta,
+        "messages": messages,
+        "snapshots": snapshots,
+        "total": len(messages),
+    }
 
 
 @router.get("/{session_id}/messages")
@@ -209,12 +249,18 @@ def get_history(session_id: str, limit: int = 20, user_only: bool = False):
 
 
 @router.get("/{session_id}/context-usage")
-def get_session_context_usage(session_id: str):
+def get_session_context_usage(session_id: str, refresh: bool = False):
     """获取当前会话的上下文窗口占用情况（基于 token 估算）。
 
     复用 get_memory_aware_context_messages + build_context_usage_breakdown，
     供前端按需展示按"功能模块"细分的真实占用百分比。
     """
+    now = time.monotonic()
+    if not refresh:
+        cached = _context_usage_cache.get(session_id)
+        if cached and (now - cached[0]) < _CONTEXT_USAGE_TTL_SEC:
+            return cached[1]
+
     from db.chat import get_memory_aware_context_messages
     from utils.token_counter import build_context_usage_breakdown
     from api.engine.agent_mode import (
@@ -250,6 +296,7 @@ def get_session_context_usage(session_id: str):
     for k in ("recent_message_count", "memory_count", "reasoning_count", "recent_window_tokens"):
         if token_info.get(k) is not None:
             breakdown[k] = token_info[k]
+    _context_usage_cache[session_id] = (now, breakdown)
     return breakdown
 
 
@@ -346,9 +393,5 @@ def get_message_jsonl(message_id: int):
     snapshot_field = row[1] if row[1] else None
     events = resolve_message_log_events(snapshot_field)
     jsonl_path = snapshot_field if snapshot_field and str(snapshot_field).endswith(".jsonl") else None
-
-    # 没有持久化快照时，从 session 级后台事件文件恢复
-    if not events and session_id:
-        events = get_bg_history_events(session_id)
 
     return {"message_id": message_id, "jsonl_path": jsonl_path, "events": events}

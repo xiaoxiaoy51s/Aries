@@ -39,6 +39,48 @@ export async function getSessionMessages(sessionId: string, limit = 100) {
   return res.json()
 }
 
+export interface SessionBootstrapSnapshot {
+  events: unknown[]
+  jsonl_path?: string | null
+}
+
+export interface SessionBootstrapResponse {
+  session_id: string
+  session: {
+    session_id: string
+    title?: string
+    work_dir?: string
+    created_at?: string
+    updated_at?: string
+  }
+  messages: Array<{
+    id: number
+    role: string
+    content: string
+    reasoning_content?: string
+    image_path?: string
+    message_snapshot_json?: string
+    mode?: string
+    created_at?: string
+  }>
+  snapshots: Record<string, SessionBootstrapSnapshot>
+  total: number
+}
+
+/** 一次拉取 session 元数据 + 消息 + 全部 JSONL 快照（切换对话专用） */
+export async function getSessionBootstrap(
+  sessionId: string,
+  limit = 100,
+): Promise<SessionBootstrapResponse> {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    include_snapshots: 'true',
+  })
+  const res = await fetch(`${getBaseUrl()}/sessions/${sessionId}/bootstrap?${params}`)
+  if (!res.ok) throw new Error('加载会话失败')
+  return res.json()
+}
+
 export async function getSessionHistory(sessionId: string, limit = 20, userOnly = false) {
   const res = await fetch(
     `${getBaseUrl()}/sessions/${sessionId}/history?limit=${limit}&user_only=${userOnly}`

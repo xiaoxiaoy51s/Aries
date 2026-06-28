@@ -45,6 +45,7 @@
           </svg>
         </button>
 
+        <img src="@/assets/logo.png" alt="" class="title-bar-logo" />
         <span class="title-bar-brand">Aries</span>
 
         <TitleBarMenu :menus="menus" @select="onMenuSelect" />
@@ -221,30 +222,49 @@ function onMenuSelect(menuKey: string, item: { id?: string; divider?: boolean })
 }
 
 :root {
-  --bg-app: #f8f8f7;
-  --bg-sidebar: rgba(255, 255, 255, 0.82);
-  --bg-panel: rgba(255, 255, 255, 0.95);
-  --border: #e8e8e6;
-  --border-strong: #d4d4d0;
+  --bg-app: #fafbfd;
+  --bg-sidebar: #fbfcfe;
+  --bg-panel: #ffffff;
+  --bg-content: #ffffff;
+  --bg-chat: #ffffff;
+  --border: #eef1f6;
+  --border-strong: #e3e8f0;
   --text: #1a1a18;
-  --text-secondary: #6b6b66;
-  --text-muted: #9a9a94;
+  --text-secondary: #5c6672;
+  --text-muted: #8a96a6;
   --accent: #2d2d2a;
-  --accent-hover: #f0f0ee;
-  --accent-active: #ebebea;
+  --accent-hover: #f5f7fb;
+  --accent-active: #eef2f8;
   --send-bg: #1a1a18;
   --send-hover: #333330;
-  --user-msg: #eef4ff;
-  --assistant-msg: #f5f5f3;
+  --user-msg: #e8f0fa;
+  --assistant-msg: #ffffff;
   --radius: 12px;
   --radius-lg: 16px;
   --sidebar-width: 260px;
-  --shadow-panel: 0 1px 3px rgba(0, 0, 0, 0.06), 0 4px 24px rgba(0, 0, 0, 0.04);
+  --shadow-panel: 0 1px 2px rgba(80, 120, 180, 0.04), 0 4px 16px rgba(80, 120, 180, 0.03);
+  /* 侧边栏 / 标题栏：极浅蓝，接近白 */
+  --glass-surface: rgba(252, 253, 255, 0.82);
+  --glass-surface-soft: rgba(250, 251, 254, 0.72);
+  --glass-border: rgba(232, 237, 245, 0.95);
+  --glass-highlight: rgba(255, 255, 255, 0.95);
+  --glass-blur: blur(24px) saturate(1.12);
+  --glass-blur-light: blur(12px) saturate(1.08);
+  --glass-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    4px 0 16px rgba(80, 120, 180, 0.03);
+  --glass-shadow-top:
+    inset 0 1px 0 var(--glass-highlight),
+    0 2px 12px rgba(80, 120, 180, 0.03);
 }
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  background: var(--bg-app);
+  background-color: #f8fafc;
+  background-image:
+    radial-gradient(ellipse 90% 70% at 8% 10%, rgba(236, 244, 255, 0.35) 0%, transparent 55%),
+    radial-gradient(ellipse 80% 60% at 92% 90%, rgba(240, 246, 255, 0.25) 0%, transparent 50%),
+    linear-gradient(165deg, #fbfcfe 0%, #f8fafc 50%, #fafbfd 100%);
   color: var(--text);
   overflow: hidden;
   font-size: 14px;
@@ -256,6 +276,7 @@ body {
   width: 100vw;
   height: 100vh;
   position: relative;
+  background: transparent;
 }
 
 /* 自定义标题栏 */
@@ -269,10 +290,11 @@ body {
   display: flex;
   align-items: center;
   padding: 0 16px 0 12px;
-  background: rgba(255, 255, 255, 0.78);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.5);
-  backdrop-filter: blur(16px) saturate(1.2);
-  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  background: var(--glass-surface);
+  border-bottom: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow-top);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
   -webkit-app-region: drag;
   app-region: drag;
 }
@@ -292,13 +314,16 @@ body {
   justify-content: center;
   width: 28px;
   height: 28px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--glass-border);
   border-radius: 7px;
-  background: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.55);
   color: var(--text-secondary);
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
   flex-shrink: 0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  backdrop-filter: var(--glass-blur-light);
+  -webkit-backdrop-filter: var(--glass-blur-light);
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
@@ -315,12 +340,23 @@ body {
   pointer-events: none;
 }
 
+.title-bar-logo {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  object-fit: cover;
+  flex-shrink: 0;
+  margin-left: 4px;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
 .title-bar-brand {
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
   user-select: none;
-  margin-left: 2px;
+  margin-left: 6px;
   margin-right: 8px;
 }
 

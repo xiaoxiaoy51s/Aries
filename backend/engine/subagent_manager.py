@@ -466,3 +466,195 @@ def build_subagent_runtime(name: str) -> dict[str, Any]:
         "mcp_servers": list(entry.allowed_mcps),
         "effective_model": entry.effective_model or entry.model,
     }
+
+
+def _build_subagent_skill_tool_definitions(skill_entries: list[Any]) -> list[dict[str, Any]]:
+    """基于 skill_entries 加载工具定义 schema（强制激活，不检查 enabled）。"""
+    from engine.skills_manager import CORE_TOOL_NAMES
+
+    tools: list[dict[str, Any]] = []
+    for entry in skill_entries:
+        try:
+            import importlib.util
+
+            init_path = entry.skill_path / "__init__.py"
+            if init_path.is_file():
+                module_name = f"_subagent_direct_skill_{entry.folder_name}"
+                spec = importlib.util.spec_from_file_location(module_name, init_path)
+                if spec and spec.loader:
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    skill_module = mod
+                else:
+                    continue
+            else:
+                from engine.skills_manager import skill_import_path
+                skill_module = __import__(
+                    skill_import_path(entry.folder_name),
+                    fromlist=["get_tool_definition", "get_tool_definitions", "execute"],
+                )
+
+            if hasattr(skill_module, "get_tool_definitions"):
+                defs = skill_module.get_tool_definitions()
+                items = defs if isinstance(defs, list) else [defs]
+                for item in items:
+                    name = item.get("function", {}).get("name") if item else None
+                    if name and name not in CORE_TOOL_NAMES:
+                        tools.append(item)
+            elif hasattr(skill_module, "get_tool_definition"):
+                item = skill_module.get_tool_definition()
+                name = item.get("function", {}).get("name") if item else None
+                if name and name not in CORE_TOOL_NAMES:
+                    tools.append(item)
+        except Exception as exc:
+            logger.warning("加载子 Agent skill %s 工具失败: %s", entry.folder_name, exc)
+    return tools
+
+
+def _filter_mcp_tools_by_servers(all_tools: list[dict[str, Any]], allowed_mcps: list[str]) -> list[dict[str, Any]]:
+    """按 server_id 过滤 MCP 工具定义。MCP 工具名约定为 `mcp_{server_id}_{tool}`。"""
+    if not allowed_mcps:
+        return []
+    try:
+        from aries_mcp.runtime import _slug
+    except Exception:
+        return []
+
+    allowed_slugs = {_slug(m) for m in allowed_mcps}
+    result: list[dict[str, Any]] = []
+    for tool in all_tools:
+        name = tool.get("function", {}).get("name", "")
+        if not name.startswith("mcp_"):
+            continue
+        rest = name[len("mcp_"):]
+        for slug in allowed_slugs:
+            if rest == slug or rest.startswith(slug + "_"):
+                result.append(tool)
+                break
+    return result
+
+
+def build_subagent_direct_chat_config(
+    name: str,
+    work_dir: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """构建子 Agent 直接作为对话主体时所需的覆盖配置。
+
+    返回：
+        {
+            "entry": SubagentEntry,
+            "override_model": str,              # 实际使用的模型（可能为空，表示走系统默认）
+            "override_system_prompt": str,      # 完整 system prompt
+            "override_tools": list[dict],       # 工具定义（含核心工具 + allowed skills + allowed mcps）
+            "error": str | None,
+        }
+    """
+    try:
+        runtime = build_subagent_runtime(name)
+    except ValueError as exc:
+        return {"entry": None, "override_model": "", "override_system_prompt": "", "override_tools": [], "error": str(exc)}
+
+    entry = runtime["entry"]
+    skills_context = runtime["skills_context"]
+    skill_entries = runtime["skill_entries"]
+    mcp_servers = runtime["mcp_servers"]
+
+    # 解析子 Agent 模型对应的 API 凭证（baseUrl / apiKey）
+    override_base_url = ""
+    override_api_key = ""
+    effective_model = runtime["effective_model"]
+    if effective_model:
+        try:
+            from models.model_manager import model_manager
+            for m in model_manager.list_models():
+                if m.model == effective_model:
+                    override_base_url = m.baseUrl or ""
+                    override_api_key = m.apiKey or ""
+                    break
+        except Exception as exc:
+            logger.warning("解析子 Agent 模型凭证失败: %s", exc)
+    # 若子 Agent 未指定模型或未匹配到，回退到当前 request 的凭证（由调用方处理）
+
+
+    # 构造 system prompt
+    import platform
+    from datetime import datetime
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    parts: list[str] = [
+        f"# 你的身份\n你是一个 AI 助手：`{entry.name}`。今天的日期是 {today}，当前操作系统：{platform.system()}。\n",
+    ]
+    if entry.system_prompt.strip():
+        parts.append(f"# 详细职责\n{entry.system_prompt.strip()}\n")
+
+    # 注入项目记忆
+    if work_dir and work_dir.strip():
+        try:
+            from memory.agent_memory import build_agent_memory_system_section
+            memory_section = build_agent_memory_system_section(work_dir)
+            if memory_section:
+                parts.append(memory_section)
+        except Exception:
+            pass
+
+    # 注入编码行为约束
+    try:
+        from prompt.coding_agent_prompts import (
+            DOING_TASKS_RULES,
+            CODE_STYLE_RULES,
+            COMPLETION_HONESTY_RULES,
+        )
+        parts.append(
+            "# 编码行为约束\n"
+            + DOING_TASKS_RULES + "\n\n"
+            + CODE_STYLE_RULES + "\n\n"
+            + COMPLETION_HONESTY_RULES
+        )
+    except Exception:
+        pass
+
+    # 注入 session 上下文（仅作提示）
+    if session_id:
+        parts.append(f"# 当前会话\n当前 session_id：`{session_id}`。请保持回答简洁、可执行。")
+
+    if skills_context:
+        parts.append("# 可用本地 Skills\n" + skills_context)
+
+    override_system_prompt = "\n\n".join(parts)
+
+    # 构造工具集：核心工具 + 子 Agent 技能 + 过滤后的 MCP
+    # 显式不暴露 delegate_to_subagent，防止递归
+    try:
+        from engine.tool_definitions import get_tool_definitions as get_core_tool_definitions
+        core_tools = [
+            d for d in (get_core_tool_definitions() or [])
+            if d.get("function", {}).get("name") != "delegate_to_subagent"
+        ]
+    except Exception as exc:
+        logger.warning("加载子 Agent 核心工具失败: %s", exc)
+        core_tools = []
+
+    skill_tools = _build_subagent_skill_tool_definitions(skill_entries)
+
+    try:
+        from aries_mcp.runtime import get_mcp_tool_definitions
+        all_mcp_tools = get_mcp_tool_definitions()
+    except Exception:
+        all_mcp_tools = []
+    mcp_tools = _filter_mcp_tools_by_servers(all_mcp_tools, mcp_servers)
+
+    override_tools: list[dict[str, Any]] = []
+    override_tools.extend(core_tools)
+    override_tools.extend(skill_tools)
+    override_tools.extend(mcp_tools)
+
+    return {
+        "entry": entry,
+        "override_model": effective_model,
+        "override_base_url": override_base_url,
+        "override_api_key": override_api_key,
+        "override_system_prompt": override_system_prompt,
+        "override_tools": override_tools,
+        "error": None,
+    }

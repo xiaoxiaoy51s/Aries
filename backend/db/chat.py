@@ -59,6 +59,23 @@ def update_message(
     conn.commit()
 
 
+def get_latest_assistant_message(session_id: str) -> dict | None:
+    """获取最新的 assistant 消息（含 id, content, message_snapshot_json）。"""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT id, content, message_snapshot_json FROM chat_messages "
+        "WHERE session_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1",
+        (session_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "content": row[1] or "",
+        "snapshot_path": row[2] or "",
+    }
+
+
 def get_chat_context_messages(
     session_id: str,
     message_limit: int = 28,

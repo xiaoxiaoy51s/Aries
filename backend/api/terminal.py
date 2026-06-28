@@ -21,6 +21,28 @@ import websockets
 router = APIRouter(tags=["terminal"])
 
 
+async def _safe_send_text(websocket: WebSocket, text: str) -> bool:
+    """向客户端发送文本；若连接已断开则静默失败。"""
+    try:
+        if websocket.client_state.name == "DISCONNECTED":
+            return False
+        await websocket.send_text(text)
+        return True
+    except WebSocketDisconnect:
+        return False
+    except RuntimeError:
+        # Starlette: "Cannot call send once a close message has been sent."
+        return False
+
+
+async def _safe_close(websocket: WebSocket) -> None:
+    try:
+        if websocket.client_state.name != "DISCONNECTED":
+            await websocket.close()
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+
+
 @router.get("/terminal/cli-status")
 async def cli_status() -> dict[str, Any]:
     """检查 Node.js CLI Server 状态"""
@@ -60,8 +82,8 @@ async def terminal_websocket(
     await websocket.accept()
     server_url = get_server_url()
     if not server_url:
-        await websocket.send_text(json.dumps({"type": "error", "data": "CLI Server 未启动"}))
-        await websocket.close()
+        await _safe_send_text(websocket, json.dumps({"type": "error", "data": "CLI Server 未启动"}))
+        await _safe_close(websocket)
         return
 
     port = get_cli_port()
@@ -78,7 +100,10 @@ async def terminal_websocket(
                     async for msg in cli_ws:
                         if isinstance(msg, bytes):
                             msg = msg.decode("utf-8", errors="replace")
-                        await websocket.send_text(msg)
+                        if not await _safe_send_text(websocket, msg):
+                            break
+                except WebSocketDisconnect:
+                    pass
                 except Exception:
                     pass
 
@@ -99,9 +124,14 @@ async def terminal_websocket(
     except asyncio.CancelledError:
         # 连接阶段或清理阶段被正常取消（页面刷新/关闭），无需报错
         pass
+    except WebSocketDisconnect:
+        # 客户端在 CLI 握手/转发期间已断开
+        pass
     except Exception as e:
-        if websocket.client_state.name != "DISCONNECTED":
-            await websocket.send_text(json.dumps({"type": "error", "data": f"CLI 连接失败: {e}"}))
+        await _safe_send_text(
+            websocket,
+            json.dumps({"type": "error", "data": f"CLI 连接失败: {e}"}),
+        )
 
 
 @router.post("/terminal/reset-agent")
@@ -132,15 +162,32 @@ async def run_command(req: RunCommandRequest) -> dict[str, Any]:
 
 @router.get("/terminal/session/{invocation_id}")
 async def get_terminal_session(invocation_id: str) -> dict[str, Any]:
-    """通过 invocation_id 查找对应的终端 session_id"""
+    """通过 invocation_id 查找对应的终端 session_id。
+
+    优先查 Python 端内存表（自身 register_invocation_session 注册的），
+    再 fallback 到 CLI server 的 invocationToSession 映射。
+    """
+    # 1) Python 端映射（精确匹配）
+    try:
+        from services.terminal_manager import TerminalManager
+        resolved = TerminalManager.resolve_invocation_session(invocation_id)
+        if resolved:
+            return {"session_id": resolved}
+    except Exception:
+        pass
+
+    # 2) Fallback：尝试 CLI server 自身的 mapping
     server_url = get_server_url()
     if server_url:
         try:
             async with httpx.AsyncClient() as client:
-                resp = await client.get(f"{server_url}/sessions/{invocation_id}")
-                return resp.json()
+                resp = await client.get(f"{server_url}/sessions/{invocation_id}", timeout=3)
+                data = resp.json()
+                if data.get("session_id"):
+                    return data
         except Exception:
             pass
+
     return {"session_id": None}
 
 
@@ -206,15 +253,47 @@ async def background_command(invocation_id: str) -> dict[str, Any]:
 
 @router.post("/terminal/{invocation_id}/stop")
 async def stop_command(invocation_id: str) -> dict[str, Any]:
-    """终止命令"""
-    # 先通知 Python CLIExecutor 的异步执行层
+    """终止命令（彻底杀掉 dev server 等长运行进程）。
+
+    关键：不能只发 Ctrl+C（interrupt），那只能让 vite 优雅关闭，
+    npm 进程和 vite worker 还会继续占端口。必须用 taskkill /T /F 杀进程树。
+    """
+    # 1) 先通知 Python CLIExecutor 的异步执行层（如果在执行中，让 await 立即返回）
     try:
         from utils.cli_executor import CLIExecutor
         CLIExecutor.signal_cancel(invocation_id)
     except Exception:
         pass
 
+    # 2) 解析 invocation_id → session_id（先查 Python 端映射，再查 CLI server）
+    session_id = ""
+    try:
+        from services.terminal_manager import TerminalManager
+        session_id = TerminalManager.resolve_invocation_session(invocation_id) or ""
+    except Exception:
+        pass
+    if not session_id:
+        server_url = get_server_url()
+        if server_url:
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(f"{server_url}/sessions/{invocation_id}", timeout=3)
+                    data = resp.json()
+                    session_id = data.get("session_id") or ""
+            except Exception:
+                pass
+
+    # 3) 关闭 session（Node.js 端 closeSession 用 taskkill /T /F 杀进程树）
     server_url = get_server_url()
+    if server_url and session_id:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.delete(f"{server_url}/sessions/{session_id}")
+                return resp.json()
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    # 4) 兜底：仅发 Ctrl+C interrupt（杀不干净但至少打断当前命令）
     if server_url:
         try:
             async with httpx.AsyncClient() as client:

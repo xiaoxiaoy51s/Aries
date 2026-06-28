@@ -563,7 +563,7 @@ onMounted(fetchAll)
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
-  background: var(--bg-app);
+  background: var(--bg-content);
 }
 
 .page-top {

@@ -145,3 +145,78 @@ async def broadcast_stream_event(session_id: str, event_data: dict[str, Any]) ->
         "session_id": session_id,
         "event": event_data,
     })
+
+
+async def notify_log_event(
+    session_id: str,
+    message_id: int | str,
+    event: dict[str, Any],
+    jsonl_path: str = "",
+) -> None:
+    """广播一个 JSONL 日志事件给前端。
+
+    每当 SessionLogger 写入一个事件到 JSONL 文件时调用。
+    前端收到后将事件应用到 UI（与原来的 SSE 事件处理路径一致）。
+    jsonl_path 用于前端断线重连时回放/校验。
+    """
+    await _manager.broadcast(session_id, {
+        "type": "log_event",
+        "session_id": session_id,
+        "message_id": message_id,
+        "event": event,
+        "jsonl_path": jsonl_path,
+    })
+
+
+def schedule_log_event_broadcast(
+    session_id: str,
+    message_id: int | str,
+    jsonl_path: str = "",
+) -> "Callable[[dict[str, Any]], None]":
+    """返回一个同步回调，调用时通过 create_task 调度异步广播。
+
+    用法（典型场景：在同步的 SessionLogger 中作为 on_event 传入）：
+        logger = SessionLogger(sid, mid, on_event=schedule_log_event_broadcast(sid, mid, path))
+    """
+    def _on_event(event: dict[str, Any]) -> None:
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(
+                    notify_log_event(session_id, message_id, event, jsonl_path)
+                )
+            else:
+                # 退化路径：没有运行中的事件循环时直接丢队列
+                pass
+        except RuntimeError:
+            pass
+
+    return _on_event
+
+
+async def notify_log_started(
+    session_id: str,
+    message_id: int | str,
+    jsonl_path: str = "",
+) -> None:
+    """通知前端：assistant 回复开始（用于前端创建/定位 placeholder 消息）。"""
+    await _manager.broadcast(session_id, {
+        "type": "log_started",
+        "session_id": session_id,
+        "message_id": message_id,
+        "jsonl_path": jsonl_path,
+    })
+
+
+async def notify_log_complete(
+    session_id: str,
+    message_id: int | str,
+    jsonl_path: str = "",
+) -> None:
+    """通知前端：assistant 回复结束（用于前端停止 loading 状态）。"""
+    await _manager.broadcast(session_id, {
+        "type": "log_complete",
+        "session_id": session_id,
+        "message_id": message_id,
+        "jsonl_path": jsonl_path,
+    })

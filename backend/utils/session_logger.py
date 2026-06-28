@@ -8,14 +8,20 @@ SessionLogger: 将 agent 每轮工作过程以 JSONL 格式写入文件（一条
   - tool_call       : 工具调用开始
   - tool_result     : 工具调用结束
   - assistant_text  : 每轮工作说明或最终回复（整段）
+
+设计要点：
+  - 每个 token 通过 record_assistant_content 立即写入 JSONL，无缓冲
+  - 写入后通过 on_event 回调广播给前端（WebSocket）
+  - JSONL 文件是唯一数据源：前端通过重读文件恢复内容
 """
 from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 SESSION_LOG_ROOT = Path.home() / ".Aries" / "session"
 SUBAGENT_LOG_ROOT = SESSION_LOG_ROOT / "sub_agent"
@@ -47,37 +53,58 @@ def _append_event(path: Path, event: dict[str, Any]) -> None:
 
 
 class SessionLogger:
-    """单次 assistant 回复的 JSONL 日志；流式阶段缓冲，在段落边界写入文件。"""
+    """单次 assistant 回复的 JSONL 日志；流式阶段实时写入文件，每个 token 立即落盘。"""
 
-    def __init__(self, session_id: str, message_id: int | str):
+    def __init__(
+        self,
+        session_id: str,
+        message_id: int | str,
+        on_event: Optional[Callable[[dict[str, Any]], None]] = None,
+    ):
+        """
+        Args:
+            session_id: 会话 ID
+            message_id: 消息 ID
+            on_event: 每次写入事件后的回调（参数为事件 dict），
+                      用于通过 WebSocket 实时推送给前端。
+        """
         self.path = _get_jsonl_path(session_id, message_id)
+        self._session_id = session_id
+        self._message_id = message_id
+        self._on_event = on_event
         self._tool_log: list[dict[str, Any]] = []
         self._reasoning_all = ""
         self._assistant_all = ""
-        self._assistant_flushed_len = 0
-        self._reasoning_buffer = ""
         self._started_perf = time.perf_counter()
         self._model = ""
         self._token_usage: dict[str, Any] = {}
         self._metadata_written = False
 
+    def _emit(self, event: dict[str, Any]) -> None:
+        """触发事件回调（异常吞掉，避免推送失败影响主流程）。"""
+        if self._on_event is None:
+            return
+        try:
+            self._on_event(event)
+        except Exception:
+            pass
+
     def append_reasoning_delta(self, text: str) -> None:
+        """每个 reasoning token 立即写入 JSONL（无缓冲），和 assistant_text 一样实时落盘。"""
         if not text:
             return
-        self._reasoning_buffer += text
         self._reasoning_all += text
-
-    def flush_reasoning_segment(self) -> str:
-        if not self._reasoning_buffer:
-            return ""
-        text = self._reasoning_buffer
-        _append_event(self.path, {
+        event: dict[str, Any] = {
             "type": "reasoning_text",
             "text": text,
             "timestamp": _utc_now(),
-        })
-        self._reasoning_buffer = ""
-        return text
+        }
+        _append_event(self.path, event)
+        self._emit(event)
+
+    def flush_reasoning_segment(self) -> str:
+        """兼容保留：当前实现已无缓冲，本方法不再写盘，只返回累积文本供 DB 使用。"""
+        return self._reasoning_all
 
     def write_tool_call(
         self,
@@ -85,7 +112,9 @@ class SessionLogger:
         tool_name: str,
         args: dict[str, Any],
         started_at: str | None = None,
+        session_id: str = "",
     ) -> str:
+        # 先把当前累积的 reasoning 写出
         reasoning = self.flush_reasoning_segment()
         ts = started_at or _utc_now()
         self._tool_log.append({
@@ -94,14 +123,18 @@ class SessionLogger:
             "status": "running",
             "started_at": ts,
         })
-        _append_event(self.path, {
+        event: dict[str, Any] = {
             "type": "tool_call",
             "tool_call_id": tool_call_id,
             "tool_name": tool_name,
             "args": args,
             "status": "running",
             "started_at": ts,
-        })
+        }
+        if session_id:
+            event["session_id"] = session_id
+        _append_event(self.path, event)
+        self._emit(event)
         return reasoning
 
     def write_tool_result(
@@ -135,44 +168,54 @@ class SessionLogger:
         if file_change:
             event["file_change"] = file_change
         _append_event(self.path, event)
+        self._emit(event)
 
     def record_assistant_content(self, text: str) -> None:
-        if text:
-            self._assistant_all += text
+        """每个 token 立即写入 JSONL（无缓冲），保证日志实时落盘。"""
+        if not text:
+            return
+        self._assistant_all += text
+        event: dict[str, Any] = {
+            "type": "assistant_text",
+            "text": text,
+            "timestamp": _utc_now(),
+        }
+        _append_event(self.path, event)
+        self._emit(event)
 
     def flush_assistant_round(self) -> tuple[str, str]:
-        """将本轮新增的 assistant 文本写入 JSONL（多轮工具调用时每轮调用一次）。"""
+        """保留兼容：当前实现已无缓冲，本方法只 flush reasoning。"""
         reasoning = self.flush_reasoning_segment()
-        new_text = self._assistant_all[self._assistant_flushed_len:]
-        if not new_text:
-            return reasoning, ""
-        _append_event(self.path, {
-            "type": "assistant_text",
-            "text": new_text,
-            "timestamp": _utc_now(),
-        })
-        self._assistant_flushed_len = len(self._assistant_all)
-        return reasoning, new_text
+        return reasoning, ""
 
     def write_assistant_segment(self, text: str) -> None:
         if not text:
             return
         self.flush_reasoning_segment()
-        if len(self._assistant_all) < self._assistant_flushed_len + len(text):
-            self._assistant_all += text
-        _append_event(self.path, {
+        self._assistant_all += text
+        event: dict[str, Any] = {
             "type": "assistant_text",
             "text": text,
             "timestamp": _utc_now(),
-        })
-        self._assistant_flushed_len = len(self._assistant_all)
+        }
+        _append_event(self.path, event)
+        self._emit(event)
 
     def set_model(self, model: str) -> None:
         self._model = model or ""
 
     def set_token_usage(self, usage: dict[str, Any] | None) -> None:
-        if usage:
-            self._token_usage = usage
+        if not usage:
+            return
+        for key, value in usage.items():
+            if key == "api_usage" and isinstance(value, dict):
+                api = self._token_usage.setdefault("api_usage", {})
+                for uk, uv in value.items():
+                    api[uk] = uv
+            elif isinstance(value, dict) and key in self._token_usage and isinstance(self._token_usage[key], dict):
+                self._token_usage[key].update(value)
+            else:
+                self._token_usage[key] = value
 
     def add_token_usage(self, usage: dict[str, Any] | None) -> None:
         if not usage:
@@ -196,6 +239,7 @@ class SessionLogger:
             "timestamp": _utc_now(),
         }
         _append_event(self.path, event)
+        self._emit(event)
 
     def get_run_metadata(self) -> dict[str, Any]:
         """返回当前运行元数据（不写盘），供流式推送使用。"""
@@ -207,7 +251,13 @@ class SessionLogger:
 
     def finalize(self) -> None:
         self.flush_reasoning_segment()
+        # write_run_metadata 内部已 self._emit
         self.write_run_metadata()
+        # 广播 log_complete 事件，告知前端本次回复结束
+        self._emit({
+            "type": "log_complete",
+            "timestamp": _utc_now(),
+        })
 
     def write_subagent_block(
         self,
@@ -227,7 +277,7 @@ class SessionLogger:
         log_path: 子 Agent 独立 JSONL 文件路径（前端可点击跳转）
         """
         self.flush_reasoning_segment()
-        _append_event(self.path, {
+        event = {
             "type": "sub_agent",
             "tool_call_id": tool_call_id,
             "subagent": subagent_name,
@@ -239,7 +289,9 @@ class SessionLogger:
             "rounds": rounds,
             "duration_ms": duration_ms,
             "timestamp": _utc_now(),
-        })
+        }
+        _append_event(self.path, event)
+        self._emit(event)
 
     def write_error_event(
         self,
@@ -249,13 +301,15 @@ class SessionLogger:
     ) -> None:
         """记录错误事件（如 API 错误、超时等）。"""
         self.flush_reasoning_segment()
-        _append_event(self.path, {
+        event = {
             "type": "error_event",
             "error_type": error_type,
             "error_msg": error_msg,
             "details": details,
             "timestamp": _utc_now(),
-        })
+        }
+        _append_event(self.path, event)
+        self._emit(event)
 
     def write_info_event(
         self,
@@ -263,20 +317,16 @@ class SessionLogger:
         info_msg: str,
         details: str = "",
     ) -> None:
-        """记录信息事件（如上下文压缩、轮次提醒等），非错误。
-
-        info_type 示例：
-        - context_compacted: 上下文已压缩
-        - step_reminder: 工具调用即将达到上限提醒
-        - repeat_detected: 检测到重复工具调用
-        """
-        _append_event(self.path, {
+        """记录信息事件（如上下文压缩、轮次提醒等），非错误。"""
+        event = {
             "type": "info_event",
             "info_type": info_type,
             "info_msg": info_msg,
             "details": details,
             "timestamp": _utc_now(),
-        })
+        }
+        _append_event(self.path, event)
+        self._emit(event)
 
     def _tool_summary(self) -> str:
         if not self._tool_log:
@@ -368,3 +418,44 @@ def resolve_message_log_events(snapshot_field: str | None) -> list[dict[str, Any
                     "error": block.get("error", ""),
                 })
     return events
+
+
+def _snapshot_payload_for_message(msg: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """解析单条 assistant 消息的 JSONL / 内联 snapshot。"""
+    if msg.get("role") != "assistant":
+        return None
+    mid = msg.get("id")
+    if not mid:
+        return None
+    snapshot_field = msg.get("message_snapshot_json")
+    events = resolve_message_log_events(snapshot_field)
+    jsonl_path = (
+        snapshot_field
+        if snapshot_field and str(snapshot_field).endswith(".jsonl")
+        else None
+    )
+    return str(mid), {"events": events, "jsonl_path": jsonl_path}
+
+
+def load_messages_snapshots_batch(
+    messages: list[dict[str, Any]],
+    max_workers: int = 8,
+) -> dict[str, dict[str, Any]]:
+    """并行读取 session 内所有 assistant 消息的快照事件（一次 bootstrap 用）。"""
+    assistant_msgs = [
+        m for m in messages
+        if m.get("role") == "assistant" and m.get("id")
+    ]
+    if not assistant_msgs:
+        return {}
+
+    result: dict[str, dict[str, Any]] = {}
+    workers = min(max_workers, max(1, len(assistant_msgs)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_snapshot_payload_for_message, m) for m in assistant_msgs]
+        for fut in as_completed(futures):
+            payload = fut.result()
+            if payload:
+                mid, data = payload
+                result[mid] = data
+    return result

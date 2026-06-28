@@ -29,7 +29,7 @@
         v-model:active-slash-command="activeSlashCommand"
         v-model:command-objective="commandObjective"
         v-model:plugin-menu-open="pluginMenuOpen"
-        :is-sending="isSending"
+        :is-sending="composerIsSending"
         v-model:selected-model="selectedModel"
         :model-list="modelStore.modelList"
         :can-send="canSend"
@@ -89,6 +89,8 @@
               :text-color="textColor"
               :font-size="fontSize"
               :meta="msg.meta"
+              :message-id="msg.messageId"
+              :chat-session-id="currentSessionId || ''"
               @revert="(idx: number) => revertArtifact(index, idx)"
               @view-artifact="(idx: number) => viewArtifact(index, idx)"
             />
@@ -102,7 +104,7 @@
         v-model:active-slash-command="activeSlashCommand"
         v-model:command-objective="commandObjective"
         v-model:plugin-menu-open="pluginMenuOpen"
-        :is-sending="isSending"
+        :is-sending="composerIsSending"
         v-model:selected-model="selectedModel"
         :model-list="modelStore.modelList"
         :can-send="canSend"
@@ -156,11 +158,11 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useModelStore } from '@/stores/model'
-import { usePrivacyStore } from '@/stores/privacy'
-import { streamChat, streamVision, stopChat, checkChatStatus, resumeChat, jsonToStreamEvent, type StreamEvent } from '@/api/chat'
+ import { usePrivacyStore } from '@/stores/privacy'
+import { stopChat, checkChatStatus, jsonToStreamEvent, type StreamEvent, startChat, startVision } from '@/api/chat'
 import { confirmTool } from '@/api/git'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { getSessionMessages, getSession, updateSessionMeta, getSessionContextUsage } from '@/api/sessions'
+import { getSessionMessages, getSession, updateSessionMeta, getSessionContextUsage, getSessionBootstrap } from '@/api/sessions'
 import { listWorkDirs, createWorkDir } from '@/api/work_dirs'
 import { selectDirectory } from '@/api/system'
 import AssistantMessage from '@/components/AssistantMessage.vue'
@@ -171,6 +173,29 @@ import UserMessageContent from '@/components/UserMessageContent.vue'
 import RightPanel from '@/components/workspace/RightPanel.vue'
 import TodoButton from '@/components/TodoButton.vue'
 import { parseSnapshotEventObjects } from '@/utils/snapshotParser'
+import { normalizeRunMetadata, type RunMeta } from '@/utils/runMetadata'
+import {
+  bindStreamDuration,
+  startStreamDuration,
+  stopStreamDuration,
+  clearSessionStreamDurations,
+} from '@/utils/streamDurationStore'
+import {
+  markSessionWorking,
+  markSessionIdle,
+  isSessionWorking,
+} from '@/utils/sessionWorkStore'
+import {
+  saveSessionSnapshot,
+  loadSessionSnapshot,
+  ensureSessionWs,
+  pruneSessionWsKeep,
+  closeSessionWs,
+  closeAllSessionWs,
+  setSessionWsHandler,
+  buildWsKeepSet,
+  type SessionChatSnapshot,
+} from '@/utils/sessionChatPool'
 
 interface SlashCommandDef {
   id: string
@@ -222,70 +247,249 @@ const activeComposerRef = ref<InstanceType<typeof ChatComposer>>()
 const currentSessionId = ref<string | undefined>(undefined)
 const contextUsagePercent = ref(0)
 const contextUsageBreakdown = ref<import('@/api/sessions').ContextUsageInfo | null>(null)
-let streamAbortController: AbortController | null = null
 
-// 平台消息 WebSocket：实时接收飞书/QQ/微信等平台的新消息通知
-let chatWs: WebSocket | null = null
+// 当前 assistant message_id（用于把 log_event 路由到正确的消息）
+let activeAssistantMessageId: number | null = null
+let activeAssistantIdx: number | null = null
+/** run_metadata 可能在 log_complete 之后到达，先缓存，完成时统一写入 */
+const pendingRunMetaByMessageId = new Map<number, RunMeta>()
 
-function startChatWs() {
-  stopChatWs()
+// WebSocket 由 sessionChatPool 管理（支持多 session 并行，见下方 ensureChatWsReady）
+
+/**
+ * 为 log_started 事件创建/定位 assistant placeholder
+ * 若该 message_id 已在 messages 中（断线重连场景），复用并把 isLoading 置为 true
+ */
+function ensureLogPlaceholder(messageId: number, jsonlPath: string) {
   if (!currentSessionId.value) return
-  const baseUrl = modelStore.getBaseUrl()
-  const wsBase = baseUrl.replace(/^http/, 'ws')
-  const wsUrl = `${wsBase}/ws/chat?session_id=${encodeURIComponent(currentSessionId.value)}`
-  console.log('[ChatWS] 连接', wsUrl)
-  chatWs = new WebSocket(wsUrl)
-  chatWs.onopen = () => {
-    console.log('[ChatWS] 已连接, session=', currentSessionId.value)
-  }
-  chatWs.onmessage = async (ev) => {
-    try {
-      const data = JSON.parse(ev.data)
-      if (data.type === 'stream_event') {
-        const event = data.event
-        if (event.meta) {
-          // 实时 meta 更新（duration + token_usage），更新最后一条 assistant 消息
-          const lastAssistant = [...messages.value].reverse().find((m) => m.role === 'assistant')
-          if (lastAssistant) {
-            lastAssistant.meta = event.meta
-          }
-        } else {
-          // 平台 AI 流式事件 - 实时更新 UI
-          handlePlatformStreamEvent(event)
-        }
-      } else if (data.type === 'new_message') {
-        // 平台用户消息到达 - 创建 assistant 占位消息并进入 loading
-        await loadNewMessages()
-        // 确保 assistant 占位消息存在并标记为 loading
-        ensurePlatformAssistantPlaceholder()
-      } else if (data.type === 'session_update') {
-        // AI 回复完成 - 重置流式状态，强制加载最终结果
-        platformStreaming = false
-        clearPetStatus()
-        await loadNewMessages(true)
+  // 先查找已存在的
+  let idx = messages.value.findIndex(
+    (m) => m.role === 'assistant' && m.messageId === messageId
+  )
+  if (idx < 0) {
+    // 兜底：最后一条 assistant 消息
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      if (messages.value[i].role === 'assistant') {
+        idx = i
+        break
       }
-    } catch {
-      // 忽略解析错误
     }
   }
-  chatWs.onclose = (ev) => {
-    console.log('[ChatWS] 连接关闭, code=', ev.code)
-    chatWs = null
+  if (idx < 0) {
+    // 没有 placeholder：新建
+    messages.value.push({
+      role: 'assistant',
+      content: '',
+      reasoning: [],
+      tools: [],
+      blocks: [],
+      isLoading: true,
+      messageId,
+      messageSnapshotJson: jsonlPath || undefined,
+    })
+    idx = messages.value.length - 1
+  } else {
+    // 已存在：标记为 loading（断线重连场景）
+    const m = messages.value[idx]
+    m.isLoading = true
+    m.messageId = messageId
+    if (jsonlPath) m.messageSnapshotJson = jsonlPath
   }
-  chatWs.onerror = () => {
-    console.warn('[ChatWS] 连接错误')
+  if (currentSessionId.value) {
+    bindStreamDuration(currentSessionId.value, messageId)
+    startStreamDuration(currentSessionId.value, messageId)
   }
+  activeAssistantIdx = idx
+  hasActiveChat.value = true
+  isSending.value = true
+  if (currentSessionId.value) {
+    markSessionWorking(currentSessionId.value)
+  }
+  nextTick(() => scheduleScrollToBottom(true))
 }
 
-function stopChatWs() {
-  if (chatWs) {
-    chatWs.onmessage = null
-    chatWs.onclose = null
-    chatWs.onerror = null
-    if (chatWs.readyState === WebSocket.OPEN || chatWs.readyState === WebSocket.CONNECTING) {
-      chatWs.close()
+function applyMetaToMessage(messageId: number, meta: RunMeta): boolean {
+  const idx = findAssistantMessageIndex(messageId)
+  if (idx < 0) return false
+  const msg = messages.value[idx]
+  if (!msg || msg.role !== 'assistant') return false
+  messages.value[idx] = { ...msg, meta }
+  return true
+}
+
+function stashRunMetadata(messageId: number, raw: unknown) {
+  if (!messageId) return
+  const meta = normalizeRunMetadata(raw)
+  if (!meta.model && !meta.duration_ms && !meta.token_usage) return
+  pendingRunMetaByMessageId.set(messageId, meta)
+  applyMetaToMessage(messageId, meta)
+}
+
+/**
+ * 将后端 JSONL 事件应用到 UI（无需重新拉取 JSONL）
+ */
+function applyLogEvent(event: Record<string, any>, messageId: number, jsonlPath: string) {
+  if (!currentSessionId.value) return
+  const evtType = event.type
+
+  if (evtType === 'run_metadata') {
+    stashRunMetadata(messageId, event)
+    return
+  }
+  if (evtType === 'log_complete') {
+    completeLogMessage(messageId)
+    return
+  }
+
+  if (activeAssistantIdx == null) {
+    ensureLogPlaceholder(messageId, jsonlPath)
+  }
+  const idx = activeAssistantIdx
+  if (idx == null) return
+  const msg = messages.value[idx]
+  if (!msg || msg.role !== 'assistant') return
+  let streamEvt: StreamEvent | null = null
+
+  switch (evtType) {
+    case 'reasoning_text':
+      streamEvt = { type: 'reasoning', data: String(event.text || '') }
+      break
+    case 'assistant_text':
+      streamEvt = { type: 'content', data: String(event.text || '') }
+      break
+    case 'tool_call':
+      streamEvt = {
+        type: 'tool_call',
+        data: {
+          tool_call_id: event.tool_call_id,
+          tool_name: event.tool_name,
+          status: event.status,
+          args: event.args,
+          session_id: event.session_id || '',
+        },
+      }
+      break
+    case 'tool_result':
+      streamEvt = {
+        type: 'tool_result',
+        data: {
+          tool_call_id: event.tool_call_id,
+          tool_name: event.tool_name,
+          status: event.status,
+          output: typeof event.result === 'string' ? event.result : (event.result?.output || ''),
+          file_change: event.file_change,
+          session_id: event.session_id || '',
+        },
+      }
+      break
+    case 'sub_agent':
+      // 把 sub_agent 转换为 subagent_event 格式
+      streamEvt = {
+        type: 'subagent_event',
+        data: {
+          task_id: event.tool_call_id,
+          subagent: event.subagent,
+          task: event.task,
+          status: event.status,
+          log_path: event.log_path,
+          round: event.rounds,
+          elapsed_ms: event.duration_ms,
+          final_message: event.final_output,
+        },
+      }
+      break
+    case 'error_event':
+      streamEvt = { type: 'error', data: event.error_msg || event.error || '未知错误' }
+      break
+    case 'info_event':
+      streamEvt = { type: 'hint', data: event.info_msg || '' }
+      break
+    default:
+      return
+  }
+  if (!streamEvt) return
+  applyStreamEvent(msg, streamEvt)
+  messages.value[idx] = { ...msg }
+  // 自动确认逻辑（与 runAssistantStream 一致）
+  if (streamEvt.type === 'confirmation_required' && streamEvt.data) {
+    const dangerTypes: string[] = streamEvt.data.danger_types || []
+    const command = String(streamEvt.data.command || '').trim()
+    const needsConfirm = privacyStore.needsConfirmation(dangerTypes, command)
+    if (!needsConfirm) {
+      const toolCallId = streamEvt.data.tool_call_id as string
+      if (msg.blocks) {
+        for (const block of msg.blocks) {
+          if (block.type === 'tool' && block.tool_call_id === toolCallId && block.pending_confirmation) {
+            block.pending_confirmation = false
+            block.status = 'running'
+          }
+        }
+      }
+      messages.value[idx] = { ...msg }
+      confirmTool(toolCallId, true).catch(() => {})
+      autoConfirmedToolIds.add(toolCallId)
     }
-    chatWs = null
+  }
+  if (streamEvt.type === 'todo_update' && streamEvt.data?.todos) {
+    window.dispatchEvent(new CustomEvent('aries:todo-update', {
+      detail: {
+        sessionId: currentSessionId.value || '',
+        todos: streamEvt.data.todos,
+      },
+    }))
+  }
+  nextTick(() => scheduleScrollToBottom())
+}
+
+function findAssistantMessageIndex(messageId: number): number {
+  if (messageId > 0) {
+    const byId = messages.value.findIndex(
+      (m) => m.role === 'assistant' && m.messageId === messageId
+    )
+    if (byId >= 0) return byId
+  }
+  if (activeAssistantIdx != null && messages.value[activeAssistantIdx]?.role === 'assistant') {
+    return activeAssistantIdx
+  }
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    if (messages.value[i].role === 'assistant' && messages.value[i].isLoading) {
+      return i
+    }
+  }
+  return -1
+}
+
+/**
+ * log_complete：标记当前 placeholder 完成，更新 isLoading / isSending
+ */
+function completeLogMessage(messageId: number) {
+  const idx = findAssistantMessageIndex(messageId)
+  const pendingMeta = messageId ? pendingRunMetaByMessageId.get(messageId) : undefined
+  if (idx >= 0) {
+    const m = messages.value[idx]
+    if (m) {
+      messages.value[idx] = {
+        ...m,
+        isLoading: false,
+        meta: pendingMeta || m.meta,
+      }
+    }
+  }
+  if (messageId) pendingRunMetaByMessageId.delete(messageId)
+  if (currentSessionId.value) {
+    stopStreamDuration(currentSessionId.value, messageId)
+  }
+
+  if (!messageId || activeAssistantMessageId === messageId) {
+    activeAssistantMessageId = null
+    activeAssistantIdx = null
+  }
+  isSending.value = false
+  flushPetStatus(petStatusPhase)
+  clearPetStatus()
+  syncSessionWorkingState()
+  if (currentSessionId.value) {
+    window.dispatchEvent(new CustomEvent('aries:refresh-sessions'))
   }
 }
 
@@ -492,6 +696,7 @@ interface ChatMessage {
   blocks?: MessageBlock[]
   artifacts?: FileChangeArtifact[]
   isLoading?: boolean
+  messageId?: number
   messageSnapshotJson?: string
   hasSnapshot?: boolean
   meta?: MessageMeta
@@ -511,6 +716,16 @@ function enrichUserMessage(content: string): Pick<ChatMessage, 'content' | 'slas
 
 const messages = ref<ChatMessage[]>([])
 
+/** 仅当前查看的 session 在流式时，输入框才显示加载/停止按钮 */
+const composerIsSending = computed(() => {
+  const sid = currentSessionId.value
+  if (!sid || !isSessionWorking(sid)) return false
+  return (
+    isSending.value ||
+    messages.value.some((m) => m.role === 'assistant' && m.isLoading)
+  )
+})
+
 // 本会话所有子 Agent 委派记录（按 task_id 去重 upsert）
 // 供 SubagentChatPanel 展示用，涵盖所有 assistant 消息里的 delegate_to_subagent 调用
 interface SubagentRecord {
@@ -528,6 +743,360 @@ interface SubagentRecord {
 }
 const sessionSubagents = ref<SubagentRecord[]>([])
 
+function captureSessionSnapshot(): SessionChatSnapshot {
+  return {
+    messages: JSON.parse(JSON.stringify(messages.value)),
+    isSending: isSending.value,
+    hasActiveChat: hasActiveChat.value,
+    activeAssistantMessageId,
+    activeAssistantIdx,
+    sessionSubagents: JSON.parse(JSON.stringify(sessionSubagents.value)),
+    platformStreaming,
+  }
+}
+
+function restoreSessionSnapshot(snapshot: SessionChatSnapshot) {
+  messages.value = snapshot.messages as ChatMessage[]
+  isSending.value = snapshot.isSending
+  hasActiveChat.value = snapshot.hasActiveChat
+  activeAssistantMessageId = snapshot.activeAssistantMessageId
+  activeAssistantIdx = snapshot.activeAssistantIdx
+  sessionSubagents.value = snapshot.sessionSubagents as SubagentRecord[]
+  platformStreaming = snapshot.platformStreaming
+}
+
+function persistCurrentSessionSnapshot(sessionId?: string) {
+  const sid = sessionId || currentSessionId.value
+  if (!sid) return
+  saveSessionSnapshot(sid, captureSessionSnapshot())
+}
+
+function syncSessionWorkingState(sessionId?: string) {
+  const sid = sessionId || currentSessionId.value
+  if (!sid) return
+  const working =
+    isSending.value ||
+    messages.value.some((m) => m.role === 'assistant' && m.isLoading)
+  if (working) markSessionWorking(sid)
+  else markSessionIdle(sid)
+  persistCurrentSessionSnapshot(sid)
+}
+
+function syncSnapshotWorkingState(sessionId: string, snapshot: SessionChatSnapshot) {
+  const working =
+    snapshot.isSending ||
+    (snapshot.messages as ChatMessage[]).some((m) => m.role === 'assistant' && m.isLoading)
+  if (working) markSessionWorking(sessionId)
+  else markSessionIdle(sessionId)
+}
+
+function getOrCreateSnapshot(sessionId: string): SessionChatSnapshot {
+  return loadSessionSnapshot(sessionId) ?? {
+    messages: [],
+    isSending: false,
+    hasActiveChat: false,
+    activeAssistantMessageId: null,
+    activeAssistantIdx: null,
+    sessionSubagents: [],
+    platformStreaming: false,
+  }
+}
+
+function ensureLogPlaceholderSnapshot(
+  snapshot: SessionChatSnapshot,
+  sessionId: string,
+  messageId: number,
+  jsonlPath: string,
+) {
+  const msgs = snapshot.messages as ChatMessage[]
+  let idx = msgs.findIndex((m) => m.role === 'assistant' && m.messageId === messageId)
+  if (idx < 0) {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'assistant') {
+        idx = i
+        break
+      }
+    }
+  }
+  if (idx < 0) {
+    msgs.push({
+      role: 'assistant',
+      content: '',
+      reasoning: [],
+      tools: [],
+      blocks: [],
+      isLoading: true,
+      messageId,
+      messageSnapshotJson: jsonlPath || undefined,
+    })
+    idx = msgs.length - 1
+  } else {
+    const m = msgs[idx]
+    m.isLoading = true
+    m.messageId = messageId
+    if (jsonlPath) m.messageSnapshotJson = jsonlPath
+  }
+  bindStreamDuration(sessionId, messageId)
+  startStreamDuration(sessionId, messageId)
+  snapshot.activeAssistantIdx = idx
+  snapshot.activeAssistantMessageId = messageId
+  snapshot.hasActiveChat = true
+  snapshot.isSending = true
+  markSessionWorking(sessionId)
+}
+
+function findAssistantMessageIndexInSnapshot(snapshot: SessionChatSnapshot, messageId: number): number {
+  const msgs = snapshot.messages as ChatMessage[]
+  if (messageId > 0) {
+    const byId = msgs.findIndex((m) => m.role === 'assistant' && m.messageId === messageId)
+    if (byId >= 0) return byId
+  }
+  if (snapshot.activeAssistantIdx != null && msgs[snapshot.activeAssistantIdx]?.role === 'assistant') {
+    return snapshot.activeAssistantIdx
+  }
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'assistant' && msgs[i].isLoading) return i
+  }
+  return -1
+}
+
+function completeLogMessageSnapshot(
+  snapshot: SessionChatSnapshot,
+  sessionId: string,
+  messageId: number,
+) {
+  const idx = findAssistantMessageIndexInSnapshot(snapshot, messageId)
+  if (idx >= 0) {
+    const m = snapshot.messages[idx] as ChatMessage
+    snapshot.messages[idx] = { ...m, isLoading: false }
+  }
+  stopStreamDuration(sessionId, messageId)
+  if (!messageId || snapshot.activeAssistantMessageId === messageId) {
+    snapshot.activeAssistantMessageId = null
+    snapshot.activeAssistantIdx = null
+  }
+  snapshot.isSending = false
+}
+
+function buildStreamEventFromLogEvent(
+  event: Record<string, any>,
+  messageId: number,
+): StreamEvent | null | 'complete' {
+  switch (event.type) {
+    case 'reasoning_text':
+      return { type: 'reasoning', data: String(event.text || '') }
+    case 'assistant_text':
+      return { type: 'content', data: String(event.text || '') }
+    case 'tool_call':
+      return {
+        type: 'tool_call',
+        data: {
+          tool_call_id: event.tool_call_id,
+          tool_name: event.tool_name,
+          status: event.status,
+          args: event.args,
+          session_id: event.session_id || '',
+        },
+      }
+    case 'tool_result':
+      return {
+        type: 'tool_result',
+        data: {
+          tool_call_id: event.tool_call_id,
+          tool_name: event.tool_name,
+          status: event.status,
+          output: typeof event.result === 'string' ? event.result : (event.result?.output || ''),
+          file_change: event.file_change,
+          session_id: event.session_id || '',
+        },
+      }
+    case 'run_metadata':
+      return { type: 'meta', data: event }
+    case 'log_complete':
+      return 'complete'
+    case 'sub_agent':
+      return {
+        type: 'subagent_event',
+        data: {
+          task_id: event.tool_call_id,
+          subagent: event.subagent,
+          task: event.task,
+          status: event.status,
+          log_path: event.log_path,
+          round: event.rounds,
+          elapsed_ms: event.duration_ms,
+          final_message: event.final_output,
+        },
+      }
+    case 'error_event':
+      return { type: 'error', data: event.error_msg || event.error || '未知错误' }
+    case 'info_event':
+      return { type: 'hint', data: event.info_msg || '' }
+    default:
+      return null
+  }
+}
+
+function applyLogEventSnapshot(
+  snapshot: SessionChatSnapshot,
+  sessionId: string,
+  event: Record<string, any>,
+  messageId: number,
+  jsonlPath: string,
+) {
+  if (event.type === 'run_metadata') {
+    const meta = normalizeRunMetadata(event)
+    const metaIdx = findAssistantMessageIndexInSnapshot(snapshot, messageId)
+    if (metaIdx >= 0) {
+      const msg = snapshot.messages[metaIdx] as ChatMessage
+      snapshot.messages[metaIdx] = { ...msg, meta }
+    }
+    return
+  }
+  if (event.type === 'log_complete') {
+    completeLogMessageSnapshot(snapshot, sessionId, messageId)
+    return
+  }
+
+  if (snapshot.activeAssistantIdx == null) {
+    ensureLogPlaceholderSnapshot(snapshot, sessionId, messageId, jsonlPath)
+  }
+  const idx = snapshot.activeAssistantIdx
+  if (idx == null) return
+  const msg = snapshot.messages[idx] as ChatMessage | undefined
+  if (!msg || msg.role !== 'assistant') return
+
+  const streamEvt = buildStreamEventFromLogEvent(event, messageId)
+  if (streamEvt === 'complete') {
+    completeLogMessageSnapshot(snapshot, sessionId, messageId)
+    return
+  }
+  if (!streamEvt) return
+
+  applyStreamEvent(msg, streamEvt, { silent: true, subagents: snapshot.sessionSubagents as SubagentRecord[] })
+  snapshot.messages[idx] = { ...msg }
+
+  if (streamEvt.type === 'confirmation_required' && streamEvt.data) {
+    const dangerTypes: string[] = streamEvt.data.danger_types || []
+    const command = String(streamEvt.data.command || '').trim()
+    if (!privacyStore.needsConfirmation(dangerTypes, command)) {
+      const toolCallId = streamEvt.data.tool_call_id as string
+      confirmTool(toolCallId, true).catch(() => {})
+    }
+  }
+}
+
+/** 后台 session 的 WS 事件：只写快照，不切换当前 UI（避免输入框闪烁） */
+function applyWsPayloadToSnapshot(sessionId: string, data: Record<string, unknown>) {
+  const snapshot = getOrCreateSnapshot(sessionId)
+
+  if (data.type === 'log_started') {
+    const newMsgId = Number(data.message_id) || 0
+    if (newMsgId) {
+      snapshot.activeAssistantMessageId = newMsgId
+      ensureLogPlaceholderSnapshot(snapshot, sessionId, newMsgId, String(data.jsonl_path || ''))
+    }
+  } else if (data.type === 'log_event') {
+    const evt = data.event as Record<string, unknown> | undefined
+    const evtMessageId = Number(data.message_id) || 0
+    if (!evt) return
+    if (!snapshot.activeAssistantMessageId || evtMessageId !== snapshot.activeAssistantMessageId) {
+      snapshot.activeAssistantMessageId = evtMessageId
+      if (evtMessageId) {
+        ensureLogPlaceholderSnapshot(snapshot, sessionId, evtMessageId, String(data.jsonl_path || ''))
+      }
+    }
+    applyLogEventSnapshot(snapshot, sessionId, evt as Record<string, any>, evtMessageId, String(data.jsonl_path || ''))
+  } else if (data.type === 'log_complete') {
+    completeLogMessageSnapshot(snapshot, sessionId, Number(data.message_id) || 0)
+  }
+
+  saveSessionSnapshot(sessionId, snapshot)
+  syncSnapshotWorkingState(sessionId, snapshot)
+}
+
+async function processChatWsPayload(data: Record<string, unknown>) {
+  if (data.type === 'log_started') {
+    const newMsgId = Number(data.message_id) || 0
+    if (newMsgId) {
+      activeAssistantMessageId = newMsgId
+      ensureLogPlaceholder(newMsgId, String(data.jsonl_path || ''))
+      syncSessionWorkingState()
+    }
+  } else if (data.type === 'log_event') {
+    const evt = data.event as Record<string, unknown> | undefined
+    const evtMessageId = Number(data.message_id) || 0
+    if (!evt) return
+    if (!activeAssistantMessageId || evtMessageId !== activeAssistantMessageId) {
+      activeAssistantMessageId = evtMessageId
+      if (evtMessageId) {
+        ensureLogPlaceholder(evtMessageId, String(data.jsonl_path || ''))
+      }
+    }
+    applyLogEvent(evt, evtMessageId, String(data.jsonl_path || ''))
+    syncSessionWorkingState()
+  } else if (data.type === 'log_complete') {
+    completeLogMessage(Number(data.message_id) || 0)
+  } else if (data.type === 'stream_event') {
+    const event = data.event as Record<string, unknown> | undefined
+    if (!event) return
+    if (event.meta) {
+      const meta = normalizeRunMetadata(event)
+      const targetId = activeAssistantMessageId
+      if (targetId && applyMetaToMessage(targetId, meta)) {
+        /* applied by message id */
+      } else {
+        const lastIdx = messages.value.length - 1
+        const lastAssistant = messages.value[lastIdx]
+        if (lastAssistant?.role === 'assistant') {
+          messages.value[lastIdx] = { ...lastAssistant, meta }
+        }
+      }
+    } else {
+      handlePlatformStreamEvent(event)
+    }
+    syncSessionWorkingState()
+  } else if (data.type === 'new_message') {
+    await loadNewMessages()
+    ensurePlatformAssistantPlaceholder()
+  } else if (data.type === 'session_update') {
+    platformStreaming = false
+    clearPetStatus()
+    await loadNewMessages(true)
+    syncSessionWorkingState()
+  }
+}
+
+function handleChatWsForSession(sessionId: string, data: Record<string, unknown>) {
+  if (sessionId === currentSessionId.value) {
+    void processChatWsPayload(data).catch((e) => console.warn('[ChatWS] 处理失败', e))
+    return
+  }
+  applyWsPayloadToSnapshot(sessionId, data)
+}
+
+async function ensureChatWsReady() {
+  const sid = currentSessionId.value
+  if (!sid) return
+  const wsBase = modelStore.getBaseUrl().replace(/^http/, 'ws')
+  setSessionWsHandler(sid, (data) => handleChatWsForSession(sid, data))
+  await ensureSessionWs(sid, wsBase)
+  pruneSessionWsKeep(buildWsKeepSet(sid))
+}
+
+function stopChatWs(clearRouting = true) {
+  const sid = currentSessionId.value
+  if (sid) persistCurrentSessionSnapshot(sid)
+  if (clearRouting) {
+    activeAssistantMessageId = null
+    activeAssistantIdx = null
+  }
+  if (sid && !isSessionWorking(sid)) {
+    closeSessionWs(sid)
+    setSessionWsHandler(sid, null)
+  }
+}
+
 function upsertSubagent(record: SubagentRecord) {
   const idx = sessionSubagents.value.findIndex((s) => s.task_id === record.task_id)
   if (idx >= 0) {
@@ -535,6 +1104,15 @@ function upsertSubagent(record: SubagentRecord) {
     sessionSubagents.value[idx] = { ...sessionSubagents.value[idx], ...record }
   } else {
     sessionSubagents.value.push(record)
+  }
+}
+
+function upsertSubagentInList(list: SubagentRecord[], record: SubagentRecord) {
+  const idx = list.findIndex((s) => s.task_id === record.task_id)
+  if (idx >= 0) {
+    list[idx] = { ...list[idx], ...record }
+  } else {
+    list.push(record)
   }
 }
 
@@ -627,8 +1205,13 @@ async function onCompactDone() {
 
 // 监听侧边栏新对话事件
 function onNewChat(e?: Event) {
-  stopChatWs()
+  if (currentSessionId.value) {
+    clearSessionStreamDurations(currentSessionId.value)
+    persistCurrentSessionSnapshot(currentSessionId.value)
+    stopChatWs(false)
+  }
   currentSessionId.value = undefined
+  isSending.value = false
   messages.value = []
   sessionSubagents.value = []
   hasActiveChat.value = false
@@ -637,7 +1220,7 @@ function onNewChat(e?: Event) {
   clearComposerCommand()
   contextUsagePercent.value = 0
   contextUsageBreakdown.value = null
-  const newWorkDir = (e as CustomEvent | undefined)?.detail?.workDir || DEFAULT_WORK_DIR
+  const newWorkDir = (e as CustomEvent | undefined)?.detail?.workDir || defaultWorkDir.value
   pendingWorkDir.value = newWorkDir
   // 立即更新 UI 显示的工作目录，让用户看到正确的项目路径
   if (newWorkDir) {
@@ -738,89 +1321,231 @@ async function applyWorkDir(path: string) {
 }
 
 // 监听侧边栏 / 定时任务跳转，加载指定 session 的历史
-async function loadSessionById(id: string) {
-  if (!id) return
-  currentSessionId.value = id
-  inputMessage.value = ''
-  clearAttachedImages()
-  clearComposerCommand()
-  // 切换会话时清空子 Agent 列表；历史 sub_agent 块会在快照重建时重新填入
-  sessionSubagents.value = []
+let loadSessionSeq = 0
 
-  try {
-    const meta = await getSession(id)
-    if (meta?.work_dir) {
-      workDir.value = meta.work_dir
-      workspaceStore.setWorkDir(meta.work_dir)
-      loadWorkDirHistory()
-    }
-  } catch {
-    // 会话元数据缺失时仍尝试加载消息
-  }
+function isStaleSessionLoad(seq: number): boolean {
+  return seq !== loadSessionSeq
+}
 
-  // 获取当前会话的上下文占用，供压缩菜单 badge 展示
+async function refreshSessionContextUsage(sessionId: string, seq: number): Promise<void> {
   try {
-    const usage = await getSessionContextUsage(id)
+    const usage = await getSessionContextUsage(sessionId)
+    if (isStaleSessionLoad(seq)) return
     contextUsagePercent.value = Math.round(usage.usage_percent ?? 0)
     contextUsageBreakdown.value = usage
   } catch {
+    if (isStaleSessionLoad(seq)) return
     contextUsagePercent.value = 0
     contextUsageBreakdown.value = null
   }
+}
 
+async function applySessionWorkDir(sessionId: string, seq: number): Promise<void> {
   try {
-    const data = await getSessionMessages(id, 100)
-    const msgs: ChatMessage[] = (data.messages || []).map((m: any) => {
-      const base: ChatMessage = {
-        role: m.role as 'user' | 'assistant',
-        content: m.content || '',
-        mode: m.mode || 'agent',
-        reasoning: [],
-        tools: [],
-        blocks: [],
-        isLoading: false,
-        messageSnapshotJson: m.message_snapshot_json || undefined,
-      }
-      if (m.role === 'user') {
-        Object.assign(base, enrichUserMessage(m.content || ''))
-        base.images = parseStoredImagePaths(m.image_path)
-      }
-      return base
-    })
-
-    // 先渲染不含快照的内容
-    messages.value = msgs
-    hasActiveChat.value = msgs.length > 0
-    await nextTick()
-    scheduleScrollToBottom(true)
-    
-    // 异步加载每条助手消息的 JSONL 快照
-    for (let i = 0; i < msgs.length; i++) {
-      if (msgs[i].role !== 'assistant') continue
-      const raw = (data.messages[i] as any)
-      const messageId = raw?.id
-      if (messageId) {
-        await loadMessageSnapshot(messageId, i, raw)
-      }
+    const meta = await getSession(sessionId)
+    if (isStaleSessionLoad(seq)) return
+    const wd = meta?.work_dir
+    if (wd && wd !== workDir.value) {
+      workDir.value = wd
+      workspaceStore.setWorkDir(wd)
+      loadWorkDirHistory()
     }
-  } catch (err) {
-    console.error('加载历史消息失败', err)
-    messages.value = []
-    sessionSubagents.value = []
-    hasActiveChat.value = false
-  } finally {
-    startChatWs()
-    emit('sessionLoaded')
-    // 异步检查是否有运行中的后台任务，如果有则恢复 SSE 流
-    void tryResumeSession(id)
+  } catch {
+    // ignore
   }
 }
 
+async function finishSessionSwitch(id: string, seq: number): Promise<void> {
+  if (isStaleSessionLoad(seq)) return
+  await ensureChatWsReady()
+  if (isStaleSessionLoad(seq)) return
+  emit('sessionLoaded')
+  void tryResumeSession(id)
+  void refreshSessionContextUsage(id, seq)
+}
+
+function scheduleSnapshotLoads(
+  msgs: ChatMessage[],
+  rawMessages: Array<{ id?: number; reasoning_content?: string }>,
+  seq: number,
+): void {
+  const pending: Array<{ messageId: number; index: number; raw?: { reasoning_content?: string } }> = []
+  for (let i = 0; i < msgs.length; i++) {
+    if (msgs[i].role !== 'assistant') continue
+    if (msgs[i].blocks && msgs[i].blocks.length > 0) continue
+    const messageId = rawMessages[i]?.id ?? msgs[i].messageId
+    if (!messageId) continue
+    pending.push({ messageId, index: i, raw: rawMessages[i] })
+  }
+  if (pending.length === 0) return
+  void loadSessionSnapshotsParallel(pending, seq)
+}
+
+async function loadSessionSnapshotsParallel(
+  tasks: Array<{ messageId: number; index: number; raw?: { reasoning_content?: string } }>,
+  seq: number,
+  concurrency = 4,
+): Promise<void> {
+  for (let i = 0; i < tasks.length; i += concurrency) {
+    if (isStaleSessionLoad(seq)) return
+    const batch = tasks.slice(i, i + concurrency)
+    await Promise.all(
+      batch.map(({ messageId, index, raw }) => loadMessageSnapshot(messageId, index, raw, seq)),
+    )
+  }
+}
+
+function mapRawMessagesToChat(rawMessages: Array<Record<string, unknown>>): ChatMessage[] {
+  return rawMessages.map((m) => {
+    const base: ChatMessage = {
+      role: m.role as 'user' | 'assistant',
+      content: (m.content as string) || '',
+      mode: (m.mode as string) || 'agent',
+      reasoning: [],
+      tools: [],
+      blocks: [],
+      isLoading: false,
+      messageSnapshotJson: (m.message_snapshot_json as string) || undefined,
+      messageId: m.id as number | undefined,
+    }
+    if (m.role === 'user') {
+      Object.assign(base, enrichUserMessage((m.content as string) || ''))
+      base.images = parseStoredImagePaths(m.image_path as string | undefined)
+    }
+    return base
+  })
+}
+
+function applyBootstrapSnapshots(
+  rawMessages: Array<{ id?: number; reasoning_content?: string }>,
+  snapshots: Record<string, { events?: unknown[] }>,
+  seq: number,
+): void {
+  for (let i = 0; i < messages.value.length; i++) {
+    if (messages.value[i].role !== 'assistant') continue
+    const messageId = rawMessages[i]?.id ?? messages.value[i].messageId
+    if (!messageId) continue
+    const snap = snapshots[String(messageId)]
+    if (snap?.events?.length) {
+      applyMessageSnapshotEvents(messageId, i, snap.events, rawMessages[i], seq)
+    } else if (rawMessages[i]?.reasoning_content) {
+      applyReasoningContentFallback(messageId, i, rawMessages[i].reasoning_content)
+    }
+  }
+}
+
+async function fetchSessionFromBackend(id: string, seq: number): Promise<boolean> {
+  try {
+    const bootstrap = await getSessionBootstrap(id, 100)
+    if (isStaleSessionLoad(seq)) return false
+
+    const wd = bootstrap.session?.work_dir
+    if (wd && wd !== workDir.value) {
+      workDir.value = wd
+      workspaceStore.setWorkDir(wd)
+      loadWorkDirHistory()
+    }
+
+    const rawMessages = bootstrap.messages || []
+    messages.value = mapRawMessagesToChat(rawMessages)
+    hasActiveChat.value = messages.value.length > 0
+    await nextTick()
+    if (isStaleSessionLoad(seq)) return false
+    scheduleScrollToBottom(true)
+
+    applyBootstrapSnapshots(rawMessages, bootstrap.snapshots || {}, seq)
+    return true
+  } catch (bootstrapErr) {
+    console.warn('[session] bootstrap 失败，回退分步加载', bootstrapErr)
+    try {
+      const [metaSettled, dataSettled] = await Promise.allSettled([
+        getSession(id),
+        getSessionMessages(id, 100),
+      ])
+      if (isStaleSessionLoad(seq)) return false
+
+      if (metaSettled.status === 'fulfilled') {
+        const wd = metaSettled.value?.work_dir
+        if (wd && wd !== workDir.value) {
+          workDir.value = wd
+          workspaceStore.setWorkDir(wd)
+          loadWorkDirHistory()
+        }
+      }
+
+      if (dataSettled.status !== 'fulfilled') throw dataSettled.reason
+
+      const rawMessages = dataSettled.value.messages || []
+      messages.value = mapRawMessagesToChat(rawMessages)
+      hasActiveChat.value = messages.value.length > 0
+      await nextTick()
+      if (isStaleSessionLoad(seq)) return false
+      scheduleScrollToBottom(true)
+      scheduleSnapshotLoads(messages.value, rawMessages, seq)
+      return true
+    } catch (err) {
+      console.error('加载历史消息失败', err)
+      messages.value = []
+      sessionSubagents.value = []
+      hasActiveChat.value = false
+      return false
+    }
+  }
+}
+
+async function loadSessionById(id: string) {
+  if (!id) return
+  const seq = ++loadSessionSeq
+
+  const prevId = currentSessionId.value
+  if (prevId && prevId !== id) {
+    persistCurrentSessionSnapshot(prevId)
+    stopChatWs(false)
+  }
+
+  currentSessionId.value = id
+  isSending.value = false
+  inputMessage.value = ''
+  clearAttachedImages()
+  clearComposerCommand()
+
+  const cached = loadSessionSnapshot(id)
+  if (cached?.messages?.length) {
+    restoreSessionSnapshot(cached)
+    await nextTick()
+    if (isStaleSessionLoad(seq)) return
+    scheduleScrollToBottom(true)
+    void applySessionWorkDir(id, seq)
+    const wsBase = modelStore.getBaseUrl().replace(/^http/, 'ws')
+    for (const wsSid of buildWsKeepSet(id)) {
+      setSessionWsHandler(wsSid, (data) => handleChatWsForSession(wsSid, data))
+      await ensureSessionWs(wsSid, wsBase)
+      if (isStaleSessionLoad(seq)) return
+    }
+    pruneSessionWsKeep(buildWsKeepSet(id))
+    scheduleSnapshotLoads(cached.messages as ChatMessage[], cached.messages as ChatMessage[], seq)
+    await finishSessionSwitch(id, seq)
+    return
+  }
+
+  activeAssistantMessageId = null
+  activeAssistantIdx = null
+  sessionSubagents.value = []
+  messages.value = []
+  hasActiveChat.value = false
+
+  await fetchSessionFromBackend(id, seq)
+  if (isStaleSessionLoad(seq)) return
+  await finishSessionSwitch(id, seq)
+}
+
 async function tryResumeSession(sessionId: string) {
+  // 流式输出已切换为 WebSocket + JSONL，无需 SSE resume
+  // 仅做最终状态检查：若后台任务仍在运行，确保 placeholder 是 loading 状态
   try {
     const running = await checkChatStatus(sessionId)
     if (!running) return
-    // 有运行中的后台任务，复用最后一条 assistant 消息
+    // 找最后一条 assistant 消息
     let assistantIdx = -1
     for (let i = messages.value.length - 1; i >= 0; i--) {
       if (messages.value[i].role === 'assistant') {
@@ -829,38 +1554,21 @@ async function tryResumeSession(sessionId: string) {
       }
     }
     if (assistantIdx < 0) {
-      messages.value.push({
-        role: 'assistant',
-        content: '',
-        mode: 'agent',
-        reasoning: [],
-        tools: [],
-        blocks: [],
-        isLoading: true,
-      })
-      assistantIdx = messages.value.length - 1
+      // 没有 placeholder → 等待 log_started 事件创建
+      isSending.value = true
+      return
     }
-    // 清空旧内容（resume 端点会先推送全部历史事件，避免逐条闪动）
     const msg = messages.value[assistantIdx]
-    msg.content = ''
-    msg.reasoning = []
-    msg.tools = []
-    msg.blocks = []
-    msg.artifacts = []
-    msg.isLoading = true
-    // 静默更新，等历史事件全部接收后再触发渲染
-    isSending.value = true
-    streamAbortController = new AbortController()
-    try {
-      const stream = resumeChat(sessionId)
-      await runAssistantStream(stream, messages.value[assistantIdx], assistantIdx)
-    } finally {
-      isSending.value = false
-      messages.value[assistantIdx].isLoading = false
-      streamAbortController = null
+    // 标记为 loading，等待 WebSocket 推送后续事件
+    if (!msg.isLoading) {
+      msg.isLoading = true
+      messages.value[assistantIdx] = { ...msg }
     }
+    isSending.value = true
+    markSessionWorking(sessionId)
+    syncSessionWorkingState(sessionId)
   } catch {
-    // 恢复失败时静默处理，用户可以重新发送消息
+    // ignore
   }
 }
 
@@ -902,17 +1610,217 @@ function viewArtifact(msgIdx: number, artifactIdx: number) {
   rightPanelVisible.value = true
 }
 
-async function onLoadSession(e: Event) {
-  const id = (e as CustomEvent).detail
-  if (!id) return
-  await loadSessionById(id)
+// 加载消息快照（JSONL 优先；无事件时用 DB reasoning_content 拆段）
+function applyMessageSnapshotEvents(
+  messageId: number,
+  msgIndex: number,
+  rawEvents: unknown[],
+  raw?: { reasoning_content?: string },
+  seq?: number,
+): void {
+  const prev = messages.value[msgIndex]
+  if (!prev || prev.role !== 'assistant') return
+
+  if (!rawEvents || rawEvents.length === 0) {
+    applyReasoningContentFallback(messageId, msgIndex, raw?.reasoning_content)
+    return
+  }
+
+  const parsed = parseSnapshotEventObjects(rawEvents)
+
+  const blocks: MessageBlock[] = []
+  let snapshotMeta: MessageMeta | undefined
+
+  for (const event of parsed) {
+    switch (event.type) {
+      case 'reasoning':
+        if (
+          blocks.length > 0 &&
+          blocks[blocks.length - 1].type === 'text' &&
+          blocks[blocks.length - 1].phase === 'work'
+        ) {
+          blocks[blocks.length - 1].text = (blocks[blocks.length - 1].text || '') + event.content
+        } else {
+          blocks.push({ type: 'text', text: event.content, phase: 'work' })
+        }
+        break
+
+      case 'tool_call':
+        blocks.push({
+          type: 'tool',
+          tool_name: event.toolName || 'unknown',
+          tool_call_id: event.toolCallId || '',
+          status: event.status || 'running',
+          args: event.args,
+          result: '',
+          error: '',
+          started_at: event.timestamp || '',
+          ended_at: ''
+        })
+        break
+
+      case 'sub_agent': {
+        const tcId = event.toolCallId || ''
+        let existing: MessageBlock | undefined
+        if (tcId) {
+          for (let i = blocks.length - 1; i >= 0; i--) {
+            const b = blocks[i]
+            if (b.type === 'tool' && b.tool_call_id === tcId) {
+              existing = b
+              break
+            }
+          }
+        }
+        const subagentField = {
+          task_id: tcId,
+          subagent: event.subagent,
+          task: event.task,
+          status: event.status,
+          log_path: event.logPath,
+          elapsed_ms: event.durationMs,
+          final_message: event.finalOutput,
+        }
+        if (existing) {
+          existing.tool_name = 'delegate_to_subagent'
+          existing.status = event.status === 'success' ? 'completed' : (event.status || existing.status || 'running')
+          if (event.finalOutput) existing.result = event.finalOutput
+          if (event.status && event.status !== 'success') {
+            existing.error = event.content || existing.error || ''
+          }
+          existing.ended_at = event.timestamp || existing.ended_at || ''
+          existing.args = {
+            ...(existing.args || {}),
+            subagent_name: event.subagent || existing.args?.subagent_name || '',
+            task: event.task || existing.args?.task || '',
+          }
+          existing.subagent = { ...(existing.subagent || {}), ...subagentField }
+        } else {
+          blocks.push({
+            type: 'tool',
+            tool_name: 'delegate_to_subagent',
+            tool_call_id: tcId,
+            status: event.status === 'success' ? 'completed' : (event.status || 'running'),
+            args: {
+              subagent_name: event.subagent || '',
+              task: event.task || '',
+              description: '',
+            },
+            result: event.finalOutput || '',
+            error: event.status && event.status !== 'success' ? (event.content || '') : '',
+            started_at: event.timestamp || '',
+            ended_at: event.timestamp || '',
+            subagent: subagentField,
+          })
+        }
+        if (tcId) {
+          upsertSubagent({
+            task_id: tcId,
+            subagent: event.subagent,
+            task: event.task,
+            status: event.status,
+            log_path: event.logPath,
+            elapsed_ms: event.durationMs,
+            final_message: event.finalOutput,
+            message_id: messageId,
+          })
+        }
+        break
+      }
+
+      case 'tool_result':
+        for (let i = blocks.length - 1; i >= 0; i--) {
+          const b = blocks[i]
+          if (b.type === 'tool' && (b.tool_name === event.toolName || b.tool_name === event.toolCallId)) {
+            b.status = event.status || 'completed'
+            b.result = event.content
+            b.ended_at = event.timestamp || ''
+            if (event.sessionId) {
+              b.session_id = event.sessionId
+            }
+            break
+          }
+        }
+        break
+
+      case 'assistant_text':
+        if (blocks.length > 0 && blocks[blocks.length - 1].type === 'text' && blocks[blocks.length - 1].phase === 'answer') {
+          blocks[blocks.length - 1].text = (blocks[blocks.length - 1].text || '') + event.content
+        } else {
+          blocks.push({ type: 'text', text: event.content, phase: 'answer' })
+        }
+        break
+
+      case 'error':
+        blocks.push({
+          type: 'text',
+          text: event.content,
+          phase: 'answer',
+          error: event.content,
+        })
+        break
+
+      case 'run_metadata':
+        if (event.meta) {
+          snapshotMeta = normalizeRunMetadata(event.meta)
+        }
+        break
+    }
+  }
+
+  const reasoningJoined = parsed.filter(e => e.type === 'reasoning').map(e => e.content).join('')
+  const reasoningSegments = reasoningJoined ? [reasoningJoined] : []
+  const answerText = parsed.filter(e => e.type === 'assistant_text').map(e => e.content).join('')
+  const errorText = parsed.find(e => e.type === 'error')?.content || ''
+
+  const artifacts = parsed
+    .filter(e => e.type === 'tool_result' && e.fileChange)
+    .map(e => ({
+      file_path: e.fileChange!.file_path || '',
+      operation: e.fileChange!.operation || 'modify',
+      previous_content: e.fileChange!.previous_content || '',
+      new_content: e.fileChange!.new_content || '',
+      tool_name: e.toolName || '',
+      tool_call_id: e.toolCallId || '',
+      reverted: false,
+    }))
+
+  if (seq !== undefined && isStaleSessionLoad(seq)) return
+
+  messages.value[msgIndex] = {
+    ...prev,
+    blocks,
+    reasoning: reasoningSegments,
+    tools: parsed
+      .filter(e => e.type === 'tool_call' || e.type === 'tool_result')
+      .reduce((acc: ToolInfo[], e) => {
+        if (e.type === 'tool_call') {
+          acc.push({
+            name: e.toolName || 'unknown',
+            status: e.status || 'running',
+            args: e.args,
+            output: ''
+          })
+        } else if (e.type === 'tool_result') {
+          const t = acc.find(t => t.name === e.toolName)
+          if (t) {
+            t.status = e.status || 'completed'
+            t.output = e.content
+          }
+        }
+        return acc
+      }, []),
+    content: answerText || errorText || prev.content,
+    hasSnapshot: true,
+    meta: snapshotMeta || prev.meta,
+    artifacts,
+  }
 }
 
-// 加载消息快照（JSONL 优先；无事件时用 DB reasoning_content 拆段）
 async function loadMessageSnapshot(
   messageId: number,
   msgIndex: number,
-  raw?: { reasoning_content?: string }
+  raw?: { reasoning_content?: string },
+  seq?: number,
 ) {
   const prev = messages.value[msgIndex]
   if (!prev || prev.role !== 'assistant') return
@@ -927,203 +1835,7 @@ async function loadMessageSnapshot(
     }
 
     const data = await res.json()
-    if (!data.events || data.events.length === 0) {
-      console.warn(`消息 ${messageId} 没有 JSONL 事件，尝试 reasoning_content`)
-      applyReasoningContentFallback(messageId, msgIndex, raw?.reasoning_content)
-      return
-    }
-
-    console.log(`[snapshot] 消息 ${messageId} 加载到 ${data.events.length} 个事件`)
-
-    const parsed = parseSnapshotEventObjects(data.events)
-    console.log(`[snapshot] 解析后 ${parsed.length} 个 SnapshotEvent`)
-
-    const blocks: MessageBlock[] = []
-    let snapshotMeta: MessageMeta | undefined
-
-    for (const event of parsed) {
-      switch (event.type) {
-        case 'reasoning':
-          blocks.push({ type: 'text', text: event.content, phase: 'work' })
-          break
-
-        case 'tool_call':
-          blocks.push({
-            type: 'tool',
-            tool_name: event.toolName || 'unknown',
-            tool_call_id: event.toolCallId || '',
-            status: event.status || 'running',
-            args: event.args,
-            result: '',
-            error: '',
-            started_at: event.timestamp || '',
-            ended_at: ''
-          })
-          break
-
-        case 'sub_agent': {
-          // 历史快照里的 sub_agent 块：合并到已有的 delegate_to_subagent tool block 上
-          // 避免一个委派被 tool_call + sub_agent(running) + sub_agent(success) 渲染三遍
-          const tcId = event.toolCallId || ''
-          let existing: MessageBlock | undefined
-          if (tcId) {
-            for (let i = blocks.length - 1; i >= 0; i--) {
-              const b = blocks[i]
-              if (b.type === 'tool' && b.tool_call_id === tcId) {
-                existing = b
-                break
-              }
-            }
-          }
-          const subagentField = {
-            task_id: tcId,
-            subagent: event.subagent,
-            task: event.task,
-            status: event.status,
-            log_path: event.logPath,
-            elapsed_ms: event.durationMs,
-            final_message: event.finalOutput,
-          }
-          if (existing) {
-            // 合并：状态、结果、subagent 字段（保留更"终态"的信息）
-            existing.tool_name = 'delegate_to_subagent'
-            existing.status = event.status === 'success' ? 'completed' : (event.status || existing.status || 'running')
-            if (event.finalOutput) existing.result = event.finalOutput
-            if (event.status && event.status !== 'success') {
-              existing.error = event.content || existing.error || ''
-            }
-            existing.ended_at = event.timestamp || existing.ended_at || ''
-            // args 兜底（如果之前 tool_call 没记录到 description / task 等）
-            existing.args = {
-              ...(existing.args || {}),
-              subagent_name: event.subagent || existing.args?.subagent_name || '',
-              task: event.task || existing.args?.task || '',
-            }
-            existing.subagent = { ...(existing.subagent || {}), ...subagentField }
-          } else {
-            // 没有匹配的 tool_call（旧版日志或异常情况）→ 新建一个
-            blocks.push({
-              type: 'tool',
-              tool_name: 'delegate_to_subagent',
-              tool_call_id: tcId,
-              status: event.status === 'success' ? 'completed' : (event.status || 'running'),
-              args: {
-                subagent_name: event.subagent || '',
-                task: event.task || '',
-                description: '',
-              },
-              result: event.finalOutput || '',
-              error: event.status && event.status !== 'success' ? (event.content || '') : '',
-              started_at: event.timestamp || '',
-              ended_at: event.timestamp || '',
-              subagent: subagentField,
-            })
-          }
-          // 同步到 sessionSubagents（历史重建）
-          if (tcId) {
-            upsertSubagent({
-              task_id: tcId,
-              subagent: event.subagent,
-              task: event.task,
-              status: event.status,
-              log_path: event.logPath,
-              elapsed_ms: event.durationMs,
-              final_message: event.finalOutput,
-              message_id: messageId,
-            })
-          }
-          break
-        }
-
-        case 'tool_result':
-          for (let i = blocks.length - 1; i >= 0; i--) {
-            const b = blocks[i]
-            if (b.type === 'tool' && (b.tool_name === event.toolName || b.tool_name === event.toolCallId)) {
-              b.status = event.status || 'completed'
-              b.result = event.content
-              b.ended_at = event.timestamp || ''
-              if (event.sessionId) {
-                b.session_id = event.sessionId
-              }
-              break
-            }
-          }
-          break
-
-        case 'assistant_text':
-          if (blocks.length > 0 && blocks[blocks.length - 1].type === 'text' && blocks[blocks.length - 1].phase === 'answer') {
-            blocks[blocks.length - 1].text = (blocks[blocks.length - 1].text || '') + event.content
-          } else {
-            blocks.push({ type: 'text', text: event.content, phase: 'answer' })
-          }
-          break
-
-        case 'error':
-          // 错误事件：显示错误信息
-          blocks.push({
-            type: 'text',
-            text: event.content,
-            phase: 'answer',
-            error: event.content,
-          })
-          break
-
-        case 'run_metadata':
-          // 运行元数据：模型、时长、token 使用
-          if (event.meta) {
-            snapshotMeta = event.meta
-          }
-          break
-      }
-    }
-
-    const reasoningSegments = parsed.filter(e => e.type === 'reasoning').map(e => e.content)
-    const answerText = parsed.filter(e => e.type === 'assistant_text').map(e => e.content).join('')
-    const errorText = parsed.find(e => e.type === 'error')?.content || ''
-
-    // 从 tool_result 事件中收集文件变更产物
-    const artifacts = parsed
-      .filter(e => e.type === 'tool_result' && e.fileChange)
-      .map(e => ({
-        file_path: e.fileChange!.file_path || '',
-        operation: e.fileChange!.operation || 'modify',
-        previous_content: e.fileChange!.previous_content || '',
-        new_content: e.fileChange!.new_content || '',
-        tool_name: e.toolName || '',
-        tool_call_id: e.toolCallId || '',
-        reverted: false,
-      }))
-
-    console.log(`[snapshot] 消息 ${messageId} 构建了 ${blocks.length} 个 blocks（${reasoningSegments.length} 段思考，${artifacts.length} 个产物）`)
-
-    messages.value[msgIndex] = {
-      ...prev,
-      blocks,
-      reasoning: reasoningSegments,
-      tools: parsed
-        .filter(e => e.type === 'tool_call' || e.type === 'tool_result')
-        .reduce((acc: ToolInfo[], e) => {
-          if (e.type === 'tool_call') {
-            acc.push({
-              name: e.toolName || 'unknown',
-              status: e.status || 'running',
-              args: e.args,
-              output: ''
-            })
-          } else if (e.type === 'tool_result') {
-            const t = acc.find(t => t.name === e.toolName)
-            if (t) {
-              t.status = e.status || 'completed'
-              t.output = e.content
-            }
-          }
-          return acc
-        }, []),
-      content: answerText || errorText || prev.content,
-      hasSnapshot: true,
-      meta: snapshotMeta || prev.meta,
-      artifacts,
-    }
+    applyMessageSnapshotEvents(messageId, msgIndex, data.events || [], raw, seq)
   } catch (err) {
     console.error('加载快照失败:', err)
     applyReasoningContentFallback(messageId, msgIndex, raw?.reasoning_content)
@@ -1136,12 +1848,17 @@ function buildSessionTitle(text: string): string {
   return raw.slice(0, 18) + (raw.length > 18 ? '…' : '')
 }
 
-async function ensureSessionTitle(sessionId: string, text: string, workDir?: string) {
+function resolveWorkDirForSend(): string {
+  return (pendingWorkDir.value || workDir.value || defaultWorkDir.value || '').trim()
+}
+
+async function ensureSessionTitle(sessionId: string, text: string, workDirPath?: string) {
   const title = buildSessionTitle(text)
+  const resolvedWorkDir = (workDirPath || resolveWorkDirForSend()).trim()
   try {
     await updateSessionMeta(sessionId, {
       title,
-      ...(workDir ? { work_dir: workDir } : {}),
+      work_dir: resolvedWorkDir || defaultWorkDir.value,
     })
     window.dispatchEvent(new CustomEvent('aries:refresh-sessions'))
   } catch (e) {
@@ -1236,7 +1953,6 @@ function onAddToChat(e: Event) {
 
 onMounted(() => {
   window.addEventListener('aries:new-chat', onNewChat)
-  window.addEventListener('aries:load-session', onLoadSession)
   window.addEventListener('aries:workdir-changed', onWorkDirChanged)
   window.addEventListener('aries:focus-console', onFocusConsole)
   window.addEventListener('aries:open-url', onOpenUrlFromMessage)
@@ -1284,13 +2000,13 @@ watch(() => props.sessionIdToLoad, (id) => {
 
 onUnmounted(() => {
   clearConfirmCountdownTimer()
-  stopChatWs()
+  if (currentSessionId.value) persistCurrentSessionSnapshot(currentSessionId.value)
+  closeAllSessionWs()
   if (scrollIdleTimer) {
     clearTimeout(scrollIdleTimer)
     scrollIdleTimer = null
   }
   window.removeEventListener('aries:new-chat', onNewChat)
-  window.removeEventListener('aries:load-session', onLoadSession)
   window.removeEventListener('aries:workdir-changed', onWorkDirChanged)
   window.removeEventListener('aries:focus-console', onFocusConsole)
   window.removeEventListener('aries:open-url', onOpenUrlFromMessage)
@@ -1337,14 +2053,21 @@ function flushPetStatus(oldPhase: string) {
   }
 }
 
-function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
+function applyStreamEvent(
+  assistantMsg: ChatMessage,
+  evt: StreamEvent,
+  opts?: { silent?: boolean; subagents?: SubagentRecord[] },
+) {
+  const silent = opts?.silent ?? false
   if (evt.type === 'content' && evt.data) {
-    if (petStatusPhase !== 'content') {
-      flushPetStatus(petStatusPhase)
-      petStatusPhase = 'content'
-      window.electronAPI?.setPetState?.('waving')
+    if (!silent) {
+      if (petStatusPhase !== 'content') {
+        flushPetStatus(petStatusPhase)
+        petStatusPhase = 'content'
+        window.electronAPI?.setPetState?.('waving')
+      }
+      petContentBuf += evt.data
     }
-    petContentBuf += evt.data
     assistantMsg.content += evt.data
     const blocks = (assistantMsg.blocks || []).slice()
     const lastBlock = blocks[blocks.length - 1]
@@ -1355,12 +2078,14 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
     }
     assistantMsg.blocks = blocks
   } else if (evt.type === 'reasoning') {
-    if (petStatusPhase !== 'reasoning') {
-      flushPetStatus(petStatusPhase)
-      petStatusPhase = 'reasoning'
-      window.electronAPI?.setPetState?.('waiting')
+    if (!silent) {
+      if (petStatusPhase !== 'reasoning') {
+        flushPetStatus(petStatusPhase)
+        petStatusPhase = 'reasoning'
+        window.electronAPI?.setPetState?.('waiting')
+      }
+      petReasoningBuf += evt.data
     }
-    petReasoningBuf += evt.data
     if (!assistantMsg.reasoning) assistantMsg.reasoning = []
     const blocks = (assistantMsg.blocks || []).slice()
 
@@ -1379,9 +2104,11 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
   } else if (evt.type === 'tool_call') {
     if (!assistantMsg.tools) assistantMsg.tools = []
     if (!assistantMsg.blocks) assistantMsg.blocks = []
-    flushPetStatus(petStatusPhase)
-    petStatusPhase = 'tool'
-    window.electronAPI?.setPetState?.('review')
+    if (!silent) {
+      flushPetStatus(petStatusPhase)
+      petStatusPhase = 'tool'
+      window.electronAPI?.setPetState?.('review')
+    }
     const toolCallId = String(evt.data.tool_call_id || '').trim()
     // 查找已有的同 tool_call_id 的 tool block（避免危险命令确认重发时重复创建）
     let existingBlockIdx = -1
@@ -1431,11 +2158,13 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
     const _toolName = evt.data.tool_name || 'tool'
     const _ok = evt.data.status !== 'error'
     const _output = (evt.data.output || '').trim()
-    let _msg = `${_ok ? '✅' : '❌'} ${_toolName}`
-    if (_output) {
-      _msg += ': ' + (_output.length > 150 ? _output.slice(0, 150) + '…' : _output)
+    if (!silent) {
+      let _msg = `${_ok ? '✅' : '❌'} ${_toolName}`
+      if (_output) {
+        _msg += ': ' + (_output.length > 150 ? _output.slice(0, 150) + '…' : _output)
+      }
+      sendPetStatus(_msg)
     }
-    sendPetStatus(_msg)
     // 收集 file_change 到 artifacts
     if (evt.data.file_change) {
       if (!assistantMsg.artifacts) assistantMsg.artifacts = []
@@ -1517,8 +2246,9 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
       assistantMsg.blocks = blocks
     }
   } else if (evt.type === 'subagent_event') {
-    // 转发给 SubagentChatPanel
-    window.dispatchEvent(new CustomEvent('aries:subagent-stream', { detail: { eventType: evt.type, data: evt.data || {} } }))
+    if (!silent) {
+      window.dispatchEvent(new CustomEvent('aries:subagent-stream', { detail: { eventType: evt.type, data: evt.data || {} } }))
+    }
     // 子 Agent 实时进度：合并到匹配的 delegate_to_subagent 工具块上
     if (!assistantMsg.blocks) assistantMsg.blocks = []
     const subData = evt.data || {}
@@ -1554,7 +2284,7 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
     }
     // 同步到 sessionSubagents
     if (taskId) {
-      upsertSubagent({
+      const record: SubagentRecord = {
         task_id: taskId,
         subagent: subData.subagent,
         task: subData.task,
@@ -1563,7 +2293,12 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
         last_event: subData.last_event,
         elapsed_ms: subData.elapsed_ms,
         log_path: subData.log_path,
-      })
+      }
+      if (opts?.subagents) {
+        upsertSubagentInList(opts.subagents, record)
+      } else {
+        upsertSubagent(record)
+      }
     }
   } else if (
     evt.type === 'subagent_reasoning' ||
@@ -1571,8 +2306,9 @@ function applyStreamEvent(assistantMsg: ChatMessage, evt: StreamEvent) {
     evt.type === 'subagent_tool_call' ||
     evt.type === 'subagent_tool_result'
   ) {
-    // 转发给 SubagentChatPanel
-    window.dispatchEvent(new CustomEvent('aries:subagent-stream', { detail: { eventType: evt.type, data: evt.data || {} } }))
+    if (!silent) {
+      window.dispatchEvent(new CustomEvent('aries:subagent-stream', { detail: { eventType: evt.type, data: evt.data || {} } }))
+    }
     // 子 Agent 的细粒度流式事件：追加到匹配 tool block 的 subagent.inner_blocks
     if (!assistantMsg.blocks) assistantMsg.blocks = []
     const d = evt.data || {}
@@ -1828,8 +2564,9 @@ async function stopGeneration() {
   const sessionId = currentSessionId.value
   if (sessionId) {
     stopChat(sessionId).catch(() => {})
+    markSessionIdle(sessionId)
+    syncSessionWorkingState(sessionId)
   }
-  streamAbortController?.abort()
   isSending.value = false
   clearPetStatus()
   const lastAssistant = [...messages.value].reverse().find((m) => m.role === 'assistant')
@@ -1854,84 +2591,8 @@ async function stopGeneration() {
   }
 }
 
-async function runAssistantStream(
-  stream: AsyncGenerator<StreamEvent>,
-  assistantMsg: ChatMessage,
-  assistantIdx: number,
-  onMeta?: (sessionId: string) => void
-) {
-  try {
-    for await (const event of stream) {
-      if (event.meta?.session_id) {
-        onMeta?.(event.meta.session_id)
-      }
-      if (event.type === 'context_usage') {
-        const pct = event.data?.usage_percent
-        if (typeof pct === 'number') contextUsagePercent.value = Math.round(pct)
-        continue
-      }
-      if (event.type === 'meta') {
-        assistantMsg.meta = event.data
-        const ctx = event.data?.token_usage?.context
-        if (ctx && ctx.breakdown) {
-          contextUsageBreakdown.value = ctx
-          if (typeof ctx.usage_percent === 'number') {
-            contextUsagePercent.value = Math.round(ctx.usage_percent)
-          }
-        }
-        messages.value[assistantIdx] = { ...assistantMsg }
-        continue
-      }
-      if (event.type === 'reasoning' && !event.data) continue
-      if (event.type === 'content' && !event.data) continue
-      applyStreamEvent(assistantMsg, event)
-      // 自动确认：如果用户关闭了该类危险命令的确认，直接放行
-      if (event.type === 'confirmation_required' && event.data) {
-        const dangerTypes: string[] = event.data.danger_types || []
-        const command = String(event.data.command || '').trim()
-        const needsConfirm = privacyStore.needsConfirmation(dangerTypes, command)
-        if (!needsConfirm) {
-          const toolCallId = event.data.tool_call_id as string
-          // 同步清除 assistantMsg 中的 pending 状态，防止确认条闪烁
-          if (assistantMsg.blocks) {
-            for (const block of assistantMsg.blocks) {
-              if (block.type === 'tool' && block.tool_call_id === toolCallId && block.pending_confirmation) {
-                block.pending_confirmation = false
-                block.status = 'running'
-              }
-            }
-          }
-          messages.value[assistantIdx] = { ...assistantMsg }
-          // 异步通知后端放行，不阻塞流处理
-          confirmTool(toolCallId, true).catch(() => {})
-          autoConfirmedToolIds.add(toolCallId)
-        }
-      }
-      if (event.type === 'todo_update' && event.data?.todos) {
-        window.dispatchEvent(new CustomEvent('aries:todo-update', {
-          detail: {
-            sessionId: currentSessionId.value || '',
-            todos: event.data.todos,
-          },
-        }))
-      }
-      messages.value[assistantIdx] = { ...assistantMsg }
-      await nextTick()
-      scheduleScrollToBottom()
-    }
-  } catch (e: any) {
-    if (e?.name === 'AbortError') {
-      dismissPendingConfirmations('已停止')
-      return
-    }
-    throw e
-  } finally {
-    clearPendingConfirmationUi()
-  }
-}
-
 async function sendMessage() {
-  if (isSending.value || !canSend.value) return
+  if (composerIsSending.value || !canSend.value) return
 
   const message = inputMessage.value.trim()
   const imagesToSend = attachedImages.value.map((img) => img.data)
@@ -1950,24 +2611,31 @@ async function sendMessage() {
   hasActiveChat.value = true
   isSending.value = true
 
-  let assistantMsg: ChatMessage = {
+  // placeholder assistant 消息：等到 log_started 事件到达时再创建/定位
+  // 主动创建一个占位以保证 UI 立即显示 loading
+  messages.value.push({
     role: 'assistant',
     content: '',
     reasoning: [],
     tools: [],
     blocks: [],
-    isLoading: true
-  }
-
-  messages.value.push(assistantMsg)
+    isLoading: true,
+  })
   const assistantIdx = messages.value.length - 1
+  activeAssistantIdx = assistantIdx
 
   const isNewSession = !currentSessionId.value
   const sessionIdAtSend = currentSessionId.value || crypto.randomUUID().replace(/-/g, '')
+  startStreamDuration(sessionIdAtSend, '__pending__')
+  markSessionWorking(sessionIdAtSend)
   if (isNewSession) {
     currentSessionId.value = sessionIdAtSend
   }
-  const workDirAtSend = pendingWorkDir.value
+  const workDirAtSend = resolveWorkDirForSend()
+  if (workDirAtSend && !workDir.value.trim()) {
+    workDir.value = workDirAtSend
+    workspaceStore.setWorkDir(workDirAtSend)
+  }
   if (workDirAtSend && isNewSession) {
     pendingWorkDir.value = ''
   }
@@ -1975,29 +2643,33 @@ async function sendMessage() {
   await nextTick()
   scheduleScrollToBottom(true)
   if (isNewSession) {
-    await ensureSessionTitle(
-      sessionIdAtSend,
-      message || (imagesToSend.length > 1 ? `[${imagesToSend.length} 张图片]` : '[图片]'),
-      workDirAtSend
-    )
+    await Promise.all([
+      ensureSessionTitle(
+        sessionIdAtSend,
+        message || (imagesToSend.length > 1 ? `[${imagesToSend.length} 张图片]` : '[图片]'),
+        workDirAtSend
+      ),
+      ensureChatWsReady(),
+    ])
   } else {
     window.dispatchEvent(new CustomEvent('aries:refresh-sessions'))
+    await ensureChatWsReady()
   }
-
-  streamAbortController = new AbortController()
 
   try {
     const chatMessages = messages.value
       .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
       .map((m) => ({ role: m.role, content: m.content }))
 
-    const stream = imagesToSend.length > 0
-      ? streamVision(chatMessages, imagesToSend, sessionIdAtSend, workDirAtSend)
-      : streamChat(chatMessages, sessionIdAtSend, workDirAtSend)
-
-    await runAssistantStream(stream, assistantMsg, assistantIdx, (sid) => {
-      currentSessionId.value = sid
-    })
+    // POST /chat/completions 或 /chat/vision：返回 { status, session_id }
+    // 实时数据通过 WebSocket（log_started / log_event / log_complete）推送
+    if (imagesToSend.length > 0) {
+      await startVision(chatMessages, imagesToSend, sessionIdAtSend, workDirAtSend)
+    } else {
+      await startChat(chatMessages, sessionIdAtSend, workDirAtSend)
+    }
+    // 重要：不在这里设置 isSending=false / isLoading=false
+    // 这些由 completeLogMessage() 在收到 log_complete 事件时设置
   } catch (e: any) {
     if (e?.name !== 'AbortError') {
       messages.value.push({
@@ -2007,18 +2679,13 @@ async function sendMessage() {
         tools: []
       })
     }
-  } finally {
-    streamAbortController = null
-    assistantMsg.isLoading = false
-    messages.value[assistantIdx] = { ...assistantMsg }
     isSending.value = false
-    flushPetStatus(petStatusPhase)
-    clearPetStatus()
+    if (activeAssistantIdx != null) {
+      const m = messages.value[activeAssistantIdx]
+      if (m) m.isLoading = false
+    }
     await nextTick()
     scheduleScrollToBottom()
-    if (currentSessionId.value) {
-      await refreshAssistantSnapshot(currentSessionId.value, assistantIdx)
-    }
     window.dispatchEvent(new CustomEvent('aries:refresh-sessions'))
   }
 }
@@ -2087,6 +2754,7 @@ function scheduleScrollToBottom(force = false) {
   width: 100%;
   align-items: stretch;
   position: relative;
+  background: var(--bg-content);
 }
 
 .right-panel-toggle {
@@ -2104,13 +2772,13 @@ function scheduleScrollToBottom(force = false) {
   background: var(--bg-panel);
   color: var(--text-secondary);
   cursor: pointer;
-  box-shadow: var(--shadow-panel);
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
 .right-panel-toggle:hover {
   background: var(--accent-hover);
   color: var(--text);
+  border-color: var(--border-strong);
 }
 
 .chat-todo-button {
@@ -2127,6 +2795,7 @@ function scheduleScrollToBottom(force = false) {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  background: var(--bg-content);
 }
 
 /* —— 对话：空状态 —— */
@@ -2205,7 +2874,7 @@ function scheduleScrollToBottom(force = false) {
 .user-bubble {
   max-width: 80%;
   padding: 10px 18px;
-  background: #e8eaed;
+  background: var(--user-msg);
   color: var(--text);
   white-space: pre-wrap;
 }
