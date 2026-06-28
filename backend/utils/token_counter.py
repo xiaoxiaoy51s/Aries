@@ -180,15 +180,12 @@ def extract_usage_from_response(response: dict[str, Any]) -> dict[str, int] | No
     """从 LLM API 响应中提取 usage 字段（如果存在）。
 
     OpenAI 兼容格式: response.usage = {prompt_tokens, completion_tokens, total_tokens}
+    部分 Provider 另含 cached_tokens / cache_read_input_tokens。
     """
     usage = response.get("usage")
     if not usage or not isinstance(usage, dict):
         return None
-    return {
-        "prompt_tokens": usage.get("prompt_tokens", 0),
-        "completion_tokens": usage.get("completion_tokens", 0),
-        "total_tokens": usage.get("total_tokens", 0),
-    }
+    return _normalize_api_usage(usage)
 
 
 def extract_usage_from_stream_chunk(chunk: dict[str, Any]) -> dict[str, int] | None:
@@ -196,8 +193,22 @@ def extract_usage_from_stream_chunk(chunk: dict[str, Any]) -> dict[str, int] | N
     usage = chunk.get("usage")
     if not usage or not isinstance(usage, dict):
         return None
-    return {
-        "prompt_tokens": usage.get("prompt_tokens", 0),
-        "completion_tokens": usage.get("completion_tokens", 0),
-        "total_tokens": usage.get("total_tokens", 0),
+    return _normalize_api_usage(usage)
+
+
+def _normalize_api_usage(usage: dict[str, Any]) -> dict[str, int]:
+    result: dict[str, int] = {
+        "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
+        "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
+        "total_tokens": int(usage.get("total_tokens", 0) or 0),
     }
+    details = usage.get("prompt_tokens_details") or {}
+    if isinstance(details, dict):
+        cached = int(details.get("cached_tokens") or 0)
+        if cached:
+            result["cached_tokens"] = cached
+    for key in ("cached_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+        val = int(usage.get(key) or 0)
+        if val:
+            result[key] = val
+    return result

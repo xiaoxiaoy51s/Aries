@@ -14,6 +14,14 @@ export interface RunMeta {
       prompt_tokens?: number
       completion_tokens?: number
       total_tokens?: number
+      cached_tokens?: number
+      estimated?: boolean
+    }
+    prompt_cache?: {
+      enabled?: boolean
+      fingerprint?: string
+      cached_tokens?: number
+      cache_hit_rate_percent?: number
     }
     [key: string]: unknown
   }
@@ -49,14 +57,28 @@ export function normalizeRunMetadata(raw: unknown): RunMeta {
   const completion =
     Number(apiObj.completion_tokens ?? tokenUsage.completion_tokens ?? 0) || 0
   const total = Number(apiObj.total_tokens ?? tokenUsage.total_tokens ?? 0) || 0
+  const cached =
+    Number(apiObj.cached_tokens ?? tokenUsage.cached_tokens ?? 0) ||
+    Number(
+      (tokenUsage.prompt_cache as Record<string, unknown> | undefined)?.cached_tokens ?? 0,
+    ) ||
+    0
 
   const api_usage =
-    prompt || completion || total
+    prompt || completion || total || cached
       ? {
           prompt_tokens: prompt,
           completion_tokens: completion,
           total_tokens: total || prompt + completion,
+          ...(cached ? { cached_tokens: cached } : {}),
+          ...(apiObj.estimated === true ? { estimated: true } : {}),
         }
+      : undefined
+
+  const prompt_cache_raw = tokenUsage.prompt_cache
+  const prompt_cache =
+    prompt_cache_raw && typeof prompt_cache_raw === 'object'
+      ? (prompt_cache_raw as NonNullable<RunMeta['token_usage']>['prompt_cache'])
       : undefined
 
   const context =
@@ -72,10 +94,11 @@ export function normalizeRunMetadata(raw: unknown): RunMeta {
   const model = typeof base.model === 'string' && base.model ? base.model : undefined
 
   const token_usage =
-    api_usage || context
+    api_usage || context || prompt_cache
       ? {
           ...(context ? { context } : {}),
           ...(api_usage ? { api_usage } : {}),
+          ...(prompt_cache ? { prompt_cache } : {}),
         }
       : undefined
 
@@ -86,31 +109,86 @@ export function normalizeRunMetadata(raw: unknown): RunMeta {
   }
 }
 
-/** 从 token_usage 提取可展示的输入/输出 token 文案 */
-export function formatTokenUsageLabel(
-  tokenUsage: RunMeta['token_usage'] | undefined,
-): string {
-  if (!tokenUsage) return ''
-
-  const api = tokenUsage.api_usage
-  if (api) {
-    const parts: string[] = []
-    if (api.prompt_tokens) parts.push(`↑${formatCompactNum(api.prompt_tokens)}`)
-    if (api.completion_tokens) parts.push(`↓${formatCompactNum(api.completion_tokens)}`)
-    if (parts.length) return parts.join(' ')
-    if (api.total_tokens) return `${formatCompactNum(api.total_tokens)} tok`
+/** 合并多次 run_metadata（开头 context 估算 + 结尾 api_usage） */
+export function mergeRunMeta(prev: RunMeta | undefined, next: RunMeta): RunMeta {
+  if (!prev) return next
+  const prevUsage = prev.token_usage
+  const nextUsage = next.token_usage
+  let token_usage: RunMeta['token_usage']
+  if (prevUsage && nextUsage) {
+    token_usage = {
+      ...prevUsage,
+      ...nextUsage,
+      context: { ...prevUsage.context, ...nextUsage.context },
+      api_usage: { ...prevUsage.api_usage, ...nextUsage.api_usage },
+      prompt_cache: { ...prevUsage.prompt_cache, ...nextUsage.prompt_cache },
+    }
+  } else {
+    token_usage = nextUsage || prevUsage
   }
-
-  const flat = tokenUsage as Record<string, unknown>
-  const prompt = Number(flat.prompt_tokens ?? 0) || 0
-  const completion = Number(flat.completion_tokens ?? 0) || 0
-  const parts: string[] = []
-  if (prompt) parts.push(`↑${formatCompactNum(prompt)}`)
-  if (completion) parts.push(`↓${formatCompactNum(completion)}`)
-  return parts.join(' ')
+  return {
+    model: next.model || prev.model,
+    duration_ms: next.duration_ms ?? prev.duration_ms,
+    token_usage,
+  }
 }
 
 function formatCompactNum(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
   return String(n)
+}
+
+export interface TokenInOutLabels {
+  input: string
+  output: string
+  cache: string
+  estimated?: boolean
+}
+
+/** 分解为输入/输出标签，供 meta 栏分项展示 */
+export function formatTokenInOutLabels(
+  tokenUsage: RunMeta['token_usage'] | undefined,
+): TokenInOutLabels {
+  const empty = { input: '', output: '', cache: '', estimated: false }
+  if (!tokenUsage) return empty
+
+  const api = tokenUsage.api_usage
+  const ctx = tokenUsage.context
+
+  let inputTokens = Number(api?.prompt_tokens ?? 0) || 0
+  let outputTokens = Number(api?.completion_tokens ?? 0) || 0
+
+  // API 未返回 usage 时，用 context 估算作为输入量
+  if (!inputTokens && ctx?.estimated_tokens) {
+    inputTokens = Number(ctx.estimated_tokens) || 0
+  }
+
+  if (!inputTokens && !outputTokens) {
+    const flat = tokenUsage as Record<string, unknown>
+    inputTokens = Number(flat.prompt_tokens ?? 0) || 0
+    outputTokens = Number(flat.completion_tokens ?? 0) || 0
+  }
+
+  const cached = api?.cached_tokens ?? tokenUsage.prompt_cache?.cached_tokens
+  const hitRate = tokenUsage.prompt_cache?.cache_hit_rate_percent
+  let cache = ''
+  if (cached) cache = `⚡${formatCompactNum(cached)}`
+  else if (hitRate) cache = `⚡${hitRate}%`
+
+  const approx = api?.estimated === true ? '≈' : ''
+
+  return {
+    input: inputTokens ? `${approx}↑${formatCompactNum(inputTokens)}` : '',
+    output: outputTokens ? `${approx}↓${formatCompactNum(outputTokens)}` : '',
+    cache,
+    estimated: api?.estimated === true,
+  }
+}
+
+/** 合并展示：↑输入 ↓输出 ⚡缓存 */
+export function formatTokenUsageLabel(
+  tokenUsage: RunMeta['token_usage'] | undefined,
+): string {
+  const { input, output, cache } = formatTokenInOutLabels(tokenUsage)
+  return [input, output, cache].filter(Boolean).join(' ')
 }

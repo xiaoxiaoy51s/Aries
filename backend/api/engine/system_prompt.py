@@ -61,11 +61,14 @@ def build_agent_system_prompt_parts(
     """构建 Agent 模式的系统提示词，并按"功能模块"分块返回。
 
     返回 dict:
-        base: 身份/会话/工作目录/输出规范/Skill 使用规范（不含 skills 详情、rules、mcp）
+        static: 身份/输出规范/编码规则（不含日期、session、work_dir，利于 prefix cache）
+        runtime: 日期、session、工作目录
+        base: static + runtime（兼容旧 breakdown）
         rules: 用户 rules.md + AI 项目记忆（agent.md）
         skills: 已安装本地 Skills 详情
         mcp: MCP 插件描述
         subagents: 可委派的子 Agent 精简路由表
+        plugins: 内置插件列表
         full: 拼接完整 system prompt（与旧版一致）
     """
     from pathlib import Path
@@ -82,18 +85,10 @@ def build_agent_system_prompt_parts(
         tmp_dir = str(Path.home() / ".Aries" / "tmp")
         target_note = wd
 
-    base = (
+    static = (
         "# 身份\n"
         "你是一个强大的多用途 AI 助手，擅长任务规划、文档创建、网络研究和代码执行。"
-        f"今天的日期是 {today_str}，当前操作系统：{platform.system()}。\n"
-        "\n"
-        "# 当前会话\n"
-        f"{_session_context_note(session_id)}\n"
-        "\n"
-        "# 工作目录\n"
-        f"工作目录：`{wd}`\n"
-        f"临时脚本目录：`{tmp_dir}`\n"
-        f"⚠️ 所有生成的文件都应保存到工作目录：`{target_note}` 下！\n"
+        f"当前操作系统：{platform.system()}。\n"
         "\n"
         "# 输出规范\n"
         "- 工具轮：输出「分析+计划」，再调用工具\n"
@@ -112,6 +107,21 @@ def build_agent_system_prompt_parts(
             has_apply_patch=True,
         )
     )
+
+    runtime = (
+        f"# 运行时\n"
+        f"今天的日期是 {today_str}。\n"
+        "\n"
+        "# 当前会话\n"
+        f"{_session_context_note(session_id)}\n"
+        "\n"
+        "# 工作目录\n"
+        f"工作目录：`{wd}`\n"
+        f"临时脚本目录：`{tmp_dir}`\n"
+        f"⚠️ 所有生成的文件都应保存到工作目录：`{target_note}` 下！\n"
+    )
+
+    base = static + runtime
 
     rules = build_agent_memory_system_section(wd) or ""
 
@@ -140,11 +150,14 @@ def build_agent_system_prompt_parts(
     full = base + rules + subagents_section + plugins_section + skills_section + mcp_section
 
     return {
+        "static": static,
+        "runtime": runtime,
         "base": base,
         "rules": rules,
         "skills": skills_section,
         "mcp": mcp_section,
         "subagents": subagents_section,
+        "plugins": plugins_section,
         "full": full,
     }
 

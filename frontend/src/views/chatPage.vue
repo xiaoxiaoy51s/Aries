@@ -173,7 +173,7 @@ import UserMessageContent from '@/components/UserMessageContent.vue'
 import RightPanel from '@/components/workspace/RightPanel.vue'
 import TodoButton from '@/components/TodoButton.vue'
 import { parseSnapshotEventObjects } from '@/utils/snapshotParser'
-import { normalizeRunMetadata, type RunMeta } from '@/utils/runMetadata'
+import { normalizeRunMetadata, mergeRunMeta, type RunMeta } from '@/utils/runMetadata'
 import {
   bindStreamDuration,
   startStreamDuration,
@@ -262,21 +262,20 @@ const pendingRunMetaByMessageId = new Map<number, RunMeta>()
  */
 function ensureLogPlaceholder(messageId: number, jsonlPath: string) {
   if (!currentSessionId.value) return
-  // 先查找已存在的
   let idx = messages.value.findIndex(
     (m) => m.role === 'assistant' && m.messageId === messageId
   )
   if (idx < 0) {
-    // 兜底：最后一条 assistant 消息
-    for (let i = messages.value.length - 1; i >= 0; i--) {
-      if (messages.value[i].role === 'assistant') {
-        idx = i
-        break
-      }
+    const last = messages.value[messages.value.length - 1]
+    if (
+      last?.role === 'assistant' &&
+      last.isLoading &&
+      (!last.messageId || last.messageId === messageId)
+    ) {
+      idx = messages.value.length - 1
     }
   }
   if (idx < 0) {
-    // 没有 placeholder：新建
     messages.value.push({
       role: 'assistant',
       content: '',
@@ -289,11 +288,13 @@ function ensureLogPlaceholder(messageId: number, jsonlPath: string) {
     })
     idx = messages.value.length - 1
   } else {
-    // 已存在：标记为 loading（断线重连场景）
     const m = messages.value[idx]
-    m.isLoading = true
-    m.messageId = messageId
-    if (jsonlPath) m.messageSnapshotJson = jsonlPath
+    messages.value[idx] = {
+      ...m,
+      isLoading: true,
+      messageId,
+      messageSnapshotJson: jsonlPath || m.messageSnapshotJson,
+    }
   }
   if (currentSessionId.value) {
     bindStreamDuration(currentSessionId.value, messageId)
@@ -313,7 +314,7 @@ function applyMetaToMessage(messageId: number, meta: RunMeta): boolean {
   if (idx < 0) return false
   const msg = messages.value[idx]
   if (!msg || msg.role !== 'assistant') return false
-  messages.value[idx] = { ...msg, meta }
+  messages.value[idx] = { ...msg, meta: mergeRunMeta(msg.meta, meta) }
   return true
 }
 
@@ -321,8 +322,10 @@ function stashRunMetadata(messageId: number, raw: unknown) {
   if (!messageId) return
   const meta = normalizeRunMetadata(raw)
   if (!meta.model && !meta.duration_ms && !meta.token_usage) return
-  pendingRunMetaByMessageId.set(messageId, meta)
-  applyMetaToMessage(messageId, meta)
+  const prev = pendingRunMetaByMessageId.get(messageId)
+  const merged = mergeRunMeta(prev, meta)
+  pendingRunMetaByMessageId.set(messageId, merged)
+  applyMetaToMessage(messageId, merged)
 }
 
 /**
@@ -341,10 +344,14 @@ function applyLogEvent(event: Record<string, any>, messageId: number, jsonlPath:
     return
   }
 
-  if (activeAssistantIdx == null) {
+  let idx = messageId > 0 ? findAssistantMessageIndex(messageId) : activeAssistantIdx
+  if (idx == null || idx < 0) {
     ensureLogPlaceholder(messageId, jsonlPath)
+    idx = activeAssistantIdx
+  } else {
+    activeAssistantIdx = idx
+    activeAssistantMessageId = messageId
   }
-  const idx = activeAssistantIdx
   if (idx == null) return
   const msg = messages.value[idx]
   if (!msg || msg.role !== 'assistant') return
@@ -447,6 +454,7 @@ function findAssistantMessageIndex(messageId: number): number {
       (m) => m.role === 'assistant' && m.messageId === messageId
     )
     if (byId >= 0) return byId
+    return -1
   }
   if (activeAssistantIdx != null && messages.value[activeAssistantIdx]?.role === 'assistant') {
     return activeAssistantIdx
@@ -484,6 +492,9 @@ function completeLogMessage(messageId: number) {
     activeAssistantMessageId = null
     activeAssistantIdx = null
   }
+  if (isPlatformSession(currentSessionId.value)) {
+    platformStreaming = false
+  }
   isSending.value = false
   flushPetStatus(petStatusPhase)
   clearPetStatus()
@@ -495,6 +506,12 @@ function completeLogMessage(messageId: number) {
 
 // 平台流式输出状态
 let platformStreaming: boolean = false
+
+const PLATFORM_SESSION_IDS = new Set(['__wechat__', '__qq__', '__feishu__'])
+
+function isPlatformSession(sessionId?: string | null): boolean {
+  return !!sessionId && PLATFORM_SESSION_IDS.has(sessionId)
+}
 
 // 确保平台 session 有一个 loading 的 assistant 占位消息
 function ensurePlatformAssistantPlaceholder() {
@@ -530,6 +547,29 @@ function handlePlatformStreamEvent(rawEvent: Record<string, unknown>) {
   applyStreamEvent(assistantMsg, evt)
   messages.value[assistantIdx] = { ...assistantMsg }
   nextTick(() => scheduleScrollToBottom())
+}
+
+function ensurePlatformUserMessage(preview: string) {
+  const text = preview.trim()
+  if (!text || !currentSessionId.value) return
+
+  const insertAt = activeAssistantIdx != null ? activeAssistantIdx : messages.value.length
+  const prev = insertAt > 0 ? messages.value[insertAt - 1] : undefined
+  if (prev?.role === 'user' && (prev.content === text || prev.content?.endsWith(text))) return
+
+  messages.value.splice(insertAt, 0, {
+    role: 'user',
+    content: text,
+    ...enrichUserMessage(text),
+    reasoning: [],
+    tools: [],
+    blocks: [],
+  })
+  if (activeAssistantIdx != null) {
+    activeAssistantIdx += 1
+  }
+  hasActiveChat.value = true
+  nextTick(() => scheduleScrollToBottom(true))
 }
 
 // 加载当前 session 的新消息（完整重载，处理新增和更新）
@@ -811,11 +851,13 @@ function ensureLogPlaceholderSnapshot(
   const msgs = snapshot.messages as ChatMessage[]
   let idx = msgs.findIndex((m) => m.role === 'assistant' && m.messageId === messageId)
   if (idx < 0) {
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'assistant') {
-        idx = i
-        break
-      }
+    const last = msgs[msgs.length - 1]
+    if (
+      last?.role === 'assistant' &&
+      last.isLoading &&
+      (!last.messageId || last.messageId === messageId)
+    ) {
+      idx = msgs.length - 1
     }
   }
   if (idx < 0) {
@@ -832,9 +874,12 @@ function ensureLogPlaceholderSnapshot(
     idx = msgs.length - 1
   } else {
     const m = msgs[idx]
-    m.isLoading = true
-    m.messageId = messageId
-    if (jsonlPath) m.messageSnapshotJson = jsonlPath
+    msgs[idx] = {
+      ...m,
+      isLoading: true,
+      messageId,
+      messageSnapshotJson: jsonlPath || m.messageSnapshotJson,
+    }
   }
   bindStreamDuration(sessionId, messageId)
   startStreamDuration(sessionId, messageId)
@@ -850,6 +895,7 @@ function findAssistantMessageIndexInSnapshot(snapshot: SessionChatSnapshot, mess
   if (messageId > 0) {
     const byId = msgs.findIndex((m) => m.role === 'assistant' && m.messageId === messageId)
     if (byId >= 0) return byId
+    return -1
   }
   if (snapshot.activeAssistantIdx != null && msgs[snapshot.activeAssistantIdx]?.role === 'assistant') {
     return snapshot.activeAssistantIdx
@@ -958,10 +1004,16 @@ function applyLogEventSnapshot(
     return
   }
 
-  if (snapshot.activeAssistantIdx == null) {
+  let idx = messageId > 0
+    ? findAssistantMessageIndexInSnapshot(snapshot, messageId)
+    : snapshot.activeAssistantIdx
+  if (idx == null || idx < 0) {
     ensureLogPlaceholderSnapshot(snapshot, sessionId, messageId, jsonlPath)
+    idx = snapshot.activeAssistantIdx
+  } else {
+    snapshot.activeAssistantIdx = idx
+    snapshot.activeAssistantMessageId = messageId
   }
-  const idx = snapshot.activeAssistantIdx
   if (idx == null) return
   const msg = snapshot.messages[idx] as ChatMessage | undefined
   if (!msg || msg.role !== 'assistant') return
@@ -1020,6 +1072,9 @@ async function processChatWsPayload(data: Record<string, unknown>) {
     const newMsgId = Number(data.message_id) || 0
     if (newMsgId) {
       activeAssistantMessageId = newMsgId
+      if (isPlatformSession(currentSessionId.value)) {
+        platformStreaming = true
+      }
       ensureLogPlaceholder(newMsgId, String(data.jsonl_path || ''))
       syncSessionWorkingState()
     }
@@ -1052,13 +1107,21 @@ async function processChatWsPayload(data: Record<string, unknown>) {
           messages.value[lastIdx] = { ...lastAssistant, meta }
         }
       }
-    } else {
+    } else if (!isPlatformSession(currentSessionId.value) && !event.choices) {
+      // 平台会话正文/思考/工具已由 log_event 推送；choices  chunk 忽略避免重复渲染
       handlePlatformStreamEvent(event)
     }
     syncSessionWorkingState()
   } else if (data.type === 'new_message') {
-    await loadNewMessages()
-    ensurePlatformAssistantPlaceholder()
+    if (
+      isPlatformSession(currentSessionId.value) &&
+      data.role === 'user' &&
+      platformStreaming
+    ) {
+      ensurePlatformUserMessage(String(data.preview || ''))
+    } else {
+      await loadNewMessages()
+    }
   } else if (data.type === 'session_update') {
     platformStreaming = false
     clearPetStatus()

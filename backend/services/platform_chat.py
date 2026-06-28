@@ -20,7 +20,7 @@ from db.chat import get_conversation_history, get_recent_messages, save_message
 from db.sessions import get_session
 from models.model_manager import resolve_active_model_config
 from services.chat_ws import broadcast_stream_event, notify_new_message, notify_session_update
-from services.platform_segment import PlatformStreamSink
+from services.platform_segment import PlatformStreamSink, push_final_reply
 from utils.url_utils import normalize_base_url
 
 _log = logging.getLogger(__name__)
@@ -178,15 +178,21 @@ async def run_agent_in_session(
         segment_sink=segment_sink,
         cancel_event=cancel_event,
     ):
-        # 解析 SSE 事件并转发给前端 WebSocket
+        # 解析 SSE 并转发非 delta 事件；reasoning/assistant/tool 已由 JSONL log_event 推送
         if sse_line.startswith("data: "):
             raw = sse_line[6:].strip()
-            if raw and raw != "[DONE]":
-                try:
-                    event_data = json.loads(raw)
-                    await broadcast_stream_event(session_id, event_data)
-                except (json.JSONDecodeError, Exception):
-                    pass
+            if not raw or raw == "[DONE]":
+                continue
+            try:
+                event_data = json.loads(raw)
+            except (json.JSONDecodeError, Exception):
+                continue
+            if "choices" in event_data:
+                continue
+            try:
+                await broadcast_stream_event(session_id, event_data)
+            except Exception:
+                pass
 
     recent = get_recent_messages(session_id, limit=1)
     for msg in reversed(recent):
@@ -212,7 +218,7 @@ async def process_inbound_message_async(
     """处理平台消息 - 自动取消同平台上一轮对话。
 
     当同一平台的新消息到达时，会先取消正在进行的对话任务，
-    然后开始处理新消息。流式输出通过 send_segment 回调实时推送到平台。
+    然后开始处理新消息。Agent 全部完成后，将最终 assistant 回复推送到平台。
     """
     text = (text or "").strip()
     if not text:
@@ -234,6 +240,7 @@ async def process_inbound_message_async(
 
     segment_sink = PlatformStreamSink(send_segment) if send_segment else None
 
+    reply = ""
     try:
         # 先保存用户消息到 DB，再通知前端加载
         save_message(sid, "user", text, mode="agent")
@@ -249,6 +256,16 @@ async def process_inbound_message_async(
         )
         # 通知前端：AI 回复已完成
         await notify_session_update(sid)
+        if send_segment and reply.strip() and not reply.startswith("（Agent 未生成"):
+            try:
+                if segment_sink is None or not segment_sink.pushed_any:
+                    await push_final_reply(send_segment, reply)
+                else:
+                    tail = segment_sink.unpushed_suffix(reply)
+                    if tail:
+                        await push_final_reply(send_segment, tail)
+            except Exception as push_err:
+                _log.warning("[平台 %s] 最终回复推送失败: %s", platform, push_err)
     except asyncio.CancelledError:
         _log.info("[平台 %s] 对话已被新消息取消", platform)
         # 被取消时也通知前端刷新（已有部分内容已保存到 DB）
@@ -275,10 +292,7 @@ async def process_inbound_message_async(
         if _platform_cancel_events.get(platform) is cancel_event:
             _platform_cancel_events.pop(platform, None)
 
-    # 已分段推送时不再重复发送完整回复
-    if send_segment:
-        return ""
-    return reply
+    return reply if not send_segment else ""
 
 
 def process_inbound_message(platform: str, text: str) -> str:

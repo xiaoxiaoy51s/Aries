@@ -10,9 +10,14 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         {{ formattedDuration }}
       </span>
-      <span v-if="formattedTokens" class="meta-item">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-        {{ formattedTokens }}
+      <span v-if="tokenInOut.input" class="meta-item" :title="tokenInOut.estimated ? '输入 tokens（估算）' : '输入 tokens'">
+        {{ tokenInOut.input }}
+      </span>
+      <span v-if="tokenInOut.output" class="meta-item" :title="tokenInOut.estimated ? '输出 tokens（估算）' : '输出 tokens'">
+        {{ tokenInOut.output }}
+      </span>
+      <span v-if="tokenInOut.cache" class="meta-item" title="缓存命中">
+        {{ tokenInOut.cache }}
       </span>
       <span v-if="contextPercent !== null" class="meta-item meta-context" :class="{ 'meta-context--high': contextPercent >= 80 }">
         ctx {{ contextPercent }}%
@@ -199,7 +204,7 @@ import {
   bindStreamDuration,
   getStreamDurationMs,
 } from '@/utils/streamDurationStore'
-import { formatTokenUsageLabel } from '@/utils/runMetadata'
+import { formatTokenInOutLabels } from '@/utils/runMetadata'
 
 const FILE_ICON_CDN = '/file-icons'
 
@@ -461,22 +466,37 @@ const fontSize = computed(() => props.fontSize || 15)
 
 // meta 相关计算
 const hasMetaInfo = computed(() => {
-  return !!(props.isLoading || props.meta?.model || formattedDuration.value || formattedTokens.value || contextPercent.value !== null)
+  const t = tokenInOut.value
+  return !!(
+    props.isLoading ||
+    props.meta?.model ||
+    formattedDuration.value ||
+    t.input ||
+    t.output ||
+    t.cache ||
+    contextPercent.value !== null
+  )
 })
+
+const tokenInOut = computed(() => formatTokenInOutLabels(props.meta?.token_usage))
 
 const formattedDuration = computed(() => {
   streamDurationTick.value // 订阅全局 ticker 刷新
-  const sid = props.chatSessionId
   let ms = 0
-  if (sid) {
-    if (props.messageId) {
-      ms = getStreamDurationMs(sid, props.messageId)
-    } else if (props.isLoading) {
-      ms = getStreamDurationMs(sid, '__pending__')
+  if (!props.isLoading && props.meta?.duration_ms) {
+    ms = props.meta.duration_ms
+  } else {
+    const sid = props.chatSessionId
+    if (sid) {
+      if (props.messageId) {
+        ms = getStreamDurationMs(sid, props.messageId)
+      } else if (props.isLoading) {
+        ms = getStreamDurationMs(sid, '__pending__')
+      }
     }
-  }
-  if (!ms && !props.isLoading) {
-    ms = props.meta?.duration_ms || 0
+    if (!ms && !props.isLoading) {
+      ms = props.meta?.duration_ms || 0
+    }
   }
   if (!ms || ms <= 0) return ''
   if (ms < 1000) return `${ms}ms`
@@ -486,8 +506,6 @@ const formattedDuration = computed(() => {
   const rest = Math.round(s % 60)
   return `${m}m${rest}s`
 })
-
-const formattedTokens = computed(() => formatTokenUsageLabel(props.meta?.token_usage))
 
 const contextPercent = computed(() => {
   const pct = props.meta?.token_usage?.context?.usage_percent

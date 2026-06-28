@@ -15,6 +15,13 @@ from utils.message_snapshot import (
 )
 from utils.session_logger import SessionLogger
 from utils.token_counter import extract_usage_from_stream_chunk
+from utils.prompt_cache import (
+    build_layered_messages,
+    compute_config_fingerprint,
+    is_prompt_cache_enabled,
+    prepare_llm_payload,
+    summarize_cache_usage,
+)
 from db.chat import save_message, update_message
 
 from .stream_constants import (
@@ -244,6 +251,8 @@ async def stream_agent_mode(
             skills_context, work_dir=work_dir, session_id=session_id,
             mcp_context=mcp_context, subagents_context=subagents_context,
         )
+        agent_ctx = ""
+        system_prompt = prompt_parts["full"]
 
         if is_subagent_mode:
             # 子 Agent 直接模式：完全替换 system prompt 和工具集
@@ -258,20 +267,24 @@ async def stream_agent_mode(
             }
             tool_definitions = override_tools or []
         else:
-            system_prompt = prompt_parts["full"]
             # 固定 Agent 模式：过滤工具 + 追加专用 prompt（与 @code_review 逻辑一致）
             if agent_mode:
                 tool_definitions = _filter_tools_for_agent_mode(tool_definitions, agent_mode)
                 agent_ctx = _build_agent_mode_context(agent_mode)
                 if agent_ctx:
                     system_prompt = system_prompt + agent_ctx
-                    prompt_parts["full"] = system_prompt
+
+        prompt_fingerprint = compute_config_fingerprint(
+            tool_definitions,
+            prompt_parts=prompt_parts,
+            model=effective_model,
+        )
 
         # context usage breakdown
         from utils.token_counter import build_context_usage_breakdown
         model_name = effective_model
         context_breakdown = build_context_usage_breakdown(
-            system_prompt_base=prompt_parts["base"] + (prompt_parts.get("mcp") or "") + (prompt_parts.get("subagents") or ""),
+            system_prompt_base=system_prompt,
             tool_definitions=tool_definitions,
             rules_text=prompt_parts["rules"],
             skills_text=prompt_parts["skills"],
@@ -282,8 +295,17 @@ async def stream_agent_mode(
         for k in ("recent_message_count", "memory_count", "reasoning_count"):
             if breakdown_inputs.get(k) is not None:
                 context_breakdown[k] = breakdown_inputs[k]
-        logger.set_token_usage({"context": context_breakdown})
+        logger.set_token_usage({
+            "context": context_breakdown,
+            "prompt_cache": {
+                "enabled": is_prompt_cache_enabled(),
+                "fingerprint": prompt_fingerprint,
+            },
+        })
         yield f"data: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
+
+        extra_system_suffix = agent_ctx if not is_subagent_mode else ""
+        intent_label = override_agent_mode_label or (f"agent:{agent_mode}" if agent_mode else "subagent")
 
         # ===== 意图识别 =====（固定 Agent / 子 Agent 模式下跳过）
         if not agent_mode and not is_subagent_mode:
@@ -301,30 +323,48 @@ async def stream_agent_mode(
                                     user_text += part.get("text", "")
                         break
                 intent = classify_intent(user_text)
+                intent_label = intent
                 if intent != INTENT_AGENT:
                     tool_definitions = filter_tools_for_intent(intent, tool_definitions)
+                    prompt_fingerprint = compute_config_fingerprint(
+                        tool_definitions,
+                        prompt_parts=prompt_parts,
+                        model=effective_model,
+                    )
                 intent_prompt = get_prompt_for_intent(intent)
                 if intent_prompt:
-                    system_prompt = system_prompt + "\n\n" + intent_prompt
+                    extra_system_suffix += "\n\n" + intent_prompt
                 yield f"data: {json.dumps({'intent': intent}, ensure_ascii=False)}\n\n"
             except Exception:
                 pass
         else:
-            label = override_agent_mode_label or (f"agent:{agent_mode}" if agent_mode else "subagent")
-            yield f"data: {json.dumps({'intent': label}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'intent': intent_label}, ensure_ascii=False)}\n\n"
 
-        # 子 Agent 直接模式：防御性移除 messages 中可能存在的 system 消息，避免双 system prompt
         if is_subagent_mode:
             messages = [m for m in messages if m.get("role") != "system"]
-            # 防御性过滤：子 Agent 不允许再委派子 Agent
             if tool_definitions:
                 tool_definitions = [
                     t for t in tool_definitions
                     if t.get("function", {}).get("name") != "delegate_to_subagent"
                 ]
+                prompt_fingerprint = compute_config_fingerprint(
+                    tool_definitions,
+                    prompt_parts=prompt_parts,
+                    model=effective_model,
+                )
 
-        current_messages = [{"role": "system", "content": system_prompt}]
-        current_messages.extend(messages)
+        if is_prompt_cache_enabled():
+            current_messages = build_layered_messages(
+                prompt_parts,
+                messages,
+                extra_system_suffix=extra_system_suffix,
+            )
+        else:
+            content = system_prompt
+            if extra_system_suffix and extra_system_suffix not in content:
+                content += extra_system_suffix
+            current_messages = [{"role": "system", "content": content}]
+            current_messages.extend(m for m in messages if m.get("role") != "system")
 
         base_url = normalize_base_url(request.baseUrl)
         llm_timeout = httpx.Timeout(connect=LLM_CONNECT_TIMEOUT_SECONDS, read=LLM_READ_TIMEOUT_SECONDS, write=LLM_WRITE_TIMEOUT_SECONDS, pool=30.0)
@@ -339,12 +379,12 @@ async def stream_agent_mode(
                     cancelled = True
                     break
 
-                # 第 24 轮提醒
+                # 接近工具轮次上限时提醒（MAX_TOOL_ROUNDS 默认 100）
                 if round_no == MAX_TOOL_ROUNDS - 1:
                     current_messages.append({
                         "role": "system",
                         "content": (
-                            "【系统提醒】你当前已接近本地工具调用上限（25 轮）。"
+                            f"【系统提醒】你当前已接近本地工具调用上限（{MAX_TOOL_ROUNDS} 轮）。"
                             "本轮请不要再发起新的工具调用，而是总结截至目前已完成的任务内容、"
                             "已修改的文件、已验证的结果，以及剩余未完成的工作。"
                             "用精炼的语言向用户汇报进度，并告知用户如需要继续可发送「继续」。"
@@ -352,16 +392,14 @@ async def stream_agent_mode(
                     })
                     yield f"data: {json.dumps({'hint': '工具调用即将达到上限，正在整理执行进度…'}, ensure_ascii=False)}\n\n"
 
-                payload = {
-                    "model": effective_model, "messages": current_messages, "stream": True,
-                }
-                if tool_definitions:
-                    payload["tools"] = tool_definitions
-                    payload["tool_choice"] = "auto"
-                if request.temperature is not None:
-                    payload["temperature"] = request.temperature
-                if request.max_tokens is not None:
-                    payload["max_tokens"] = request.max_tokens
+                payload = prepare_llm_payload(
+                    model=effective_model,
+                    messages=current_messages,
+                    tool_definitions=tool_definitions,
+                    stream=True,
+                    temperature=request.temperature,
+                    max_tokens=request.max_tokens,
+                )
 
                 # LLM 流式请求
                 stream_result = _LLMStreamResult()
@@ -711,5 +749,12 @@ async def stream_agent_mode(
                 message_snapshot_json=logger.jsonl_path_str(),
                 reasoning_content=logger.build_db_reasoning()
             )
+            cache_summary = summarize_cache_usage(
+                (logger.get_run_metadata().get("token_usage") or {}).get("api_usage") or {}
+            )
+            if cache_summary:
+                existing_pc = (logger.get_run_metadata().get("token_usage") or {}).get("prompt_cache") or {}
+                logger.set_token_usage({"prompt_cache": {**existing_pc, **cache_summary}})
+            logger.apply_api_usage_estimate()
             yield f"data: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
             logger.finalize()

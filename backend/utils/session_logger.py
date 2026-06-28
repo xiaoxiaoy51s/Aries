@@ -75,6 +75,7 @@ class SessionLogger:
         self._tool_log: list[dict[str, Any]] = []
         self._reasoning_all = ""
         self._assistant_all = ""
+        self._assistant_round = ""
         self._started_perf = time.perf_counter()
         self._model = ""
         self._token_usage: dict[str, Any] = {}
@@ -175,6 +176,7 @@ class SessionLogger:
         if not text:
             return
         self._assistant_all += text
+        self._assistant_round += text
         event: dict[str, Any] = {
             "type": "assistant_text",
             "text": text,
@@ -184,15 +186,18 @@ class SessionLogger:
         self._emit(event)
 
     def flush_assistant_round(self) -> tuple[str, str]:
-        """保留兼容：当前实现已无缓冲，本方法只 flush reasoning。"""
+        """结束当前 LLM 轮次：返回本轮 reasoning 与 assistant 全文，并清空 assistant 轮缓冲。"""
         reasoning = self.flush_reasoning_segment()
-        return reasoning, ""
+        assistant = self._assistant_round
+        self._assistant_round = ""
+        return reasoning, assistant
 
     def write_assistant_segment(self, text: str) -> None:
         if not text:
             return
         self.flush_reasoning_segment()
         self._assistant_all += text
+        self._assistant_round += text
         event: dict[str, Any] = {
             "type": "assistant_text",
             "text": text,
@@ -221,8 +226,17 @@ class SessionLogger:
         if not usage:
             return
         api_usage = self._token_usage.setdefault("api_usage", {})
-        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-            api_usage[key] = int(api_usage.get(key, 0) or 0) + int(usage.get(key, 0) or 0)
+        for key in (
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "cached_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ):
+            val = int(usage.get(key) or 0)
+            if val:
+                api_usage[key] = int(api_usage.get(key, 0) or 0) + val
 
     def duration_ms(self) -> int:
         return int((time.perf_counter() - self._started_perf) * 1000)
@@ -251,6 +265,7 @@ class SessionLogger:
 
     def finalize(self) -> None:
         self.flush_reasoning_segment()
+        self.apply_api_usage_estimate()
         # write_run_metadata 内部已 self._emit
         self.write_run_metadata()
         # 广播 log_complete 事件，告知前端本次回复结束
@@ -339,6 +354,43 @@ class SessionLogger:
 
     def build_db_content(self) -> str:
         return self._assistant_all
+
+    def apply_api_usage_estimate(self) -> None:
+        """API 未返回 usage 时，用 context 估算输入、用已生成文本估算输出。"""
+        from utils.token_counter import estimate_tokens
+
+        api = dict(self._token_usage.get("api_usage") or {})
+        context = self._token_usage.get("context") or {}
+        if not isinstance(context, dict):
+            context = {}
+
+        had_api_prompt = bool(api.get("prompt_tokens"))
+        had_api_completion = bool(api.get("completion_tokens"))
+
+        prompt = int(api.get("prompt_tokens") or 0)
+        completion = int(api.get("completion_tokens") or 0)
+
+        if not prompt:
+            prompt = int(context.get("estimated_tokens") or 0)
+
+        if not completion:
+            completion = estimate_tokens(self._assistant_all) + estimate_tokens(self._reasoning_all)
+
+        if not prompt and not completion:
+            return
+
+        merged = {**api}
+        if prompt:
+            merged["prompt_tokens"] = prompt
+        if completion:
+            merged["completion_tokens"] = completion
+        merged["total_tokens"] = int(merged.get("prompt_tokens") or 0) + int(merged.get("completion_tokens") or 0)
+        if not had_api_prompt or not had_api_completion:
+            merged["estimated"] = True
+        else:
+            merged.pop("estimated", None)
+
+        self._token_usage["api_usage"] = merged
 
     def build_db_reasoning(self) -> str | None:
         if not self._reasoning_all and not self._tool_log:
