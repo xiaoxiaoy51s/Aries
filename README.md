@@ -209,10 +209,6 @@ python main.py
 
 日志位置：`~/.Aries/logs/backend.log`
 
-**检查更新**
-
-应用通过 GitHub Releases 检测新版本，仓库需为 **Public**，否则无法读取 Release 信息。
-
 ---
 
 ## License
