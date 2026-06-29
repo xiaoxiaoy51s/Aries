@@ -56,7 +56,7 @@
 import { computed } from 'vue'
 import { getIconForFile, getIconForFolder, getIconForOpenFolder, DEFAULT_FILE, DEFAULT_FOLDER_OPENED } from 'vscode-icons-js'
 
-const ICON_CDN = '/file-icons'
+const ICON_CDN = './file-icons'
 
 interface TreeNode {
   name: string

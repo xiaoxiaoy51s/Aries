@@ -1,6 +1,6 @@
 <template>
   <div class="settings-section">
-    <p class="section-desc">检测和管理 Node.js、Python、Git 运行时。系统已安装的会自动使用，也可额外下载内置版本供 MCP 等场景使用。</p>
+    <p class="section-desc">检测和管理 Node.js、Python、Git 运行时，可下载内置版本或切换系统 / 本地路径。</p>
 
     <div v-if="loading" class="path-empty">检测中...</div>
     <div v-else-if="detected" class="path-empty" style="color: #52c41a;">检测成功</div>
@@ -18,16 +18,8 @@
           </div>
         </div>
         <div class="dev-env-status">
-          <div v-if="devEnv.node?.resolved?.source === 'system'" class="dev-env-status-row">
-            <span class="dev-env-badge system">系统已安装</span>
-            <span class="dev-env-path">{{ devEnv.node?.resolved?.path }}</span>
-          </div>
-          <div v-else-if="devEnv.node?.resolved?.source === 'builtin'" class="dev-env-status-row">
-            <span class="dev-env-badge builtin">内置版本</span>
-            <span class="dev-env-path">{{ devEnv.node?.resolved?.path }}</span>
-          </div>
-          <div v-else-if="devEnv.node?.resolved?.source === 'env'" class="dev-env-status-row">
-            <span class="dev-env-badge env">已配置</span>
+          <div v-if="devEnv.node?.resolved?.source !== 'none'" class="dev-env-status-row">
+            <span class="dev-env-badge" :class="devEnv.node?.resolved?.source">{{ sourceLabel(devEnv.node?.resolved?.source) }}</span>
             <span class="dev-env-path">{{ devEnv.node?.resolved?.path }}</span>
           </div>
           <div v-else class="dev-env-status-row">
@@ -68,16 +60,8 @@
           </div>
         </div>
         <div class="dev-env-status">
-          <div v-if="devEnv.python?.resolved?.source === 'system'" class="dev-env-status-row">
-            <span class="dev-env-badge system">系统已安装</span>
-            <span class="dev-env-path">{{ devEnv.python?.resolved?.path }}</span>
-          </div>
-          <div v-else-if="devEnv.python?.resolved?.source === 'builtin'" class="dev-env-status-row">
-            <span class="dev-env-badge builtin">内置版本</span>
-            <span class="dev-env-path">{{ devEnv.python?.resolved?.path }}</span>
-          </div>
-          <div v-else-if="devEnv.python?.resolved?.source === 'env'" class="dev-env-status-row">
-            <span class="dev-env-badge env">已配置</span>
+          <div v-if="devEnv.python?.resolved?.source !== 'none'" class="dev-env-status-row">
+            <span class="dev-env-badge" :class="devEnv.python?.resolved?.source">{{ sourceLabel(devEnv.python?.resolved?.source) }}</span>
             <span class="dev-env-path">{{ devEnv.python?.resolved?.path }}</span>
           </div>
           <div v-else class="dev-env-status-row">
@@ -118,16 +102,8 @@
           </div>
         </div>
         <div class="dev-env-status">
-          <div v-if="devEnv.git?.resolved?.source === 'system'" class="dev-env-status-row">
-            <span class="dev-env-badge system">系统已安装</span>
-            <span class="dev-env-path">{{ devEnv.git?.resolved?.path }}</span>
-          </div>
-          <div v-else-if="devEnv.git?.resolved?.source === 'builtin'" class="dev-env-status-row">
-            <span class="dev-env-badge builtin">内置版本</span>
-            <span class="dev-env-path">{{ devEnv.git?.resolved?.path }}</span>
-          </div>
-          <div v-else-if="devEnv.git?.resolved?.source === 'env'" class="dev-env-status-row">
-            <span class="dev-env-badge env">已配置</span>
+          <div v-if="devEnv.git?.resolved?.source !== 'none'" class="dev-env-status-row">
+            <span class="dev-env-badge" :class="devEnv.git?.resolved?.source">{{ sourceLabel(devEnv.git?.resolved?.source) }}</span>
             <span class="dev-env-path">{{ devEnv.git?.resolved?.path }}</span>
           </div>
           <div v-else class="dev-env-status-row">
@@ -252,6 +228,12 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, watch } from 'vue'
 import { selectDirectory } from '@/api/system'
+import { useModelStore } from '@/stores/model'
+
+const modelStore = useModelStore()
+function devEnvApi(path: string) {
+  return `${modelStore.getBaseUrl()}${path}`
+}
 
 interface DevEnvVersionOption {
   version: string
@@ -314,6 +296,13 @@ const runtimeNames = {
   python: 'Python',
   git: 'Git',
 } as const
+
+function sourceLabel(source: 'system' | 'builtin' | 'env' | 'none' | undefined) {
+  if (source === 'system') return '系统'
+  if (source === 'builtin') return '内置'
+  if (source === 'env') return '已配置'
+  return ''
+}
 
 function getCurrentBuiltinPath() {
   const info = devEnv.value[switchModalRuntime.value]
@@ -412,8 +401,13 @@ function getFileFilters(runtime: 'node' | 'python' | 'git') {
 async function loadDevEnv() {
   loading.value = true
   try {
-    const res = await fetch('/api/dev-env/detect')
-    devEnv.value = await res.json()
+    const res = await fetch(devEnvApi('/api/dev-env/detect'))
+    const data = await res.json()
+    devEnv.value = {
+      node: data.node ?? null,
+      python: data.python ?? null,
+      git: data.git ?? null,
+    }
     detected.value = true
   } catch {
     // ignore
@@ -426,7 +420,7 @@ async function confirmDownload() {
   const runtime = downloadModalRuntime.value
   downloading[runtime] = true
   try {
-    const res = await fetch('/api/dev-env/download', {
+    const res = await fetch(devEnvApi('/api/dev-env/download'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -471,7 +465,7 @@ async function confirmSwitch() {
         body.path = body.path.replace(/\\+$/, '') + '\\cmd\\git.exe'
       }
     }
-    const res = await fetch('/api/dev-env/switch', {
+    const res = await fetch(devEnvApi('/api/dev-env/switch'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

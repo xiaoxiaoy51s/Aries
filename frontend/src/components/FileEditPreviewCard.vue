@@ -74,7 +74,7 @@ const displayLines = computed(() => (
 
 function onIconError(e: Event) {
   const img = e.target as HTMLImageElement
-  img.src = `/file-icons/${DEFAULT_FILE}`
+  img.src = `./file-icons/${DEFAULT_FILE}`
 }
 
 function linePrefix(line: DiffPreviewLine): string {

@@ -1,6 +1,6 @@
 import { getIconForFile, DEFAULT_FILE } from 'vscode-icons-js'
 
-const ICON_CDN = '/file-icons'
+const ICON_CDN = './file-icons'
 
 export const FILE_EDIT_TOOL_NAMES = new Set([
   'edit_file',

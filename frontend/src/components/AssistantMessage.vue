@@ -206,7 +206,7 @@ import {
 } from '@/utils/streamDurationStore'
 import { formatTokenInOutLabels } from '@/utils/runMetadata'
 
-const FILE_ICON_CDN = '/file-icons'
+const FILE_ICON_CDN = './file-icons'
 
 function getFileIconUrl(fileName: string): string {
   const iconName = getIconForFile(fileName) || DEFAULT_FILE

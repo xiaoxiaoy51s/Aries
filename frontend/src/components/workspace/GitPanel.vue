@@ -173,7 +173,7 @@ import { useModelStore } from '@/stores/model'
 import { storeToRefs } from 'pinia'
 import { getIconForFile, DEFAULT_FILE } from 'vscode-icons-js'
 
-const ICON_CDN = '/file-icons'
+const ICON_CDN = './file-icons'
 
 function getFileIconSrc(path: string): string {
   // 与 ExplorerTreeNode.vue 保持一致：基于文件名匹配 VSCode 图标

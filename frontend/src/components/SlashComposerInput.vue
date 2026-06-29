@@ -24,7 +24,7 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import { getIconForFile, DEFAULT_FILE } from 'vscode-icons-js'
 
-const FILE_ICON_CDN = '/file-icons'
+const FILE_ICON_CDN = './file-icons'
 
 /** 根据文件名获取对应图标 URL（对齐 ExplorerTreeNode 的图标方案） */
 function getFileIconUrl(fileName: string): string {

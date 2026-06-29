@@ -30,11 +30,25 @@ router = APIRouter(prefix="/api/dev-env", tags=["dev-env"])
 
 def _build_runtime_info(runtime: str) -> dict[str, Any]:
     """构建单个运行时的完整检测信息"""
+    import sys
+
     info = RUNTIME_DOWNLOAD_INFO[runtime]
     default_version = info["version"]
     resolved = resolve_runtime(runtime)
+
+    if runtime == "node":
+        system = detect_system_node()
+    elif runtime == "python":
+        system = detect_system_python()
+        # 打包后端自身即 Python，PATH 里可能没有 python 命令
+        if not system.get("installed") and sys.executable:
+            ver = sys.version.split("\n")[0].replace("Python ", "").strip()
+            system = {"installed": True, "version": ver, "path": sys.executable}
+    else:
+        system = detect_system_git()
+
     return {
-        "system": detect_system_node() if runtime == "node" else detect_system_python() if runtime == "python" else detect_system_git(),
+        "system": system,
         "builtin": _builtin_info(runtime),
         "builtins": _list_builtin_versions(runtime),
         "resolved": resolved,
@@ -50,8 +64,11 @@ def _build_runtime_info(runtime: str) -> dict[str, Any]:
 
 @router.get("/detect")
 async def detect_env() -> dict[str, Any]:
-    """检测系统和内置运行时状态"""
+    """检测系统和 ~/.Aries/runtimes 内置运行时状态"""
+    from utils.runtime_manager import get_runtimes_root
+
     return {
+        "runtimes_root": str(get_runtimes_root()),
         "node": _build_runtime_info("node"),
         "python": _build_runtime_info("python"),
         "git": _build_runtime_info("git"),
@@ -140,11 +157,39 @@ async def switch_env(req: SwitchRequest) -> dict[str, Any]:
 
 
 def _builtin_info(runtime: str) -> dict[str, Any]:
-    """获取内置运行时的简要信息（返回最新版本）"""
-    info = resolve_runtime(runtime)
-    if info["source"] == "builtin":
-        return {"installed": True, "version": info["version"], "path": info["path"]}
-    return {"installed": False}
+    """~/.Aries/runtimes 下是否已有内置版本（取最新）"""
+    from utils.runtime_manager import _list_builtin_versions as _rt_list
+
+    builtins = _rt_list(runtime)
+    if builtins:
+        latest = builtins[-1]
+        return {"installed": True, "version": latest["version"], "path": latest["path"]}
+
+    if runtime == "node":
+        from utils.bundled_node import (
+            DEFAULT_BUNDLED_NODE_VERSION,
+            get_default_node_exe,
+            get_staged_node_root,
+        )
+
+        default_exe = get_default_node_exe()
+        if default_exe.is_file():
+            return {
+                "installed": True,
+                "version": DEFAULT_BUNDLED_NODE_VERSION,
+                "path": str(default_exe),
+            }
+        staged = get_staged_node_root()
+        if staged:
+            exe = staged / "node.exe"
+            if exe.is_file():
+                return {
+                    "installed": True,
+                    "version": DEFAULT_BUNDLED_NODE_VERSION,
+                    "path": str(exe),
+                }
+
+    return {"installed": False, "version": "", "path": ""}
 
 
 def _list_builtin_versions(runtime: str) -> list[dict[str, Any]]:
