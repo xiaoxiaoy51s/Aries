@@ -35,6 +35,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** 重启应用 */
   relaunch: () => ipcRenderer.send('app:relaunch'),
 
+  /** 完全退出应用（关闭后端） */
+  quitApp: () => ipcRenderer.send('app:quit'),
+
+  /** 确保后端进程已启动（启动页重试） */
+  ensureBackend: () => ipcRenderer.send('backend:ensure'),
+
   /** 窗口控制 */
   windowMinimize: () => ipcRenderer.send('window:minimize'),
   windowMaximize: () => ipcRenderer.send('window:maximize'),

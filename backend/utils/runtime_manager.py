@@ -276,7 +276,24 @@ def resolve_runtime(runtime: str) -> dict[str, Any]:
             "path": saved["path"],
         }
 
-    # 2. 系统已安装
+    # 2. 安装包内置 Node（释放到 ~/.Aries/runtimes，优先于系统 PATH）
+    if runtime == "node":
+        from utils.bundled_node import resolve_bundled_node_path, DEFAULT_BUNDLED_NODE_VERSION
+        bundled = resolve_bundled_node_path()
+        if bundled:
+            return {
+                "source": "builtin",
+                "version": DEFAULT_BUNDLED_NODE_VERSION,
+                "path": bundled,
+            }
+
+    # 3. 其它已下载的内置运行时
+    builtins = _list_builtin_versions(runtime)
+    if builtins:
+        latest = builtins[-1]
+        return {"source": "builtin", "version": latest["version"], "path": latest["path"]}
+
+    # 4. 系统已安装
     if runtime == "node":
         system = detect_system_node()
         if system["installed"]:
@@ -288,12 +305,6 @@ def resolve_runtime(runtime: str) -> dict[str, Any]:
         system = detect_system_git()
         if system["installed"]:
             return {"source": "system", "version": system.get("version", ""), "path": system["path"]}
-
-    # 3. 内置运行时
-    builtins = _list_builtin_versions(runtime)
-    if builtins:
-        latest = builtins[-1]  # 排序后最后一个是最新的
-        return {"source": "builtin", "version": latest["version"], "path": latest["path"]}
 
     return {"source": "none", "version": "", "path": ""}
 

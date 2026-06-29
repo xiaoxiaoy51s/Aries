@@ -1,23 +1,38 @@
 # -*- mode: python ; coding: utf-8 -*-
+# PyInstaller spec — 输出 dist/aries.exe，发布时复制为 frontend/resources/aries_backend.exe
+# 外部资源（与 exe 同级，由 build_backend.ps1 复制）：
+#   bin/rg.exe
+#   cli/dist + cli/node_modules
 
-from PyInstaller.utils.hooks import collect_submodules
+from pathlib import Path
+
+_backend = Path(SPECPATH)
+
+_binaries = []
+if (_backend / 'bin' / 'rg.exe').is_file():
+    _binaries.append((str(_backend / 'bin' / 'rg.exe'), 'bin'))
+
+_datas = [
+    ('api', 'api'),
+    ('db', 'db'),
+    ('engine', 'engine'),
+    ('models', 'models'),
+    ('services', 'services'),
+    ('utils', 'utils'),
+    ('plugins', 'plugins'),
+    ('tools', 'tools'),
+    ('prompt', 'prompt'),
+    ('memory', 'memory'),
+    ('aries_mcp', 'aries_mcp'),
+]
+if (_backend / 'VERSION').is_file():
+    _datas.append(('VERSION', '.'))
 
 a = Analysis(
     ['main.py'],
-    pathex=[],
-    binaries=[],
-    datas=[
-        ('api', 'api'),
-        ('db', 'db'),
-        ('models', 'models'),
-        ('services', 'services'),
-        ('utils', 'utils'),
-        ('plugins', 'plugins'),
-        ('tools', 'tools'),
-        ('prompt', 'prompt'),
-        ('memory', 'memory'),
-        ('aries_mcp', 'aries_mcp'),
-    ],
+    pathex=[str(_backend)],
+    binaries=_binaries,
+    datas=_datas,
     hiddenimports=[
         'uvicorn',
         'uvicorn.protocols.http.auto',
@@ -43,6 +58,11 @@ a = Analysis(
         'pyflakes',
         'psutil',
         'send2trash',
+        'engine',
+        'engine.skills_manager',
+        'engine.plugin_manager',
+        'engine.subagent_runtime',
+        'utils.app_paths',
     ],
     hookspath=[],
     hooksconfig={},

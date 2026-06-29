@@ -59,6 +59,21 @@
       {
         "from": "resources/aries_backend.exe",
         "to": "aries_backend.exe"
+      },
+      {
+        "from": "resources/bin",
+        "to": "bin",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "resources/cli",
+        "to": "cli",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "resources/node",
+        "to": "node",
+        "filter": ["**/*"]
       }
     ],
     "nsis": {

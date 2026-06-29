@@ -63,6 +63,18 @@ jobs:
           cd backend/cli
           npm ci
           npm run build
+          npm prune --omit=dev
+
+      - name: Download bundled Node.js (v20.17.0)
+        shell: pwsh
+        run: |
+          $ver = "v20.17.0"
+          $zip = "node-$ver-win-x64.zip"
+          $url = "https://nodejs.org/dist/$ver/$zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath node_extract -Force
+          New-Item -ItemType Directory -Force -Path frontend/resources/node | Out-Null
+          Copy-Item "node_extract/node-$ver-win-x64/*" frontend/resources/node/ -Recurse -Force
 
       - name: Build backend executable (PyInstaller)
         run: |
@@ -72,6 +84,12 @@ jobs:
           pyinstaller aries.spec --noconfirm
           New-Item -ItemType Directory -Force -Path ../frontend/resources | Out-Null
           Copy-Item dist/aries.exe ../frontend/resources/aries_backend.exe -Force
+          New-Item -ItemType Directory -Force -Path ../frontend/resources/bin | Out-Null
+          if (Test-Path bin/rg.exe) { Copy-Item bin/rg.exe ../frontend/resources/bin/rg.exe -Force }
+          New-Item -ItemType Directory -Force -Path ../frontend/resources/cli | Out-Null
+          Copy-Item cli/dist ../frontend/resources/cli/dist -Recurse -Force
+          Copy-Item cli/package.json ../frontend/resources/cli/ -Force
+          Copy-Item cli/node_modules ../frontend/resources/cli/node_modules -Recurse -Force
 
       - name: Build Electron installer
         run: |

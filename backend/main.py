@@ -97,6 +97,15 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"[Plugins] 同步失败: {exc}")
 
+    # 首次启动：把安装包内的 Node 释放到 ~/.Aries/runtimes/node/
+    try:
+        from utils.bundled_node import ensure_bundled_node_installed
+        installed = ensure_bundled_node_installed()
+        if installed:
+            print(f"[Node] 使用内置 Node: {installed}")
+    except Exception as exc:
+        print(f"[Node] 内置 Node 释放失败: {exc}")
+
     stale = reset_stale_running_tasks()
     if stale:
         print(f"[Scheduler] 启动时重置 {stale} 个中断的 running 任务")

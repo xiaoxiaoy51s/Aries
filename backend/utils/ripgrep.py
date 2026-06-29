@@ -13,10 +13,12 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from utils.app_paths import get_bin_dir
+
 logger = logging.getLogger(__name__)
 
 # 项目内置 ripgrep 路径
-_VENDOR_BIN = Path(__file__).parent.parent / "bin"
+_VENDOR_BIN = get_bin_dir()
 _VENDOR_RG = _VENDOR_BIN / ("rg.exe" if sys.platform == "win32" else "rg")
 
 

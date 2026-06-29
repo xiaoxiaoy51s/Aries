@@ -1,10 +1,16 @@
-const { app, BrowserWindow, Menu, ipcMain, screen, dialog } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, screen, dialog, Tray, nativeImage } = require('electron')
 const path = require('path')
 const { spawn, spawnSync } = require('child_process')
 const http = require('http')
 const fs = require('fs')
 
 const BACKEND_PORT = 30000
+
+// 单实例：再次启动时聚焦已有窗口
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+}
 
 app.setName('Aries')
 app.setAboutPanelOptions({ applicationName: 'Aries' })
@@ -33,6 +39,11 @@ let petStatusWindow = null
 let petStatusTimer = null
 let backendProcess = null
 let backendPid = null
+let backendOwned = false
+let backendSpawnedByApp = false
+let backendStartInProgress = false
+let tray = null
+let isQuitting = false
 
 function checkBackendReady() {
   return new Promise((resolve) => {
@@ -53,8 +64,90 @@ async function waitBackendReady(maxWaitMs = 15000) {
   return false
 }
 
-function killBackend() {
-  // Kill by PID if we have it (synchronous to ensure it completes before quit)
+function getBackendLogPath() {
+  const home = process.env.USERPROFILE || process.env.HOME || app.getPath('home')
+  const dir = path.join(home, '.Aries', 'logs')
+  fs.mkdirSync(dir, { recursive: true })
+  return path.join(dir, 'backend.log')
+}
+
+function getTrayIconPath() {
+  const ico = path.join(__dirname, '..', 'public', 'logo.ico')
+  const png = path.join(__dirname, '..', 'public', 'logo.png')
+  if (process.platform === 'win32' && fs.existsSync(ico)) return ico
+  return png
+}
+
+function showMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+    return
+  }
+  createWindow()
+}
+
+function quitApp() {
+  isQuitting = true
+  killBackend({ forceAll: true })
+  if (tray) {
+    tray.destroy()
+    tray = null
+  }
+  app.quit()
+}
+
+function createTray() {
+  if (tray) return
+  const iconPath = getTrayIconPath()
+  let icon = nativeImage.createFromPath(iconPath)
+  if (icon.isEmpty()) {
+    console.error('[Tray] failed to load icon:', iconPath)
+    return
+  }
+  // Windows 托盘推荐 16×16，避免大图不显示
+  if (process.platform === 'win32') {
+    icon = icon.resize({ width: 16, height: 16 })
+  }
+  tray = new Tray(icon)
+  tray.setToolTip('Aries')
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '显示主窗口', click: () => showMainWindow() },
+    { type: 'separator' },
+    { label: '退出', click: () => quitApp() },
+  ]))
+  tray.on('double-click', () => showMainWindow())
+}
+
+function shouldMinimizeToTray() {
+  return app.isPackaged
+}
+
+function killProcessOnPort(port) {
+  if (process.platform !== 'win32') return
+  try {
+    const result = spawnSync('netstat', ['-ano'], { encoding: 'utf8' })
+    const lines = (result.stdout || '').split(/\r?\n/)
+    const pids = new Set()
+    for (const line of lines) {
+      if (!line.includes('LISTENING')) continue
+      const m = line.trim().match(/:(\d+)\s+\S+\s+LISTENING\s+(\d+)$/)
+      if (!m || Number(m[1]) !== port) continue
+      const pid = Number(m[2])
+      if (Number.isInteger(pid) && pid > 0) pids.add(pid)
+    }
+    for (const pid of pids) {
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
+    }
+  } catch (e) {
+    console.error('[Backend] kill by port error:', e)
+  }
+}
+
+function killBackend({ forceAll = false } = {}) {
+  if (!forceAll && !backendSpawnedByApp && !backendOwned) return
+
   if (backendPid) {
     try {
       if (process.platform === 'win32') {
@@ -65,58 +158,114 @@ function killBackend() {
     } catch (e) {
       console.error('[Backend] kill error:', e)
     }
-    backendPid = null
   }
-  
+
+  // 用户退出时强制清理 30000 端口，避免「already running」遗留孤儿进程
+  if (forceAll || backendSpawnedByApp || backendOwned) {
+    killProcessOnPort(BACKEND_PORT)
+  }
+
+  backendPid = null
   backendProcess = null
+  backendOwned = false
+  backendSpawnedByApp = false
 }
 
 async function startBackend() {
-  // 检查后端是否已经在运行
+  if (backendStartInProgress) return
+
   if (await checkBackendReady()) {
-    console.log(`[Backend] already running on :${BACKEND_PORT}`)
+    console.log(`[Backend] already running on :${BACKEND_PORT} (will stop when app quits)`)
+    backendOwned = false
+    backendSpawnedByApp = false
     return
   }
 
-  // 启动后端
+  backendStartInProgress = true
   const isPackaged = app.isPackaged
   const backendExe = isPackaged
     ? path.join(process.resourcesPath, 'aries_backend.exe')
     : path.join(__dirname, '..', 'resources', 'aries_backend.exe')
 
-  if (fs.existsSync(backendExe)) {
-    console.log(`[Backend] starting: ${backendExe}`)
-    backendProcess = spawn(backendExe, [], {
-      env: { ...process.env, BACKEND_PORT: String(BACKEND_PORT) },
-      stdio: 'pipe',
-      windowsHide: true,
-      cwd: path.dirname(backendExe),
-    })
-    backendPid = backendProcess.pid
-  } else if (!isPackaged) {
-    const backendDir = path.join(__dirname, '..', '..', 'backend')
-    console.log('[Backend] starting: python main.py')
-    backendProcess = spawn('python', ['main.py'], {
-      cwd: backendDir,
-      env: { ...process.env, BACKEND_PORT: String(BACKEND_PORT) },
-      stdio: 'pipe',
-    })
-    backendPid = backendProcess.pid
+  try {
+    if (isPackaged) {
+      if (!fs.existsSync(backendExe)) {
+        console.error(`[Backend] missing executable: ${backendExe}`)
+        return
+      }
+      console.log(`[Backend] starting: ${backendExe}`)
+      const logPath = getBackendLogPath()
+      fs.appendFileSync(logPath, `\n--- ${new Date().toISOString()} spawn ${backendExe} ---\n`)
+      const logFd = fs.openSync(logPath, 'a')
+      backendProcess = spawn(backendExe, [], {
+        env: { ...process.env, BACKEND_PORT: String(BACKEND_PORT) },
+        cwd: path.dirname(backendExe),
+        windowsHide: true,
+        detached: false,
+        stdio: ['ignore', logFd, logFd],
+      })
+      backendPid = backendProcess.pid
+      backendOwned = true
+      backendSpawnedByApp = true
+    } else {
+      // 开发模式始终用 python，避免与 resources/aries_backend.exe 重复拉起
+      const backendDir = path.join(__dirname, '..', '..', 'backend')
+      console.log('[Backend] starting: python main.py')
+      backendProcess = spawn('python', ['main.py'], {
+        cwd: backendDir,
+        env: { ...process.env, BACKEND_PORT: String(BACKEND_PORT) },
+        stdio: 'pipe',
+      })
+      backendPid = backendProcess.pid
+      backendOwned = true
+      backendSpawnedByApp = true
+    }
+
+    if (backendProcess) {
+      if (!isPackaged) {
+        backendProcess.stdout.on('data', (data) => console.log(`[Backend] ${data}`))
+        backendProcess.stderr.on('data', (data) => console.error(`[Backend] ${data}`))
+      }
+      backendProcess.on('error', (err) => {
+        console.error('[Backend] spawn error:', err)
+        backendOwned = false
+        backendSpawnedByApp = false
+      })
+      backendProcess.on('exit', (code) => {
+        console.log(`[Backend] exited with code ${code}`)
+        backendProcess = null
+        backendPid = null
+        backendOwned = false
+        if (!isQuitting) {
+          backendSpawnedByApp = false
+        }
+      })
+    }
+
+    void monitorBackendStartup(isPackaged)
+  } finally {
+    backendStartInProgress = false
+  }
+}
+
+async function monitorBackendStartup(isPackaged) {
+  const maxWaitMs = isPackaged ? 90000 : 15000
+  let ready = await waitBackendReady(maxWaitMs)
+
+  if (!ready && backendOwned && backendPid) {
+    console.log('[Backend] timeout but process alive, waiting extra 60s...')
+    ready = await waitBackendReady(60000)
   }
 
-  if (backendProcess) {
-    backendProcess.stdout.on('data', (data) => console.log(`[Backend] ${data}`))
-    backendProcess.stderr.on('data', (data) => console.error(`[Backend] ${data}`))
-    backendProcess.on('exit', (code) => {
-      console.log(`[Backend] exited with code ${code}`)
-      backendProcess = null
-    })
+  if (ready) {
+    console.log('[Backend] ready!')
+    return
   }
 
-  // 等待后端就绪
-  console.log('[Backend] waiting for ready...')
-  const ready = await waitBackendReady()
-  console.log(ready ? '[Backend] ready!' : '[Backend] timeout, continuing anyway...')
+  if (backendOwned) {
+    console.error('[Backend] startup failed, cleaning up')
+    killBackend()
+  }
 }
 
 function createWindow() {
@@ -158,6 +307,13 @@ function createWindow() {
           break
         }
       }
+    }
+  })
+
+  win.on('close', (event) => {
+    if (!isQuitting && shouldMinimizeToTray()) {
+      event.preventDefault()
+      win.hide()
     }
   })
 
@@ -402,11 +558,20 @@ ipcMain.on('pet:focus-main', () => {
 
 // IPC: 重启应用
 ipcMain.on('app:relaunch', () => {
-  // 1. 先杀掉后端进程（同步阻塞）
-  killBackend()
-  // 2. 再重启 Electron 主进程（新实例会在 whenReady 后自动 startBackend）
+  isQuitting = true
+  killBackend({ forceAll: true })
   app.relaunch()
   app.exit(0)
+})
+
+// IPC: 完全退出（托盘菜单 / Ctrl+Q）
+ipcMain.on('app:quit', () => {
+  quitApp()
+})
+
+// IPC: 前端启动页重试时重新拉起后端
+ipcMain.on('backend:ensure', () => {
+  void startBackend()
 })
 
 // IPC: 窗口控制
@@ -438,7 +603,12 @@ ipcMain.on('window:maximize', (event) => {
 
 ipcMain.on('window:close', (event) => {
   const win = getSenderWindow(event)
-  if (win && !win.isDestroyed()) win.close()
+  if (!win || win.isDestroyed()) return
+  if (isQuitting || !shouldMinimizeToTray()) {
+    win.close()
+  } else {
+    win.hide()
+  }
 })
 
 ipcMain.handle('window:is-maximized', (event) => {
@@ -476,35 +646,46 @@ ipcMain.handle('dialog:select-file', async (event, opts = {}) => {
   return { path: result.filePaths[0], cancelled: false }
 })
 
-app.whenReady().then(async () => {
-  if (process.platform === 'darwin' && app.dock) {
-    app.dock.setIcon(path.join(__dirname, '..', 'public', 'logo.png'))
-  }
-  if (process.platform === 'darwin') {
-    const template = [
-      { label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] },
-      { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-      { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }] },
-      { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'close' }] },
-    ]
-    Menu.setApplicationMenu(Menu.buildFromTemplate(template))
-  } else {
-    Menu.setApplicationMenu(null)
-  }
+if (gotSingleInstanceLock) {
+  app.whenReady().then(async () => {
+    if (process.platform === 'darwin' && app.dock) {
+      app.dock.setIcon(path.join(__dirname, '..', 'public', 'logo.png'))
+    }
+    if (process.platform === 'darwin') {
+      const template = [
+        { label: app.getName(), submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] },
+        { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
+        { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }] },
+        { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'close' }] },
+      ]
+      Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+    } else {
+      Menu.setApplicationMenu(null)
+    }
 
-  await startBackend()
-  createWindow()
-})
+    void startBackend()
+    createTray()
+    createWindow()
+  })
 
-app.on('window-all-closed', () => {
-  killBackend()
-  if (process.platform !== 'darwin') app.quit()
-})
+  app.on('second-instance', () => {
+    showMainWindow()
+  })
 
-app.on('before-quit', () => {
-  killBackend()
-})
+  app.on('window-all-closed', () => {
+    // 开发模式：关窗即退出；打包模式：保留托盘
+    if (!app.isPackaged) {
+      quitApp()
+    }
+  })
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow()
-})
+  app.on('before-quit', () => {
+    isQuitting = true
+    killBackend({ forceAll: true })
+  })
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    else showMainWindow()
+  })
+}

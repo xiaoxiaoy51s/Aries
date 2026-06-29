@@ -1,5 +1,5 @@
 <template>
-  <div id="app" :class="{ 'sidebar-collapsed': !sidebarOpen }">
+  <div id="app" :class="{ 'sidebar-collapsed': !sidebarOpen, 'is-booting': !backendReady }">
     <!-- 自定义标题栏 -->
     <div class="title-bar">
       <div class="title-bar-left">
@@ -71,18 +71,25 @@
         </button>
       </div>
     </div>
-    <RouterView />
+    <RouterView v-show="backendReady" />
+    <BackendBootSplash
+      v-if="!backendReady"
+      :error="bootError"
+      @retry="onBootRetry"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { RouterView, useRouter } from 'vue-router'
 import { useSidebar } from '@/composables/useSidebar'
+import { useBackendBoot } from '@/composables/useBackendBoot'
 import { useModelStore } from '@/stores/model'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { initPaths } from '@/utils/paths'
 import TitleBarMenu, { type MenuDef } from '@/components/TitleBarMenu.vue'
+import BackendBootSplash from '@/components/BackendBootSplash.vue'
 
 const { sidebarOpen, toggleSidebar } = useSidebar()
 
@@ -91,12 +98,30 @@ const workspaceStore = useWorkspaceStore()
 const BACKEND_PORT = 30000
 modelStore.setBackendPort(BACKEND_PORT)
 
-const isMaximized = ref(false)
+const { ready: backendReady, error: bootError, start: startBackendBoot } = useBackendBoot(BACKEND_PORT)
 
-onMounted(async () => {
+const isMaximized = ref(false)
+let appInitialized = false
+
+async function initAppData() {
+  if (appInitialized) return
+  appInitialized = true
   modelStore.loadModels().catch(() => {})
   await initPaths().catch(() => {})
   workspaceStore.initWorkDir().catch(() => {})
+}
+
+function onBootRetry() {
+  window.electronAPI?.ensureBackend?.()
+  startBackendBoot()
+}
+
+watch(backendReady, (ready) => {
+  if (ready) void initAppData()
+})
+
+onMounted(async () => {
+  startBackendBoot()
 
   isMaximized.value = !!(await window.electronAPI?.windowIsMaximized?.())
   window.electronAPI?.onWindowMaximizedChange?.((value: boolean) => {
@@ -201,7 +226,7 @@ function onMenuSelect(menuKey: string, item: { id?: string; divider?: boolean })
         window.dispatchEvent(new CustomEvent('aries:select-work-dir'))
         break
       case 'exit':
-        window.electronAPI?.windowClose?.()
+        window.electronAPI?.quitApp?.()
         break
       case 'settings':
         window.dispatchEvent(new CustomEvent('aries:open-settings'))
@@ -268,6 +293,10 @@ body {
   overflow: hidden;
   font-size: 14px;
   line-height: 1.5;
+}
+
+#app.is-booting {
+  background: #ffffff;
 }
 
 #app {

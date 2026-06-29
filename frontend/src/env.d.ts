@@ -39,6 +39,10 @@ interface Window {
     selectFile?: (opts?: any) => Promise<{ path: string | null; cancelled: boolean }>
     /** 重启应用 */
     relaunch?: () => void
+    /** 完全退出应用（关闭后端） */
+    quitApp?: () => void
+    /** 确保后端进程已启动（启动页重试） */
+    ensureBackend?: () => void
 
     /** 窗口控制 */
     windowMinimize?: () => void

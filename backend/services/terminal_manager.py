@@ -28,28 +28,19 @@ _CLI_STARTED = threading.Event()
 
 
 def find_cli_dir() -> Path:
-    """查找 backend/cli/ 目录"""
-    backend_dir = Path(__file__).resolve().parent.parent  # backend/
-    cli_dir = backend_dir / "cli"
-    if cli_dir.exists() and cli_dir.is_dir():
-        return cli_dir
-    # fallback: 从 cwd 查找
-    cwd_cli = Path.cwd() / "cli"
-    if cwd_cli.exists() and cwd_cli.is_dir():
-        return cwd_cli
-    raise FileNotFoundError(
-        f"找不到 backend/cli/ 目录（尝试了 {cli_dir} 和 {cwd_cli}）"
-    )
+    """查找 backend/cli/ 目录（开发或打包后的 resources/cli）。"""
+    from utils.app_paths import get_cli_dir
+    return get_cli_dir()
 
 
 def find_node() -> str:
     """查找 node 可执行文件。
 
     优先级：
-        1. env.json 中配置的 Node.js
-        2. 环境变量 NODE_EXE
-        3. PATH 中的 node
-        4. 常见安装路径
+        1. env.json 用户配置
+        2. ~/.Aries/runtimes/node（安装包首次释放的内置 Node）
+        3. 安装包 resources/node（尚未释放时的兜底）
+        4. 系统 PATH / 常见路径
     """
     from utils.runtime_manager import resolve_runtime
 

@@ -76,23 +76,55 @@ npm run dev
 ### 本地打包
 
 ```bash
-# 1. 后端 CLI
-cd backend/cli && npm install && npm run build
-
-# 2. 后端 exe（Windows）
+# 一键打包（Windows PowerShell，含 cli + bin）
 cd backend
-pip install -r requirements.txt pyinstaller
-pyinstaller aries.spec --noconfirm
-mkdir ../frontend/resources 2>nul
-copy dist\aries.exe ..\frontend\resources\aries_backend.exe
+.\scripts\build_backend.ps1
 
-# 3. Electron 安装包
+# 再打 Electron 安装包
 cd ../frontend
 npm install
 npm run electron:build
 ```
 
-安装包输出在 `frontend/release/`。`aries_backend.exe` 由 CI 构建，不提交到 Git。
+或分步执行：
+
+```bash
+# 1. 后端 CLI（终端 / 命令执行）
+cd backend/cli && npm install && npm run build && npm prune --omit=dev
+
+# 2. 后端 exe（需 backend/bin/rg.exe 用于文件搜索）
+cd backend
+pip install -r requirements.txt pyinstaller
+pyinstaller aries.spec --noconfirm
+
+# 3. 复制到 frontend/resources/（exe + bin + cli）
+#    推荐直接运行 scripts/build_backend.ps1 自动完成此步
+
+# 4. Electron 安装包
+cd ../frontend && npm install && npm run electron:build
+```
+
+打包后 `resources/` 目录结构：
+
+```
+frontend/resources/
+├── aries_backend.exe
+├── node/                 # 内置 Node（首次启动释放到 ~/.Aries/runtimes/node/）
+├── bin/rg.exe
+└── cli/
+    ├── dist/
+    ├── node_modules/
+    └── package.json
+```
+
+Electron 安装时会将上述文件放到安装目录的 `resources/`。**首次启动**时，后端会把 `resources/node/` 复制到：
+
+`~/.Aries/runtimes/node/versions/v20.17.0/`
+
+之后 CLI 终端、MCP 的 `npx` 等默认使用该 Node，**用户无需单独安装 Node.js**（可在设置里改用其它版本）。
+
+本地打包时，`build_backend.ps1` 会优先从你已有的  
+`~/.Aries/runtimes/node/versions/v20.17.0` 复制 Node 到 `frontend/resources/node/`。
 
 ### GitHub Actions 自动发布
 
@@ -162,6 +194,24 @@ python main.py
 **首次使用**
 
 在「设置 → 模型管理」中配置 API Base URL 与模型后再开始对话。
+
+**安装版首次启动较慢 / 需重启一次**
+
+打包后的 **第一次启动** 会比之后慢很多，有时界面已打开但终端、MCP 等仍不可用，需要**完全退出后重新打开一次**。原因如下：
+
+1. **释放内置 Node.js** — 安装包会把 `resources/node/`（约 30MB）复制到  
+   `~/.Aries/runtimes/node/versions/v20.17.0/`。这一步只在首次运行发生，磁盘较慢时可能要 1～2 分钟。
+2. **PyInstaller 冷启动** — `aries_backend.exe` 第一次运行要在临时目录解压依赖，也会额外耗时。
+3. **初始化同步** — 首次还会把内置 Skills / 插件同步到 `~/.Aries/plugins/`。
+
+上述工作都在后端 `/health` 就绪之前完成。启动时会显示白屏 Logo 等待；若超过约 2.5 分钟仍未进入，可从托盘 **退出** 后重开。  
+**第二次及以后** Node 已在本地，启动通常只需十几秒，无需再重启。
+
+日志位置：`~/.Aries/logs/backend.log`
+
+**检查更新**
+
+应用通过 GitHub Releases 检测新版本，仓库需为 **Public**，否则无法读取 Release 信息。
 
 ---
 
