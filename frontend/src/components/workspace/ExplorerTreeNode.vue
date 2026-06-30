@@ -82,14 +82,18 @@ defineEmits<{
 const childNodes = computed(() => {
   const data = props.treeData || {}
   const prefix = props.node.path + '/'
-  return Object.values(data).filter(n => {
-    if (!n.path.startsWith(prefix)) return false
+  let list: TreeNode[] = []
+  for (const n of Object.values(data)) {
+    if (!n.path.startsWith(prefix)) continue
     const rest = n.path.slice(prefix.length)
-    return !rest.includes('/')
-  }).sort((a, b) => {
+    if (!rest || rest.includes('/')) continue
+    list.push(n)
+  }
+  list.sort((a, b) => {
     if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
     return a.name.localeCompare(b.name)
   })
+  return list
 })
 
 const fileIconSrc = computed(() => {

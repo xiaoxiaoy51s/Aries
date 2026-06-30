@@ -82,7 +82,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
-import { RouterView, useRouter } from 'vue-router'
+import { RouterView, useRouter, useRoute } from 'vue-router'
 import { useSidebar } from '@/composables/useSidebar'
 import { useBackendBoot } from '@/composables/useBackendBoot'
 import { useModelStore } from '@/stores/model'
@@ -117,7 +117,10 @@ function onBootRetry() {
 }
 
 watch(backendReady, (ready) => {
-  if (ready) void initAppData()
+  if (ready) {
+    void initAppData()
+    window.dispatchEvent(new Event('aries:refresh-sessions'))
+  }
 })
 
 onMounted(async () => {

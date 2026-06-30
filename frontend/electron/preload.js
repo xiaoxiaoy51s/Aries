@@ -50,4 +50,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /** 创建新窗口 */
   createNewWindow: () => ipcRenderer.send('window:create-new'),
+
+  /** 应用更新（仅打包模式可用） */
+  update: {
+    check: () => ipcRenderer.invoke('update:check'),
+    download: () => ipcRenderer.send('update:download'),
+    install: () => ipcRenderer.send('update:install'),
+    onAvailable: (cb) => {
+      const handler = (_e, info) => cb(info)
+      ipcRenderer.on('update:available', handler)
+      return () => ipcRenderer.removeListener('update:available', handler)
+    },
+    onProgress: (cb) => {
+      const handler = (_e, progress) => cb(progress)
+      ipcRenderer.on('update:progress', handler)
+      return () => ipcRenderer.removeListener('update:progress', handler)
+    },
+    onDownloaded: (cb) => {
+      const handler = (_e, info) => cb(info)
+      ipcRenderer.on('update:downloaded', handler)
+      return () => ipcRenderer.removeListener('update:downloaded', handler)
+    },
+    onError: (cb) => {
+      const handler = (_e, msg) => cb(msg)
+      ipcRenderer.on('update:error', handler)
+      return () => ipcRenderer.removeListener('update:error', handler)
+    },
+  },
 })

@@ -39,16 +39,20 @@
       <button
         type="button"
         class="update-check-btn"
-        :disabled="checking"
+        :disabled="checking || downloading"
         @click="handleCheck(true)"
       >{{ checking ? '检查中...' : '检查更新' }}</button>
     </div>
 
-    <!-- 结果 -->
+    <!-- 错误 -->
     <div v-if="checkError" class="update-result fail">
       {{ checkError }}
     </div>
+    <div v-else-if="updateStore.updateError" class="update-result fail">
+      {{ updateStore.updateError }}
+    </div>
 
+    <!-- 有新版本 -->
     <div v-else-if="updateInfo && updateInfo.update_available" class="update-result available">
       <div class="update-result-header">
         <span class="update-badge">有新版本</span>
@@ -62,17 +66,31 @@
         <div class="update-notes-title">更新说明</div>
         <pre class="update-notes-body">{{ updateInfo.release_notes.trim() }}</pre>
       </div>
-      <button type="button" class="update-download-btn" @click="openReleasePage">
-        前往 GitHub 下载
-      </button>
-      <div class="update-install-guide">
-        <div class="update-notes-title">安装说明（覆盖升级，无需先卸载）</div>
-        <ol class="update-install-steps">
-          <li>完全退出 Aries（含后台进程）</li>
-          <li>下载并运行 <code>Aries-Setup-x.x.x.exe</code></li>
-          <li>安装程序会自动识别旧版本，覆盖安装目录中的程序文件</li>
-          <li>你的配置、对话、工作目录（<code>~/.Aries</code>）不会被删除</li>
-        </ol>
+
+      <!-- 下载中 -->
+      <div v-if="updateStore.downloading" class="update-download-progress">
+        <div class="progress-bar">
+          <div class="progress-fill" :style="{ width: updateStore.downloadProgress + '%' }"></div>
+        </div>
+        <span class="progress-text">{{ updateStore.downloadProgress }}%</span>
+      </div>
+
+      <!-- 下载完成 -->
+      <div v-else-if="updateStore.downloaded" class="update-install-section">
+        <p class="update-ready-text">更新已下载完成，点击安装并重启。</p>
+        <button type="button" class="update-install-btn" @click="handleInstall">
+          安装并重启
+        </button>
+      </div>
+
+      <!-- 未下载 -->
+      <div v-else class="update-download-section">
+        <button type="button" class="update-download-btn" @click="handleDownload">
+          下载更新
+        </button>
+        <button type="button" class="update-manual-btn" @click="openReleasePage">
+          前往 GitHub 手动下载
+        </button>
       </div>
     </div>
 
@@ -120,6 +138,14 @@ async function handleCheck(force = false) {
   if (!data) {
     checkError.value = '无法连接更新服务，请稍后重试'
   }
+}
+
+function handleDownload() {
+  updateStore.download()
+}
+
+function handleInstall() {
+  updateStore.install()
 }
 
 function formatDate(iso: string): string {
@@ -391,8 +417,14 @@ onMounted(async () => {
   font-family: inherit;
 }
 
-.update-download-btn {
+.update-download-section {
   margin-top: 12px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.update-download-btn {
   padding: 8px 16px;
   font-size: 13px;
   border: none;
@@ -407,24 +439,74 @@ onMounted(async () => {
   background: #1d4ed8;
 }
 
-.update-install-guide {
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px solid #bfdbfe;
-}
-
-.update-install-steps {
-  margin: 8px 0 0;
-  padding-left: 18px;
-  font-size: 12px;
-  line-height: 1.7;
+.update-manual-btn {
+  padding: 8px 16px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
   color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s;
 }
 
-.update-install-steps code {
-  font-size: 11px;
-  background: rgba(255, 255, 255, 0.7);
-  padding: 1px 4px;
-  border-radius: 3px;
+.update-manual-btn:hover {
+  background: var(--accent-hover);
+}
+
+.update-download-progress {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 8px;
+  background: rgba(37, 99, 235, 0.15);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #2563eb;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: #2563eb;
+  font-variant-numeric: tabular-nums;
+  min-width: 40px;
+  text-align: right;
+}
+
+.update-install-section {
+  margin-top: 14px;
+}
+
+.update-ready-text {
+  font-size: 13px;
+  color: #166534;
+  margin-bottom: 10px;
+}
+
+.update-install-btn {
+  padding: 8px 16px;
+  font-size: 13px;
+  border: none;
+  border-radius: 8px;
+  background: #16a34a;
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.update-install-btn:hover {
+  background: #15803d;
 }
 </style>

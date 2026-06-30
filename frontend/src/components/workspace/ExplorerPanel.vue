@@ -441,12 +441,11 @@ async function onToggleFolder(node: TreeNode) {
   treeData.value[node.path] = { ...node, expanded: newExpanded }
 
   if (newExpanded && !node.childrenLoaded) {
+    // 异步加载子目录，不阻塞 UI 展开动画
     loadingFolders.value.add(node.path)
-    try {
-      await loadChildren(treeData.value[node.path])
-    } finally {
+    loadChildren(treeData.value[node.path]).finally(() => {
       loadingFolders.value.delete(node.path)
-    }
+    })
   }
 }
 
@@ -939,15 +938,17 @@ async function refreshTree() {
   }
   treeData.value = {}
   await loadRoot()
-  // 恢复展开状态并重新加载子目录
+  // 恢复展开状态并并行重新加载子目录，避免层级深时串行等待
+  const restoreTasks: Promise<void>[] = []
   for (const path of expandedPaths) {
     const node = treeData.value[path]
     if (node && node.isDir) {
       // 通过替换对象来触发 Vue 响应式更新
       treeData.value[path] = { ...node, expanded: true }
-      await loadChildren(treeData.value[path])
+      restoreTasks.push(loadChildren(treeData.value[path]))
     }
   }
+  await Promise.all(restoreTasks)
 }
 </script>
 

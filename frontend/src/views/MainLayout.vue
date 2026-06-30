@@ -326,6 +326,8 @@ function onGlobalCloseCtxMenu(e: MouseEvent | KeyboardEvent) {
 
 onMounted(async () => {
   await Promise.all([loadProjects(), modelStore.loadModels()])
+  // 启动时静默检查更新
+  updateStore.check().catch(() => {})
   window.addEventListener('aries:refresh-sessions', onRefreshProjects)
   window.addEventListener('aries:workdir-changed', onRefreshProjects)
   window.addEventListener('aries:open-session', onOpenSession)

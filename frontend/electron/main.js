@@ -3,6 +3,7 @@ const path = require('path')
 const { spawn, spawnSync } = require('child_process')
 const http = require('http')
 const fs = require('fs')
+const { autoUpdater } = require('electron-updater')
 
 const BACKEND_PORT = 30000
 
@@ -644,6 +645,79 @@ ipcMain.handle('dialog:select-file', async (event, opts = {}) => {
     return { path: null, cancelled: true }
   }
   return { path: result.filePaths[0], cancelled: false }
+})
+
+// ---------- 自动更新 (electron-updater) ----------
+// 仅打包模式下启用
+if (app.isPackaged) {
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = false
+}
+
+// 向所有窗口推送更新状态
+function sendUpdateStatus(channel, data) {
+  for (const win of windows) {
+    if (!win.isDestroyed()) win.webContents.send(channel, data)
+  }
+}
+
+if (app.isPackaged) {
+  autoUpdater.on('update-available', (info) => {
+    sendUpdateStatus('update:available', {
+      version: info.version,
+      releaseName: info.releaseName || null,
+      releaseNotes: info.releaseNotes || null,
+      releaseDate: info.releaseDate || null,
+    })
+  })
+  autoUpdater.on('update-not-available', (info) => {
+    sendUpdateStatus('update:not-available', { version: info.version })
+  })
+  autoUpdater.on('download-progress', (progress) => {
+    sendUpdateStatus('update:progress', {
+      percent: progress.percent,
+      transferred: progress.transferred,
+      total: progress.total,
+    })
+  })
+  autoUpdater.on('update-downloaded', (info) => {
+    sendUpdateStatus('update:downloaded', { version: info.version })
+  })
+  autoUpdater.on('error', (err) => {
+    sendUpdateStatus('update:error', err.message)
+  })
+}
+
+// IPC: 检查更新
+ipcMain.handle('update:check', async () => {
+  if (!app.isPackaged) return { isDev: true }
+  try {
+    const result = await autoUpdater.checkForUpdates()
+    const info = result?.updateInfo
+    return {
+      isDev: false,
+      available: !!info,
+      version: info?.version || null,
+      releaseName: info?.releaseName || null,
+      releaseNotes: info?.releaseNotes || null,
+      releaseDate: info?.releaseDate || null,
+    }
+  } catch (e) {
+    return { isDev: false, available: false, error: e.message }
+  }
+})
+
+// IPC: 下载更新
+ipcMain.on('update:download', () => {
+  if (app.isPackaged) autoUpdater.downloadUpdate()
+})
+
+// IPC: 安装更新（退出应用并运行安装程序）
+ipcMain.on('update:install', () => {
+  if (!app.isPackaged) return
+  isQuitting = true
+  killBackend({ forceAll: true })
+  autoUpdater.quitAndInstall(true, true)
 })
 
 if (gotSingleInstanceLock) {

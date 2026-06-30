@@ -15,7 +15,27 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, onMounted } from 'vue'
+import { getIconForFile, DEFAULT_FILE } from 'vscode-icons-js'
 import { useModelStore } from '@/stores/model'
+
+const FILE_ICON_CDN = './file-icons'
+
+/** 根据文件名获取对应图标 URL（对齐 SlashComposerInput 的图标方案） */
+function getFileIconUrl(fileName: string): string {
+  const iconName = getIconForFile(fileName) || DEFAULT_FILE
+  return `${FILE_ICON_CDN}/${iconName}`
+}
+
+/** 创建文件类型图标 img 元素 */
+function createFileIconEl(fileName: string): HTMLImageElement {
+  const img = document.createElement('img')
+  img.className = 'file-type-icon'
+  img.src = getFileIconUrl(fileName)
+  img.alt = ''
+  img.width = 14
+  img.height = 14
+  return img
+}
 
 const props = defineProps<{
   content: string
@@ -205,6 +225,8 @@ function createFileRefTag(full: string) {
   const tag = document.createElement('span')
   tag.className = 'file-ref-tag'
 
+  tag.appendChild(createFileIconEl(fileName))
+
   const name = document.createElement('span')
   name.className = 'file-ref-name'
   name.textContent = fileName
@@ -225,10 +247,7 @@ function createPlainFileRefTag(full: string) {
   const tag = document.createElement('span')
   tag.className = 'file-ref-tag plain-file-tag'
 
-  const icon = document.createElement('span')
-  icon.className = 'file-ref-icon'
-  icon.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>'
-  tag.appendChild(icon)
+  tag.appendChild(createFileIconEl(fileName))
 
   const name = document.createElement('span')
   name.className = 'file-ref-name'
@@ -384,7 +403,7 @@ onMounted(() => {
   height: 26px;
   margin: 0 2px;
   padding: 0;
-  background: rgba(139, 92, 246, 0.08);
+  background: rgba(139, 92, 92, 0.08);
   border: 1px solid rgba(139, 92, 246, 0.25);
   border-radius: 6px;
   color: #7c3aed;
@@ -415,7 +434,7 @@ onMounted(() => {
 }
 
 :deep(.file-ref-name) {
-  padding: 0 6px 0 8px;
+  padding: 0 6px;
   max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -426,7 +445,7 @@ onMounted(() => {
   color: #666;
   font-size: 12px;
   flex-shrink: 0;
-  padding-right: 2px;
+  padding-right: 6px;
 }
 
 /* 纯文件路径 chip（无行号） */
@@ -435,13 +454,19 @@ onMounted(() => {
   border-color: #e5e5e5;
 }
 
-:deep(.file-ref-icon) {
+/* 文件类型图标（来自 /file-icons/） */
+:deep(.file-type-icon) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding-left: 6px;
+  vertical-align: middle;
   flex-shrink: 0;
-  opacity: 0.6;
+  object-fit: contain;
+}
+
+:deep(.file-ref-tag .file-type-icon) {
+  margin-right: 2px;
+  margin-left: 6px;
 }
 
 /* 文件夹路径 chip */
