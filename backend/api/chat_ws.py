@@ -24,9 +24,11 @@ async def chat_websocket(websocket: WebSocket, session_id: str = "") -> None:
     await manager.connect(websocket, session_id)
 
     try:
-        # 前端不需要发送消息，只需保持连接接收通知
         while True:
-            await websocket.receive_text()
+            raw = await websocket.receive_text()
+            # 心跳协议：收到 ping 回 pong
+            if raw == "ping":
+                await websocket.send_text("pong")
     except WebSocketDisconnect:
         pass
     finally:

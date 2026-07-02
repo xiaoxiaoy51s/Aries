@@ -105,11 +105,36 @@
         <input
           v-model="searchQuery"
           class="explorer-search-input"
-          placeholder="筛选文件..."
+          :placeholder="isContentSearch ? '搜索文件内容...' : '筛选文件...（输入 % 搜索内容）'"
           type="text"
+          @keydown.enter="onSearchEnter"
         />
       </div>
-      <div class="explorer-tree">
+      <!-- 内容搜索结果 -->
+      <div v-if="isContentSearch" class="explorer-search-results">
+        <div v-if="contentSearchLoading" class="search-results-loading">搜索中...</div>
+        <div v-else-if="contentSearchResults.length === 0 && contentSearchQuery" class="search-results-empty">无匹配结果</div>
+        <template v-else>
+          <div v-for="(file, fi) in contentSearchResults" :key="fi" class="search-result-file">
+            <div class="search-result-file-header" @click="onSearchResultFileClick(file)">
+              <img :src="getFileIconUrl(file.file)" width="14" height="14" alt="" @error="(e: Event) => (e.target as HTMLImageElement).style.display = 'none'" />
+              <span class="search-result-file-name">{{ file.file }}</span>
+              <span class="search-result-count">({{ file.matches.length }})</span>
+            </div>
+            <div
+              v-for="(match, mi) in file.matches"
+              :key="mi"
+              class="search-result-line"
+              @click="onSearchResultClick(file.file, match.line)"
+            >
+              <span class="search-result-line-num">{{ match.line }}</span>
+              <span class="search-result-line-text">{{ match.text }}</span>
+            </div>
+          </div>
+        </template>
+      </div>
+      <!-- 文件树（非内容搜索模式） -->
+      <div v-else class="explorer-tree">
         <ExplorerTreeNode
           v-for="node in filteredRoots"
           :key="node.path"
@@ -242,6 +267,14 @@ import { useWorkspaceStore } from '@/stores/workspace'
 import { useModelStore } from '@/stores/model'
 import { storeToRefs } from 'pinia'
 import ExplorerTreeNode from './ExplorerTreeNode.vue'
+import { getIconForFile, DEFAULT_FILE } from 'vscode-icons-js'
+
+const ICON_CDN = './file-icons'
+
+function getFileIconUrl(fileName: string): string {
+  const iconName = getIconForFile(fileName) || DEFAULT_FILE
+  return `${ICON_CDN}/${iconName}`
+}
 
 const props = defineProps<{
   visible?: boolean
@@ -261,6 +294,14 @@ const sidebarWidth = ref(220)
 const treeData = ref<Record<string, TreeNode>>({})
 const showAddBtn = ref(false)
 const addBtnStyle = ref({ top: '0px', left: '0px' })
+
+// 内容搜索状态
+const contentSearchLoading = ref(false)
+const contentSearchResults = ref<Array<{ file: string; matches: Array<{ line: number; text: string }> }>>([])
+const contentSearchQuery = ref('')
+let contentSearchTimer: ReturnType<typeof setTimeout> | null = null
+
+const isContentSearch = computed(() => searchQuery.value.trimStart().startsWith('%'))
 
 // 非文本文件预览状态
 const previewType = ref<'text' | 'image' | 'binary'>('text')
@@ -685,10 +726,79 @@ function stopResizeSidebar() {
   document.body.style.userSelect = ''
 }
 
+// ---------- 内容搜索 ----------
+
+function onSearchEnter() {
+  if (!isContentSearch.value) return
+  const raw = searchQuery.value.trimStart()
+  if (raw.length < 2) return // 需要至少 % + 1 个字符
+  const query = raw.slice(1).trim() // 去掉 % 前缀
+  if (!query) return
+  contentSearchQuery.value = query
+  performContentSearch(query)
+}
+
+let contentSearchAbort: AbortController | null = null
+
+async function performContentSearch(query: string) {
+  if (!workDir.value) return
+  contentSearchLoading.value = true
+  contentSearchResults.value = []
+  // 取消上次请求
+  if (contentSearchAbort) contentSearchAbort.abort()
+  contentSearchAbort = new AbortController()
+  try {
+    const res = await fetch(`${modelStore.getBaseUrl()}/files/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ work_dir: workDir.value, pattern: query }),
+      signal: contentSearchAbort.signal,
+    })
+    if (!res.ok) return
+    const data = await res.json()
+    contentSearchResults.value = data.results || []
+  } catch (e: any) {
+    if (e.name !== 'AbortError') {
+      console.error('搜索失败', e)
+    }
+  } finally {
+    contentSearchLoading.value = false
+  }
+}
+
+function onSearchResultFileClick(file: { file: string }) {
+  if (!file.file) return
+  selectedPath.value = file.file
+  loadFileContent()
+}
+
+function onSearchResultClick(file: string, line: number) {
+  if (!file) return
+  selectedPath.value = file
+  loadFileContent().then(() => {
+    if (editor) {
+      editor.revealLineInCenter(line)
+      editor.setPosition({ lineNumber: line, column: 1 })
+      editor.focus()
+    }
+  })
+}
+
+// 当用户切回文件筛选模式时，清空搜索结果
+watch(isContentSearch, (val) => {
+  if (!val) {
+    contentSearchResults.value = []
+    contentSearchQuery.value = ''
+    if (contentSearchAbort) contentSearchAbort.abort()
+  }
+})
+
 watch(workDir, () => {
   treeData.value = {}
   selectedPath.value = null
   showAddBtn.value = false
+  contentSearchResults.value = []
+  contentSearchQuery.value = ''
   if (props.visible) loadRoot()
 })
 
@@ -1396,5 +1506,87 @@ async function refreshTree() {
 
 .modal-btn-danger:hover:not(:disabled) {
   background: #b91c1c;
+}
+
+/* ---------- 内容搜索结果 ---------- */
+.explorer-search-results {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 4px 0;
+}
+
+.search-results-loading,
+.search-results-empty {
+  padding: 12px 16px;
+  text-align: center;
+  color: var(--text-muted, #999);
+  font-size: 12px;
+}
+
+.search-result-file {
+  margin-bottom: 4px;
+}
+
+.search-result-file-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text, #333);
+  transition: background 0.1s;
+}
+
+.search-result-file-header:hover {
+  background: var(--accent-hover, #f0f0f0);
+}
+
+.search-result-file-header svg {
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
+.search-result-file-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result-count {
+  color: var(--text-muted, #999);
+  font-size: 11px;
+}
+
+.search-result-line {
+  display: flex;
+  gap: 8px;
+  padding: 2px 8px 2px 24px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  color: var(--text-secondary, #666);
+  border-radius: 3px;
+  transition: background 0.1s;
+}
+
+.search-result-line:hover {
+  background: var(--accent-hover, #f0f0f0);
+}
+
+.search-result-line-num {
+  color: var(--text-muted, #999);
+  min-width: 28px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.search-result-line-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

@@ -640,7 +640,12 @@ async def stream_agent_mode(
                     if "__final_results" in ev:
                         sub_tool_results = ev["__final_results"]
                     else:
-                        yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                        # subagent 事件通过 WebSocket 推送（不再走已废弃的 SSE）
+                        try:
+                            from services.chat_ws import broadcast_stream_event
+                            await broadcast_stream_event(session_id, ev)
+                        except Exception:
+                            pass
                 for sr in sub_tool_results:
                     yield f"data: {json.dumps({'tool_result': {'tool_name': 'delegate_to_subagent', 'tool_call_id': sr['tool_call_id'], 'status': 'completed', 'output': '', 'round': round_no}}, ensure_ascii=False)}\n\n"
                 tool_results.extend(sub_tool_results)

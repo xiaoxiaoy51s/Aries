@@ -548,3 +548,49 @@ async def open_in_editor(req: OpenInEditorRequest) -> dict[str, Any]:
             return {"error": f"不支持的编辑器: {req.editor}"}
     except Exception as e:
         return {"error": str(e)}
+
+
+class SearchRequest(BaseModel):
+    work_dir: str
+    pattern: str
+    path: str | None = None
+    glob: str = "*"
+    output_mode: str = "content"
+    context_lines: int = 2
+    max_results: int = 50
+    case_sensitive: bool = False
+
+
+@router.post("/search")
+async def search_file_content(req: SearchRequest) -> dict[str, Any]:
+    """搜索文件内容（使用 ripgrep 高性能搜索）。"""
+    try:
+        from engine.file_manager import FileManagerTool
+
+        fm = FileManagerTool(work_dir=req.work_dir)
+        detail = fm.execute_search_file(
+            pattern=req.pattern,
+            path=req.path or "",
+            glob=req.glob,
+            output_mode="content",
+            context_lines=0,
+            max_results=req.max_results,
+            case_sensitive=req.case_sensitive,
+        )
+        if not detail.get("success"):
+            return detail
+
+        results = []
+        for m in detail.get("matches", []):
+            file_matches = []
+            for line_match in m.get("matches", []):
+                line_number = line_match.get("line_number", 0)
+                matched_text = line_match.get("matched_text", "")
+                if line_number and matched_text:
+                    file_matches.append({"line": line_number, "text": matched_text})
+            if file_matches:
+                results.append({"file": m.get("relative_path", m.get("file", "")), "matches": file_matches})
+
+        return {"results": results}
+    except Exception as e:
+        return {"success": False, "error": str(e), "output": f"搜索失败: {e}"}

@@ -277,10 +277,22 @@ class CLIExecutor:
             if cancel_event:
                 tasks.append(asyncio.create_task(cancel_event.wait()))
 
-            done, pending = await asyncio.wait(
-                tasks,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            try:
+                done, pending = await asyncio.wait(
+                    tasks,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except asyncio.CancelledError:
+                # 外部取消：清理所有内部任务，避免 "Task was destroyed but it is pending"
+                for t in tasks:
+                    t.cancel()
+                for t in tasks:
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                raise
+
             for task in pending:
                 task.cancel()
                 try:
@@ -292,6 +304,8 @@ class CLIExecutor:
                 return "detach"
             return "cancel"
 
+        request_task: asyncio.Task | None = None
+        signal_task: asyncio.Task | None = None
         try:
             request_task = asyncio.create_task(_request())
             signal_task = asyncio.create_task(_wait_signal())
@@ -368,6 +382,14 @@ class CLIExecutor:
                 "requires_confirmation": False,
             }
         finally:
+            # 确保所有子任务被取消，避免 "Task was destroyed but it is pending"
+            for t in [request_task, signal_task]:
+                if t and not t.done():
+                    t.cancel()
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
             if invocation_id:
                 self._detach_events.pop(invocation_id, None)
                 self._cancel_events.pop(invocation_id, None)

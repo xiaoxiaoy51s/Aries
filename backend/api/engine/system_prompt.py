@@ -73,6 +73,7 @@ def build_agent_system_prompt_parts(
     """
     from pathlib import Path
     today_str = datetime.now().strftime("%Y-%m-%d")
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     if work_dir and work_dir.strip():
         wd = str(Path(work_dir).expanduser().resolve())
@@ -110,7 +111,7 @@ def build_agent_system_prompt_parts(
 
     runtime = (
         f"# 运行时\n"
-        f"今天的日期是 {today_str}。\n"
+        f"当前时间：{now_str}（用户本地时间）。创建定时任务等涉及时间的操作请以此为准。\n"
         "\n"
         "# 当前会话\n"
         f"{_session_context_note(session_id)}\n"

@@ -193,7 +193,9 @@ import {
   closeSessionWs,
   closeAllSessionWs,
   setSessionWsHandler,
+  setOnReconnect,
   buildWsKeepSet,
+  isSessionWsConnected,
   type SessionChatSnapshot,
 } from '@/utils/sessionChatPool'
 
@@ -242,6 +244,8 @@ const messagesContainer = ref<HTMLElement>()
 const SCROLL_IDLE_MS = 5000
 let lastPointerActivityAt = 0
 let scrollIdleTimer: ReturnType<typeof setTimeout> | null = null
+/** working session 健康检查定时器 */
+let healthCheckTimer: ReturnType<typeof setInterval> | null = null
 const emptyComposerRef = ref<InstanceType<typeof ChatComposer>>()
 const activeComposerRef = ref<InstanceType<typeof ChatComposer>>()
 const currentSessionId = ref<string | undefined>(undefined)
@@ -251,6 +255,8 @@ const contextUsageBreakdown = ref<import('@/api/sessions').ContextUsageInfo | nu
 // 当前 assistant message_id（用于把 log_event 路由到正确的消息）
 let activeAssistantMessageId: number | null = null
 let activeAssistantIdx: number | null = null
+/** 用户已请求停止的 session 集合：忽略后端延迟到达的内容消息，避免停止后仍在输出 */
+const stoppedSessions = new Set<string>()
 /** run_metadata 可能在 log_complete 之后到达，先缓存，完成时统一写入 */
 const pendingRunMetaByMessageId = new Map<number, RunMeta>()
 
@@ -575,10 +581,10 @@ function ensurePlatformUserMessage(preview: string) {
 // 加载当前 session 的新消息（完整重载，处理新增和更新）
 async function loadNewMessages(force: boolean = false) {
   if (!currentSessionId.value) return
-  // 用户正在从网页发送消息时跳过，避免打断流式输出
-  if (isSending.value) return
+  // 用户正在从网页发送消息时跳过，避免打断流式输出（force 时除外：切换 session / 重连后恢复）
+  if (isSending.value && !force) return
   // 平台流式输出进行中时跳过，避免打断实时更新
-  if (platformStreaming) return
+  if (platformStreaming && !force) return
   try {
     const data = await getSessionMessages(currentSessionId.value, 100)
     const allMsgs = data.messages || []
@@ -814,6 +820,12 @@ function persistCurrentSessionSnapshot(sessionId?: string) {
 function syncSessionWorkingState(sessionId?: string) {
   const sid = sessionId || currentSessionId.value
   if (!sid) return
+  // 用户已请求停止：强制 idle，不因后端延迟到达的消息恢复 working 状态
+  if (stoppedSessions.has(sid)) {
+    markSessionIdle(sid)
+    persistCurrentSessionSnapshot(sid)
+    return
+  }
   const working =
     isSending.value ||
     messages.value.some((m) => m.role === 'assistant' && m.isLoading)
@@ -1091,10 +1103,25 @@ async function processChatWsPayload(data: Record<string, unknown>) {
     applyLogEvent(evt, evtMessageId, String(data.jsonl_path || ''))
     syncSessionWorkingState()
   } else if (data.type === 'log_complete') {
+    stoppedSessions.delete(currentSessionId.value || '')
     completeLogMessage(Number(data.message_id) || 0)
   } else if (data.type === 'stream_event') {
     const event = data.event as Record<string, unknown> | undefined
     if (!event) return
+    // subagent 事件：更新主聊天 tool block 状态 + 转发给 SubagentChatPanel
+    if (typeof event.type === 'string' && event.type.startsWith('subagent_')) {
+      const lastIdx = messages.value.length - 1
+      const lastAssistant = messages.value[lastIdx]
+      if (lastAssistant?.role === 'assistant') {
+        applyStreamEvent(lastAssistant, { type: event.type as any, data: event.data || {} })
+        messages.value[lastIdx] = { ...lastAssistant }
+      }
+      window.dispatchEvent(new CustomEvent('aries:subagent-stream', {
+        detail: { eventType: event.type, data: event.data || {} },
+      }))
+      syncSessionWorkingState()
+      return
+    }
     if (event.meta) {
       const meta = normalizeRunMetadata(event)
       const targetId = activeAssistantMessageId
@@ -1123,6 +1150,7 @@ async function processChatWsPayload(data: Record<string, unknown>) {
       await loadNewMessages()
     }
   } else if (data.type === 'session_update') {
+    stoppedSessions.delete(currentSessionId.value || '')
     platformStreaming = false
     clearPetStatus()
     await loadNewMessages(true)
@@ -1157,6 +1185,20 @@ function stopChatWs(clearRouting = true) {
   if (sid && !isSessionWorking(sid)) {
     closeSessionWs(sid)
     setSessionWsHandler(sid, null)
+  }
+}
+
+/** 周期性健康检查：确保 working session 的 WebSocket 保持连接 */
+function healthCheckWorkingSessions() {
+  const workingIds = [...workingSessionIds.value]
+  if (workingIds.length === 0) return
+  const wsBase = modelStore.getBaseUrl().replace(/^http/, 'ws')
+  for (const sid of workingIds) {
+    if (isSessionWsConnected(sid)) continue
+    // WebSocket 断开：非阻塞重连
+    console.info(`[HealthCheck] ${sid} WS 断开，尝试重连`)
+    setSessionWsHandler(sid, (data) => handleChatWsForSession(sid, data))
+    void ensureSessionWs(sid, wsBase).catch(() => {})
   }
 }
 
@@ -1420,7 +1462,8 @@ async function applySessionWorkDir(sessionId: string, seq: number): Promise<void
 
 async function finishSessionSwitch(id: string, seq: number): Promise<void> {
   if (isStaleSessionLoad(seq)) return
-  await ensureChatWsReady()
+  // 非阻塞建立 WebSocket：连接失败不卡 UI，健康检查会在后台重试
+  void ensureChatWsReady()
   if (isStaleSessionLoad(seq)) return
   emit('sessionLoaded')
   void tryResumeSession(id)
@@ -1582,8 +1625,7 @@ async function loadSessionById(id: string) {
     const wsBase = modelStore.getBaseUrl().replace(/^http/, 'ws')
     for (const wsSid of buildWsKeepSet(id)) {
       setSessionWsHandler(wsSid, (data) => handleChatWsForSession(wsSid, data))
-      await ensureSessionWs(wsSid, wsBase)
-      if (isStaleSessionLoad(seq)) return
+      void ensureSessionWs(wsSid, wsBase)
     }
     pruneSessionWsKeep(buildWsKeepSet(id))
     scheduleSnapshotLoads(cached.messages as ChatMessage[], cached.messages as ChatMessage[], seq)
@@ -2024,6 +2066,29 @@ onMounted(() => {
   window.addEventListener('aries:select-work-dir', onSelectWorkDir)
   window.addEventListener('aries:emergency-stop', onEmergencyStopEvent)
   window.addEventListener('keydown', onGlobalEscKey, true)
+  // WebSocket 重连后：检查后端状态，恢复 working 状态并拉取漏掉的消息
+  setOnReconnect(async (sid) => {
+    try {
+      const running = await checkChatStatus(sid)
+      if (running) {
+        // 后端仍在运行：恢复 working 状态（不设置 isSending，避免 loadNewMessages 被短路）
+        markSessionWorking(sid)
+        if (sid === currentSessionId.value) {
+          void loadNewMessages(true).catch(() => {})
+        }
+      } else {
+        // 后端已结束：清除 working 状态
+        markSessionIdle(sid)
+        if (sid === currentSessionId.value) {
+          isSending.value = false
+          void loadNewMessages(true).catch(() => {})
+        }
+      }
+    } catch {
+      // 检查失败：保守恢复 working 状态
+      markSessionWorking(sid)
+    }
+  })
   loadWorkDir()
   // 确保模型列表已加载（避免 MainLayout 加载未完成导致下拉框为空）
   void modelStore.loadModels()
@@ -2032,6 +2097,8 @@ onMounted(() => {
   }
   // 自动恢复桌面宠物
   restorePet()
+  // 周期性健康检查：确保 working session 的 WebSocket 保持连接
+  healthCheckTimer = setInterval(healthCheckWorkingSessions, 15000)
 })
 
 // ---------- 宠物持久化恢复 ----------
@@ -2065,6 +2132,11 @@ watch(() => props.sessionIdToLoad, (id) => {
 
 onUnmounted(() => {
   clearConfirmCountdownTimer()
+  setOnReconnect(null)
+  if (healthCheckTimer) {
+    clearInterval(healthCheckTimer)
+    healthCheckTimer = null
+  }
   if (currentSessionId.value) persistCurrentSessionSnapshot(currentSessionId.value)
   closeAllSessionWs()
   if (scrollIdleTimer) {
@@ -2631,6 +2703,7 @@ async function stopGeneration() {
   const sessionId = currentSessionId.value
   const wd = (workDir.value || resolveWorkDirForSend() || '').trim()
   if (sessionId) {
+    stoppedSessions.add(sessionId)
     stopChat(sessionId, wd || undefined).catch(() => {})
     markSessionIdle(sessionId)
     syncSessionWorkingState(sessionId)
@@ -2740,7 +2813,7 @@ async function sendMessage() {
     ])
   } else {
     window.dispatchEvent(new CustomEvent('aries:refresh-sessions'))
-    await ensureChatWsReady()
+    void ensureChatWsReady()
   }
 
   try {

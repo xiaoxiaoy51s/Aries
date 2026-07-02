@@ -78,6 +78,15 @@
               开发环境
             </li>
             <li
+              :class="{ active: activeTab === 'tools' }"
+              @click="activeTab = 'tools'"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+              </svg>
+              CLI工具
+            </li>
+            <li
               :class="{ active: activeTab === 'subagents' }"
               @click="activeTab = 'subagents'"
             >
@@ -122,6 +131,7 @@
             <PetsTab v-else-if="activeTab === 'pets'" />
             <NetworkTab v-else-if="activeTab === 'network'" />
             <DevEnvTab v-else-if="activeTab === 'dev-env'" />
+            <ToolsTab v-else-if="activeTab === 'tools'" />
             <SubagentsTab v-else-if="activeTab === 'subagents'" />
             <UpdatesTab v-else-if="activeTab === 'updates'" />
           </div>
@@ -139,20 +149,21 @@ import PathsTab from './tabs/PathsTab.vue'
 import PetsTab from './tabs/PetsTab.vue'
 import NetworkTab from './tabs/NetworkTab.vue'
 import DevEnvTab from './tabs/DevEnvTab.vue'
+import ToolsTab from './tabs/ToolsTab.vue'
 import SubagentsTab from './tabs/SubagentsTab.vue'
 import UpdatesTab from './tabs/UpdatesTab.vue'
 import { useUpdateStore } from '@/stores/update'
 
 const props = defineProps<{
   visible: boolean
-  initialTab?: 'models' | 'accounts' | 'paths' | 'pets' | 'network' | 'dev-env' | 'subagents' | 'updates'
+  initialTab?: 'models' | 'accounts' | 'paths' | 'pets' | 'network' | 'dev-env' | 'tools' | 'subagents' | 'updates'
 }>()
 defineEmits<{ close: [] }>()
 
 const updateStore = useUpdateStore()
 const hasUpdate = computed(() => updateStore.result?.update_available === true)
 
-type TabId = 'models' | 'accounts' | 'paths' | 'pets' | 'network' | 'dev-env' | 'subagents' | 'updates'
+type TabId = 'models' | 'accounts' | 'paths' | 'pets' | 'network' | 'dev-env' | 'tools' | 'subagents' | 'updates'
 const activeTab = ref<TabId>('models')
 
 watch(
@@ -172,6 +183,7 @@ const tabTitle = computed(() => {
     pets: '桌面宠物',
     network: '网络代理',
     'dev-env': '开发环境',
+    tools: '工具',
     subagents: '智能体',
     updates: '检查更新',
   } as const
