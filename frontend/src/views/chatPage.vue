@@ -1,23 +1,5 @@
 <template>
   <section id="chatPage" class="page">
-    <!-- 右侧面板开关按钮 -->
-    <button
-      type="button"
-      class="right-panel-toggle"
-      :title="rightPanelVisible ? '收起面板' : '展开面板'"
-      :aria-label="rightPanelVisible ? '收起面板' : '展开面板'"
-      @click="rightPanelVisible = !rightPanelVisible"
-    >
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <rect x="3" y="3" width="18" height="18" rx="2"/>
-        <path v-if="rightPanelVisible" d="M15 3v18"/>
-        <path v-else d="M15 3v18M15 9h6"/>
-      </svg>
-    </button>
-
-    <!-- 任务清单按钮 -->
-    <TodoButton class="chat-todo-button" />
-
     <div class="chat-content">
     <!-- 空状态 -->
     <div v-if="!hasActiveChat" class="chat-empty">
@@ -46,13 +28,73 @@
         @open-image-picker="openImagePicker"
         @pick-work-dir="pickWorkDir"
         @apply-work-dir="applyWorkDir"
-        @toggle-side-chat="rightPanelVisible = !rightPanelVisible"
+        @toggle-side-chat="toggleRightPanel"
         @compact-done="onCompactDone"
       />
     </div>
 
     <!-- 对话中状态 -->
     <div v-else class="chat-active">
+      <header class="chat-header">
+        <div class="chat-header-start">
+          <span class="chat-header-doc-icon" aria-hidden="true">
+            <svg t="1782991051959" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="26670" width="14" height="14"><path d="M842.666667 981.333333H181.333333a53.393333 53.393333 0 0 1-53.333333-53.333333V96a53.393333 53.393333 0 0 1 53.333333-53.333333h466.746667a52.986667 52.986667 0 0 1 37.713333 15.62l194.586667 194.586666a52.986667 52.986667 0 0 1 15.62 37.713334V928a53.393333 53.393333 0 0 1-53.333333 53.333333zM181.333333 85.333333a10.666667 10.666667 0 0 0-10.666666 10.666667v832a10.666667 10.666667 0 0 0 10.666666 10.666667h661.333334a10.666667 10.666667 0 0 0 10.666666-10.666667V298.666667h-160a53.393333 53.393333 0 0 1-53.333333-53.333334V85.333333z m501.333334 30.166667V245.333333a10.666667 10.666667 0 0 0 10.666666 10.666667h129.833334z m21.333333 652.5H320a21.333333 21.333333 0 0 1 0-42.666667h384a21.333333 21.333333 0 0 1 0 42.666667z m0-213.333333H320a21.333333 21.333333 0 0 1 0-42.666667h384a21.333333 21.333333 0 0 1 0 42.666667zM490.666667 298.666667H320a21.333333 21.333333 0 0 1 0-42.666667h170.666667a21.333333 21.333333 0 0 1 0 42.666667z" fill="#5C5C66" p-id="26671"></path></svg>
+          </span>
+          <h2 class="chat-header-title" :title="displaySessionTitle">{{ displaySessionTitle }}</h2>
+          <div class="chat-header-more-wrap">
+            <button
+              type="button"
+              class="chat-header-icon-btn"
+              title="更多"
+              aria-label="更多"
+              :aria-expanded="headerMenuOpen"
+              @click.stop="headerMenuOpen = !headerMenuOpen"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <circle cx="5" cy="12" r="1.5"/>
+                <circle cx="12" cy="12" r="1.5"/>
+                <circle cx="19" cy="12" r="1.5"/>
+              </svg>
+            </button>
+            <div v-if="headerMenuOpen" class="chat-header-menu">
+              <button type="button" class="chat-header-menu-item" @click="onHeaderRename">
+                重命名
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="chat-header-actions">
+          <button
+            type="button"
+            class="chat-header-icon-btn"
+            :class="{ active: bottomConsoleOpen }"
+            :title="bottomConsoleOpen ? '收起控制台' : '展开控制台'"
+            :aria-label="bottomConsoleOpen ? '收起控制台' : '展开控制台'"
+            :aria-expanded="bottomConsoleOpen"
+            @click="toggleBottomConsole"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="m7 9 3 3-3 3"/>
+              <path d="M13 15h4"/>
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="chat-header-icon-btn"
+            :class="{ active: rightPanelVisible }"
+            :title="rightPanelVisible ? '收起面板' : '展开面板'"
+            :aria-label="rightPanelVisible ? '收起面板' : '展开面板'"
+            @click="toggleRightPanel"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <path d="M15 3v18"/>
+            </svg>
+          </button>
+        </div>
+      </header>
+
       <div
         class="chat-messages"
         ref="messagesContainer"
@@ -97,6 +139,7 @@
           </div>
         </div>
       </div>
+      <div class="chat-composer-area">
       <ChatComposer
         ref="activeComposerRef"
         v-model="inputMessage"
@@ -122,7 +165,7 @@
         @open-image-picker="openImagePicker"
         @pick-work-dir="pickWorkDir"
         @apply-work-dir="applyWorkDir"
-        @toggle-side-chat="rightPanelVisible = !rightPanelVisible"
+        @toggle-side-chat="toggleRightPanel"
         @compact-done="onCompactDone"
       >
         <DangerCommandConfirm
@@ -134,10 +177,28 @@
           @skip="onToolCancel(pendingToolConfirmation.toolCallId)"
         />
       </ChatComposer>
+      </div>
+
+      <div v-show="bottomConsoleOpen" class="bottom-console-dock">
+        <div
+          class="bottom-console-panel"
+          :style="{ height: `${bottomConsoleHeight}px` }"
+        >
+          <div
+            class="bottom-console-resize-handle"
+            title="拖动调整高度"
+            @pointerdown="startConsoleResize"
+            @pointermove="onConsoleResize"
+            @pointerup="stopConsoleResize"
+            @pointercancel="stopConsoleResize"
+          />
+          <ConsolePanel :visible="bottomConsoleOpen" @close="closeBottomConsole" />
+        </div>
+      </div>
     </div>
     </div>
 
-    <!-- 右侧面板：控制台/浏览器/Git/Diff/临时对话 -->
+    <!-- 右侧面板：浏览器/Git/Diff/临时对话 -->
     <RightPanel
       :visible="rightPanelVisible"
       :session-id="currentSessionId"
@@ -158,7 +219,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useModelStore } from '@/stores/model'
- import { usePrivacyStore } from '@/stores/privacy'
+import { usePrivacyStore } from '@/stores/privacy'
 import { stopChat, checkChatStatus, jsonToStreamEvent, type StreamEvent, startChat, startVision } from '@/api/chat'
 import { confirmTool } from '@/api/git'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -168,11 +229,38 @@ import { selectDirectory } from '@/api/system'
 import AssistantMessage from '@/components/AssistantMessage.vue'
 import ChatComposer from '@/components/ChatComposer.vue'
 import DangerCommandConfirm from '@/components/DangerCommandConfirm.vue'
-import SlashComposerInput, { type ComposerImage } from '@/components/SlashComposerInput.vue'
+import type { ComposerImage } from '@/components/SlashComposerInput.vue'
 import UserMessageContent from '@/components/UserMessageContent.vue'
 import RightPanel from '@/components/workspace/RightPanel.vue'
-import TodoButton from '@/components/TodoButton.vue'
-import { parseSnapshotEventObjects } from '@/utils/snapshotParser'
+import ConsolePanel from '@/components/workspace/ConsolePanel.vue'
+import type { ChatMessage, SubagentRecord } from '@/types/chatMessage'
+import {
+  applyStreamEvent,
+  clearPetStatus,
+  flushPetStatusForComplete,
+  type ApplyStreamEventDeps,
+} from '@/utils/applyStreamEvent'
+import { buildStreamEventFromLogEvent } from '@/utils/chatLogBridge'
+import {
+  buildSessionTitle,
+  enrichUserMessage,
+  findAssistantMessageIndex as findAssistantIdx,
+  mapRawMessagesToChat,
+  messageHasRunningWork,
+  parseStoredImagePaths,
+  sessionHasActiveWork,
+} from '@/utils/chatMessageHelpers'
+import { handleSubagentLogWsPayload } from '@/utils/chatSubagentWs'
+import {
+  buildMessageFromSnapshotEvents,
+  buildReasoningContentFallback,
+} from '@/utils/chatSnapshotApply'
+import {
+  completeLogMessageSnapshot,
+  ensureLogPlaceholderSnapshot,
+  findAssistantMessageIndexInSnapshot,
+  getOrCreateSnapshot,
+} from '@/utils/chatSnapshotStore'
 import { normalizeRunMetadata, mergeRunMeta, type RunMeta } from '@/utils/runMetadata'
 import {
   bindStreamDuration,
@@ -184,6 +272,7 @@ import {
   markSessionWorking,
   markSessionIdle,
   isSessionWorking,
+  workingSessionIds,
 } from '@/utils/sessionWorkStore'
 import {
   saveSessionSnapshot,
@@ -226,6 +315,13 @@ const inlineDiffData = ref<{ path: string; original: string; modified: string; k
 const hasActiveChat = ref(false)
 const isSending = ref(false)
 const rightPanelVisible = ref(false)
+const bottomConsoleOpen = ref(false)
+const bottomConsoleHeight = ref(280)
+const BOTTOM_CONSOLE_MIN_HEIGHT = 120
+const BOTTOM_CONSOLE_MAX_HEIGHT = 560
+let consoleResizing = false
+let consoleResizeStartY = 0
+let consoleResizeStartHeight = 0
 const toastVisible = ref(false)
 const toastMessage = ref('')
 const toastType = ref<'info' | 'warning' | 'error'>('info')
@@ -249,6 +345,8 @@ let healthCheckTimer: ReturnType<typeof setInterval> | null = null
 const emptyComposerRef = ref<InstanceType<typeof ChatComposer>>()
 const activeComposerRef = ref<InstanceType<typeof ChatComposer>>()
 const currentSessionId = ref<string | undefined>(undefined)
+const currentSessionTitle = ref('')
+const headerMenuOpen = ref(false)
 const contextUsagePercent = ref(0)
 const contextUsageBreakdown = ref<import('@/api/sessions').ContextUsageInfo | null>(null)
 
@@ -259,6 +357,90 @@ let activeAssistantIdx: number | null = null
 const stoppedSessions = new Set<string>()
 /** run_metadata 可能在 log_complete 之后到达，先缓存，完成时统一写入 */
 const pendingRunMetaByMessageId = new Map<number, RunMeta>()
+
+const displaySessionTitle = computed(() => {
+  const stored = currentSessionTitle.value.trim()
+  if (stored) return stored
+  const firstUser = messages.value.find((m) => m.role === 'user')
+  if (firstUser?.content) return buildSessionTitle(firstUser.content)
+  return '新对话'
+})
+
+function toggleRightPanel() {
+  rightPanelVisible.value = !rightPanelVisible.value
+}
+
+function toggleBottomConsole() {
+  bottomConsoleOpen.value = !bottomConsoleOpen.value
+}
+
+function closeBottomConsole() {
+  bottomConsoleOpen.value = false
+}
+
+function openBottomConsole() {
+  bottomConsoleOpen.value = true
+}
+
+function startConsoleResize(e: PointerEvent) {
+  consoleResizing = true
+  consoleResizeStartY = e.clientY
+  consoleResizeStartHeight = bottomConsoleHeight.value
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  document.body.style.cursor = 'row-resize'
+  document.body.style.userSelect = 'none'
+  e.preventDefault()
+}
+
+function onConsoleResize(e: PointerEvent) {
+  if (!consoleResizing) return
+  const delta = consoleResizeStartY - e.clientY
+  bottomConsoleHeight.value = Math.min(
+    Math.max(consoleResizeStartHeight + delta, BOTTOM_CONSOLE_MIN_HEIGHT),
+    BOTTOM_CONSOLE_MAX_HEIGHT,
+  )
+}
+
+function stopConsoleResize(e: PointerEvent) {
+  if (!consoleResizing) return
+  consoleResizing = false
+  try {
+    ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+  } catch {
+    // ignore
+  }
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+}
+
+function onHeaderRename() {
+  headerMenuOpen.value = false
+  if (!currentSessionId.value) return
+  window.dispatchEvent(new CustomEvent('aries:rename-session', {
+    detail: { sessionId: currentSessionId.value },
+  }))
+}
+
+function closeHeaderMenu() {
+  headerMenuOpen.value = false
+}
+
+async function refreshCurrentSessionTitle(sessionId?: string) {
+  const sid = sessionId || currentSessionId.value
+  if (!sid) return
+  try {
+    const meta = await getSession(sid)
+    if (sid === currentSessionId.value) {
+      currentSessionTitle.value = meta?.title?.trim() || ''
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function onRefreshSessions() {
+  void refreshCurrentSessionTitle()
+}
 
 // WebSocket 由 sessionChatPool 管理（支持多 session 并行，见下方 ensureChatWsReady）
 
@@ -421,7 +603,7 @@ function applyLogEvent(event: Record<string, any>, messageId: number, jsonlPath:
       return
   }
   if (!streamEvt) return
-  applyStreamEvent(msg, streamEvt)
+  pushStreamEvent(msg, streamEvt)
   messages.value[idx] = { ...msg }
   // 自动确认逻辑（与 runAssistantStream 一致）
   if (streamEvt.type === 'confirmation_required' && streamEvt.data) {
@@ -455,22 +637,7 @@ function applyLogEvent(event: Record<string, any>, messageId: number, jsonlPath:
 }
 
 function findAssistantMessageIndex(messageId: number): number {
-  if (messageId > 0) {
-    const byId = messages.value.findIndex(
-      (m) => m.role === 'assistant' && m.messageId === messageId
-    )
-    if (byId >= 0) return byId
-    return -1
-  }
-  if (activeAssistantIdx != null && messages.value[activeAssistantIdx]?.role === 'assistant') {
-    return activeAssistantIdx
-  }
-  for (let i = messages.value.length - 1; i >= 0; i--) {
-    if (messages.value[i].role === 'assistant' && messages.value[i].isLoading) {
-      return i
-    }
-  }
-  return -1
+  return findAssistantIdx(messages.value, messageId, activeAssistantIdx)
 }
 
 /**
@@ -502,7 +669,7 @@ function completeLogMessage(messageId: number) {
     platformStreaming = false
   }
   isSending.value = false
-  flushPetStatus(petStatusPhase)
+  flushPetStatusForComplete()
   clearPetStatus()
   syncSessionWorkingState()
   if (currentSessionId.value) {
@@ -550,7 +717,7 @@ function handlePlatformStreamEvent(rawEvent: Record<string, unknown>) {
   const assistantIdx = messages.value.length - 1
 
   // 复用已有的 applyStreamEvent 逻辑
-  applyStreamEvent(assistantMsg, evt)
+  pushStreamEvent(assistantMsg, evt)
   messages.value[assistantIdx] = { ...assistantMsg }
   nextTick(() => scheduleScrollToBottom())
 }
@@ -585,6 +752,15 @@ async function loadNewMessages(force: boolean = false) {
   if (isSending.value && !force) return
   // 平台流式输出进行中时跳过，避免打断实时更新
   if (platformStreaming && !force) return
+  // 后台仍在跑时不要用 DB 快照覆盖内存中的流式 UI
+  if (force && sessionHasActiveWork(messages.value, isSending.value)) {
+    const running = await checkChatStatus(currentSessionId.value)
+    if (running === true) {
+      restoreRunningAssistantUi()
+      syncSessionWorkingState()
+      return
+    }
+  }
   try {
     const data = await getSessionMessages(currentSessionId.value, 100)
     const allMsgs = data.messages || []
@@ -655,109 +831,9 @@ function clearAttachedImages() {
   activeComposerRef.value?.clearImages()
 }
 
-function parseStoredImagePaths(imagePath?: string | null): string[] {
-  if (!imagePath) return []
-  try {
-    const parsed = JSON.parse(imagePath)
-    return Array.isArray(parsed) ? parsed.filter(Boolean) : [imagePath]
-  } catch {
-    return [imagePath]
-  }
-}
-
 function clearComposerCommand() {
   activeSlashCommand.value = null
   commandObjective.value = ''
-}
-
-interface ToolInfo {
-  name: string
-  status: string
-  args?: Record<string, any>
-  output: string
-}
-
-interface MessageBlock {
-  type: 'tool' | 'text' | 'summary'
-  phase?: 'work' | 'answer'
-  text?: string
-  tool_name?: string
-  status?: string
-  args?: Record<string, any>
-  preview?: string
-  result?: string
-  error?: string
-  started_at?: string
-  ended_at?: string
-  tool_call_id?: string
-  session_id?: string
-  auto_detached?: boolean
-  pending_confirmation?: boolean
-  danger_info?: string
-  danger_types?: string[]
-  // 子 Agent 委派的实时状态（仅 tool_name === 'delegate_to_subagent' 时使用）
-  subagent?: {
-    task_id?: string
-    subagent?: string
-    task?: string
-    status?: string         // running | stalled | success | failed | timeout | cancelled
-    round?: number
-    last_event?: string
-    elapsed_ms?: number
-    log_path?: string
-    // 子 Agent 的完整流式内容（展开工具块时显示）
-    inner_blocks?: MessageBlock[]
-    final_message?: string
-  }
-}
-
-interface MessageMeta {
-  model?: string
-  duration_ms?: number
-  token_usage?: {
-    context?: { usage_percent?: number; estimated_tokens?: number; context_window?: number }
-    api_usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
-  }
-}
-
-interface FileChangeArtifact {
-  file_path: string
-  operation: string  // "create" | "modify"
-  previous_content: string
-  new_content: string
-  tool_name: string
-  tool_call_id: string
-  reverted?: boolean
-}
-
-interface ChatMessage {
-  role: 'user' | 'assistant'
-  content: string
-  images?: string[]
-  slashCommand?: string
-  slashBody?: string
-  mode?: string
-  reasoning?: string[]
-  tools?: ToolInfo[]
-  blocks?: MessageBlock[]
-  artifacts?: FileChangeArtifact[]
-  isLoading?: boolean
-  messageId?: number
-  messageSnapshotJson?: string
-  hasSnapshot?: boolean
-  meta?: MessageMeta
-}
-
-function enrichUserMessage(content: string): Pick<ChatMessage, 'content' | 'slashCommand' | 'slashBody'> {
-  const match = content.match(/^(\/[\w-]+)\s*(.*)$/s)
-  if (match) {
-    return {
-      content,
-      slashCommand: match[1],
-      slashBody: match[2].trim(),
-    }
-  }
-  return { content }
 }
 
 const messages = ref<ChatMessage[]>([])
@@ -765,28 +841,27 @@ const messages = ref<ChatMessage[]>([])
 /** 仅当前查看的 session 在流式时，输入框才显示加载/停止按钮 */
 const composerIsSending = computed(() => {
   const sid = currentSessionId.value
-  if (!sid || !isSessionWorking(sid)) return false
-  return (
-    isSending.value ||
-    messages.value.some((m) => m.role === 'assistant' && m.isLoading)
-  )
+  if (!sid || stoppedSessions.has(sid)) return false
+  return sessionHasActiveWork(messages.value, isSending.value)
 })
 
-// 本会话所有子 Agent 委派记录（按 task_id 去重 upsert）
-// 供 SubagentChatPanel 展示用，涵盖所有 assistant 消息里的 delegate_to_subagent 调用
-interface SubagentRecord {
-  task_id: string
-  subagent?: string
-  task?: string
-  status?: string
-  round?: number
-  last_event?: string
-  elapsed_ms?: number
-  log_path?: string
-  inner_blocks?: MessageBlock[]
-  final_message?: string
-  message_id?: number  // 来源 assistant 消息的 DB id，便于历史重建
+/** 清除过期的 sending / loading UI（后端未跑时不应显示转圈） */
+function clearStaleSendingUi() {
+  isSending.value = false
+  let changed = false
+  messages.value = messages.value.map((m) => {
+    if (m.role === 'assistant' && m.isLoading) {
+      changed = true
+      return { ...m, isLoading: false }
+    }
+    return m
+  })
+  if (changed || !sessionHasActiveWork(messages.value, false)) {
+    syncSessionWorkingState()
+  }
 }
+
+// 本会话所有子 Agent 委派记录（按 task_id 去重 upsert）
 const sessionSubagents = ref<SubagentRecord[]>([])
 
 function captureSessionSnapshot(): SessionChatSnapshot {
@@ -826,172 +901,95 @@ function syncSessionWorkingState(sessionId?: string) {
     persistCurrentSessionSnapshot(sid)
     return
   }
-  const working =
-    isSending.value ||
-    messages.value.some((m) => m.role === 'assistant' && m.isLoading)
+  const msgs = sid === currentSessionId.value
+    ? messages.value
+    : (loadSessionSnapshot(sid)?.messages as ChatMessage[] | undefined) ?? []
+  const sending = sid === currentSessionId.value
+    ? isSending.value
+    : !!loadSessionSnapshot(sid)?.isSending
+  const working = sessionHasActiveWork(msgs, sending)
   if (working) markSessionWorking(sid)
   else markSessionIdle(sid)
   persistCurrentSessionSnapshot(sid)
 }
 
 function syncSnapshotWorkingState(sessionId: string, snapshot: SessionChatSnapshot) {
-  const working =
-    snapshot.isSending ||
-    (snapshot.messages as ChatMessage[]).some((m) => m.role === 'assistant' && m.isLoading)
+  const working = sessionHasActiveWork(
+    snapshot.messages as ChatMessage[],
+    snapshot.isSending,
+  )
   if (working) markSessionWorking(sessionId)
   else markSessionIdle(sessionId)
 }
 
-function getOrCreateSnapshot(sessionId: string): SessionChatSnapshot {
-  return loadSessionSnapshot(sessionId) ?? {
-    messages: [],
-    isSending: false,
-    hasActiveChat: false,
-    activeAssistantMessageId: null,
-    activeAssistantIdx: null,
-    sessionSubagents: [],
-    platformStreaming: false,
+/** 后端仍在跑但 UI 丢失 loading 时，恢复输入框停止按钮与消息 loading 态 */
+function restoreRunningAssistantUi() {
+  if (!currentSessionId.value) return
+  isSending.value = true
+
+  let idx = activeAssistantIdx
+  if (idx == null || messages.value[idx]?.role !== 'assistant') {
+    if (activeAssistantMessageId) {
+      idx = findAssistantMessageIndex(activeAssistantMessageId)
+    }
   }
+  if (idx == null || idx < 0) {
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      if (messageHasRunningWork(messages.value[i])) {
+        idx = i
+        break
+      }
+    }
+  }
+  if (idx == null || idx < 0) {
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      if (messages.value[i].role === 'assistant') {
+        idx = i
+        break
+      }
+    }
+  }
+  if (idx == null || idx < 0) return
+
+  const m = messages.value[idx]
+  if (m && !m.isLoading) {
+    messages.value[idx] = { ...m, isLoading: true }
+  }
+  activeAssistantIdx = idx
 }
 
-function ensureLogPlaceholderSnapshot(
-  snapshot: SessionChatSnapshot,
-  sessionId: string,
-  messageId: number,
-  jsonlPath: string,
-) {
-  const msgs = snapshot.messages as ChatMessage[]
-  let idx = msgs.findIndex((m) => m.role === 'assistant' && m.messageId === messageId)
-  if (idx < 0) {
-    const last = msgs[msgs.length - 1]
-    if (
-      last?.role === 'assistant' &&
-      last.isLoading &&
-      (!last.messageId || last.messageId === messageId)
-    ) {
-      idx = msgs.length - 1
+async function restoreSessionAfterWsReconnect(sessionId: string) {
+  const snap = loadSessionSnapshot(sessionId)
+  const msgs = sessionId === currentSessionId.value
+    ? messages.value
+    : (snap?.messages as ChatMessage[] | undefined) ?? []
+  const sending = sessionId === currentSessionId.value
+    ? isSending.value
+    : !!snap?.isSending
+  const localActive = sessionHasActiveWork(msgs, sending)
+  const running = await checkChatStatus(sessionId)
+
+  const shouldBeWorking =
+    running === true ||
+    (localActive && running !== false)
+
+  if (!shouldBeWorking) {
+    markSessionIdle(sessionId)
+    if (sessionId === currentSessionId.value) {
+      clearStaleSendingUi()
+      void loadNewMessages(true).catch(() => {})
     }
+    return
   }
-  if (idx < 0) {
-    msgs.push({
-      role: 'assistant',
-      content: '',
-      reasoning: [],
-      tools: [],
-      blocks: [],
-      isLoading: true,
-      messageId,
-      messageSnapshotJson: jsonlPath || undefined,
-    })
-    idx = msgs.length - 1
-  } else {
-    const m = msgs[idx]
-    msgs[idx] = {
-      ...m,
-      isLoading: true,
-      messageId,
-      messageSnapshotJson: jsonlPath || m.messageSnapshotJson,
-    }
-  }
-  bindStreamDuration(sessionId, messageId)
-  startStreamDuration(sessionId, messageId)
-  snapshot.activeAssistantIdx = idx
-  snapshot.activeAssistantMessageId = messageId
-  snapshot.hasActiveChat = true
-  snapshot.isSending = true
+
   markSessionWorking(sessionId)
-}
-
-function findAssistantMessageIndexInSnapshot(snapshot: SessionChatSnapshot, messageId: number): number {
-  const msgs = snapshot.messages as ChatMessage[]
-  if (messageId > 0) {
-    const byId = msgs.findIndex((m) => m.role === 'assistant' && m.messageId === messageId)
-    if (byId >= 0) return byId
-    return -1
-  }
-  if (snapshot.activeAssistantIdx != null && msgs[snapshot.activeAssistantIdx]?.role === 'assistant') {
-    return snapshot.activeAssistantIdx
-  }
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i].role === 'assistant' && msgs[i].isLoading) return i
-  }
-  return -1
-}
-
-function completeLogMessageSnapshot(
-  snapshot: SessionChatSnapshot,
-  sessionId: string,
-  messageId: number,
-) {
-  const idx = findAssistantMessageIndexInSnapshot(snapshot, messageId)
-  if (idx >= 0) {
-    const m = snapshot.messages[idx] as ChatMessage
-    snapshot.messages[idx] = { ...m, isLoading: false }
-  }
-  stopStreamDuration(sessionId, messageId)
-  if (!messageId || snapshot.activeAssistantMessageId === messageId) {
-    snapshot.activeAssistantMessageId = null
-    snapshot.activeAssistantIdx = null
-  }
-  snapshot.isSending = false
-}
-
-function buildStreamEventFromLogEvent(
-  event: Record<string, any>,
-  messageId: number,
-): StreamEvent | null | 'complete' {
-  switch (event.type) {
-    case 'reasoning_text':
-      return { type: 'reasoning', data: String(event.text || '') }
-    case 'assistant_text':
-      return { type: 'content', data: String(event.text || '') }
-    case 'tool_call':
-      return {
-        type: 'tool_call',
-        data: {
-          tool_call_id: event.tool_call_id,
-          tool_name: event.tool_name,
-          status: event.status,
-          args: event.args,
-          session_id: event.session_id || '',
-        },
-      }
-    case 'tool_result':
-      return {
-        type: 'tool_result',
-        data: {
-          tool_call_id: event.tool_call_id,
-          tool_name: event.tool_name,
-          status: event.status,
-          output: typeof event.result === 'string' ? event.result : (event.result?.output || ''),
-          file_change: event.file_change,
-          session_id: event.session_id || '',
-        },
-      }
-    case 'run_metadata':
-      return { type: 'meta', data: event }
-    case 'log_complete':
-      return 'complete'
-    case 'sub_agent':
-      return {
-        type: 'subagent_event',
-        data: {
-          task_id: event.tool_call_id,
-          subagent: event.subagent,
-          task: event.task,
-          status: event.status,
-          log_path: event.log_path,
-          round: event.rounds,
-          elapsed_ms: event.duration_ms,
-          final_message: event.final_output,
-        },
-      }
-    case 'error_event':
-      return { type: 'error', data: event.error_msg || event.error || '未知错误' }
-    case 'info_event':
-      return { type: 'hint', data: event.info_msg || '' }
-    default:
-      return null
+  if (sessionId === currentSessionId.value) {
+    if (running === true || localActive) {
+      restoreRunningAssistantUi()
+    }
+    syncSessionWorkingState(sessionId)
+  } else if (snap) {
+    syncSnapshotWorkingState(sessionId, snap)
   }
 }
 
@@ -1030,14 +1028,14 @@ function applyLogEventSnapshot(
   const msg = snapshot.messages[idx] as ChatMessage | undefined
   if (!msg || msg.role !== 'assistant') return
 
-  const streamEvt = buildStreamEventFromLogEvent(event, messageId)
+  const streamEvt = buildStreamEventFromLogEvent(event)
   if (streamEvt === 'complete') {
     completeLogMessageSnapshot(snapshot, sessionId, messageId)
     return
   }
   if (!streamEvt) return
 
-  applyStreamEvent(msg, streamEvt, { silent: true, subagents: snapshot.sessionSubagents as SubagentRecord[] })
+  pushStreamEvent(msg, streamEvt, { silent: true, subagents: snapshot.sessionSubagents as SubagentRecord[] })
   snapshot.messages[idx] = { ...msg }
 
   if (streamEvt.type === 'confirmation_required' && streamEvt.data) {
@@ -1052,7 +1050,7 @@ function applyLogEventSnapshot(
 
 /** 后台 session 的 WS 事件：只写快照，不切换当前 UI（避免输入框闪烁） */
 function applyWsPayloadToSnapshot(sessionId: string, data: Record<string, unknown>) {
-  const snapshot = getOrCreateSnapshot(sessionId)
+  const snapshot = getOrCreateSnapshot(sessionId, loadSessionSnapshot)
 
   if (data.type === 'log_started') {
     const newMsgId = Number(data.message_id) || 0
@@ -1073,6 +1071,15 @@ function applyWsPayloadToSnapshot(sessionId: string, data: Record<string, unknow
     applyLogEventSnapshot(snapshot, sessionId, evt as Record<string, any>, evtMessageId, String(data.jsonl_path || ''))
   } else if (data.type === 'log_complete') {
     completeLogMessageSnapshot(snapshot, sessionId, Number(data.message_id) || 0)
+  } else if (
+    data.type === 'subagent_log_started'
+    || data.type === 'subagent_log_event'
+    || data.type === 'subagent_log_complete'
+  ) {
+    snapshot.messages = handleSubagentLogWsPayload(
+      data,
+      snapshot.messages as ChatMessage[],
+    ) as SessionChatSnapshot['messages']
   }
 
   saveSessionSnapshot(sessionId, snapshot)
@@ -1105,20 +1112,25 @@ async function processChatWsPayload(data: Record<string, unknown>) {
   } else if (data.type === 'log_complete') {
     stoppedSessions.delete(currentSessionId.value || '')
     completeLogMessage(Number(data.message_id) || 0)
+  } else if (
+    data.type === 'subagent_log_started'
+    || data.type === 'subagent_log_event'
+    || data.type === 'subagent_log_complete'
+  ) {
+    messages.value = handleSubagentLogWsPayload(data, messages.value)
+    syncSessionWorkingState()
+    nextTick(() => scheduleScrollToBottom())
   } else if (data.type === 'stream_event') {
     const event = data.event as Record<string, unknown> | undefined
     if (!event) return
-    // subagent 事件：更新主聊天 tool block 状态 + 转发给 SubagentChatPanel
+    // subagent 事件：更新主聊天 tool block 状态（内嵌渲染在 delegate_to_subagent 工具块内）
     if (typeof event.type === 'string' && event.type.startsWith('subagent_')) {
       const lastIdx = messages.value.length - 1
       const lastAssistant = messages.value[lastIdx]
       if (lastAssistant?.role === 'assistant') {
-        applyStreamEvent(lastAssistant, { type: event.type as any, data: event.data || {} })
+        pushStreamEvent(lastAssistant, { type: event.type as any, data: event.data || {} })
         messages.value[lastIdx] = { ...lastAssistant }
       }
-      window.dispatchEvent(new CustomEvent('aries:subagent-stream', {
-        detail: { eventType: event.type, data: event.data || {} },
-      }))
       syncSessionWorkingState()
       return
     }
@@ -1190,15 +1202,34 @@ function stopChatWs(clearRouting = true) {
 
 /** 周期性健康检查：确保 working session 的 WebSocket 保持连接 */
 function healthCheckWorkingSessions() {
+  const sid = currentSessionId.value
+  const localActive = sid ? sessionHasActiveWork(messages.value, isSending.value) : false
+
+  // working 标记残留但本地无活动 → 向后端确认并清理
+  if (sid && isSessionWorking(sid) && !localActive) {
+    void checkChatStatus(sid).then((running) => {
+      if (running !== true && sid === currentSessionId.value) {
+        markSessionIdle(sid)
+        clearStaleSendingUi()
+      }
+    }).catch(() => {})
+  }
+
   const workingIds = [...workingSessionIds.value]
+  if (sid && localActive && !workingIds.includes(sid)) {
+    syncSessionWorkingState(sid)
+    workingIds.push(sid)
+  }
+
   if (workingIds.length === 0) return
+
   const wsBase = modelStore.getBaseUrl().replace(/^http/, 'ws')
-  for (const sid of workingIds) {
-    if (isSessionWsConnected(sid)) continue
-    // WebSocket 断开：非阻塞重连
-    console.info(`[HealthCheck] ${sid} WS 断开，尝试重连`)
-    setSessionWsHandler(sid, (data) => handleChatWsForSession(sid, data))
-    void ensureSessionWs(sid, wsBase).catch(() => {})
+  for (const wsSid of workingIds) {
+    if (!isSessionWsConnected(wsSid)) {
+      console.info(`[HealthCheck] ${wsSid} WS 断开，尝试重连`)
+      setSessionWsHandler(wsSid, (data) => handleChatWsForSession(wsSid, data))
+      void ensureSessionWs(wsSid, wsBase).catch(() => {})
+    }
   }
 }
 
@@ -1286,6 +1317,22 @@ function clearConfirmCountdownTimer() {
   }
 }
 
+const streamEventDeps: ApplyStreamEventDeps = {
+  autoConfirmedToolIds,
+  onClearConfirmCountdown: clearConfirmCountdownTimer,
+  upsertSubagent,
+  upsertSubagentInList,
+  findSubagentByTaskId,
+}
+
+function pushStreamEvent(
+  msg: ChatMessage,
+  evt: Parameters<typeof applyStreamEvent>[1],
+  opts?: { silent?: boolean; subagents?: SubagentRecord[] },
+) {
+  applyStreamEvent(msg, evt, { ...opts, deps: streamEventDeps })
+}
+
 const textColor = computed(() => '#1a1a1a')
 const fontSize = computed(() => 15)
 
@@ -1316,6 +1363,8 @@ function onNewChat(e?: Event) {
     stopChatWs(false)
   }
   currentSessionId.value = undefined
+  currentSessionTitle.value = ''
+  bottomConsoleOpen.value = false
   isSending.value = false
   messages.value = []
   sessionSubagents.value = []
@@ -1462,6 +1511,7 @@ async function applySessionWorkDir(sessionId: string, seq: number): Promise<void
 
 async function finishSessionSwitch(id: string, seq: number): Promise<void> {
   if (isStaleSessionLoad(seq)) return
+  void refreshCurrentSessionTitle(id)
   // 非阻塞建立 WebSocket：连接失败不卡 UI，健康检查会在后台重试
   void ensureChatWsReady()
   if (isStaleSessionLoad(seq)) return
@@ -1501,27 +1551,6 @@ async function loadSessionSnapshotsParallel(
   }
 }
 
-function mapRawMessagesToChat(rawMessages: Array<Record<string, unknown>>): ChatMessage[] {
-  return rawMessages.map((m) => {
-    const base: ChatMessage = {
-      role: m.role as 'user' | 'assistant',
-      content: (m.content as string) || '',
-      mode: (m.mode as string) || 'agent',
-      reasoning: [],
-      tools: [],
-      blocks: [],
-      isLoading: false,
-      messageSnapshotJson: (m.message_snapshot_json as string) || undefined,
-      messageId: m.id as number | undefined,
-    }
-    if (m.role === 'user') {
-      Object.assign(base, enrichUserMessage((m.content as string) || ''))
-      base.images = parseStoredImagePaths(m.image_path as string | undefined)
-    }
-    return base
-  })
-}
-
 function applyBootstrapSnapshots(
   rawMessages: Array<{ id?: number; reasoning_content?: string }>,
   snapshots: Record<string, { events?: unknown[] }>,
@@ -1551,6 +1580,7 @@ async function fetchSessionFromBackend(id: string, seq: number): Promise<boolean
       workspaceStore.setWorkDir(wd)
       loadWorkDirHistory()
     }
+    currentSessionTitle.value = bootstrap.session?.title?.trim() || ''
 
     const rawMessages = bootstrap.messages || []
     messages.value = mapRawMessagesToChat(rawMessages)
@@ -1577,6 +1607,7 @@ async function fetchSessionFromBackend(id: string, seq: number): Promise<boolean
           workspaceStore.setWorkDir(wd)
           loadWorkDirHistory()
         }
+        currentSessionTitle.value = metaSettled.value?.title?.trim() || ''
       }
 
       if (dataSettled.status !== 'fulfilled') throw dataSettled.reason
@@ -1618,6 +1649,8 @@ async function loadSessionById(id: string) {
   const cached = loadSessionSnapshot(id)
   if (cached?.messages?.length) {
     restoreSessionSnapshot(cached)
+    // 快照里的 isSending/isLoading 可能过期；若后端仍在跑，tryResumeSession 会恢复
+    clearStaleSendingUi()
     await nextTick()
     if (isStaleSessionLoad(seq)) return
     scheduleScrollToBottom(true)
@@ -1649,7 +1682,12 @@ async function tryResumeSession(sessionId: string) {
   // 仅做最终状态检查：若后台任务仍在运行，确保 placeholder 是 loading 状态
   try {
     const running = await checkChatStatus(sessionId)
-    if (!running) return
+    if (running !== true) {
+      if (sessionId === currentSessionId.value) {
+        clearStaleSendingUi()
+      }
+      return
+    }
     // 找最后一条 assistant 消息
     let assistantIdx = -1
     for (let i = messages.value.length - 1; i >= 0; i--) {
@@ -1725,200 +1763,22 @@ function applyMessageSnapshotEvents(
 ): void {
   const prev = messages.value[msgIndex]
   if (!prev || prev.role !== 'assistant') return
-
-  if (!rawEvents || rawEvents.length === 0) {
-    applyReasoningContentFallback(messageId, msgIndex, raw?.reasoning_content)
-    return
-  }
-
-  const parsed = parseSnapshotEventObjects(rawEvents)
-
-  const blocks: MessageBlock[] = []
-  let snapshotMeta: MessageMeta | undefined
-
-  for (const event of parsed) {
-    switch (event.type) {
-      case 'reasoning':
-        if (
-          blocks.length > 0 &&
-          blocks[blocks.length - 1].type === 'text' &&
-          blocks[blocks.length - 1].phase === 'work'
-        ) {
-          blocks[blocks.length - 1].text = (blocks[blocks.length - 1].text || '') + event.content
-        } else {
-          blocks.push({ type: 'text', text: event.content, phase: 'work' })
-        }
-        break
-
-      case 'tool_call':
-        blocks.push({
-          type: 'tool',
-          tool_name: event.toolName || 'unknown',
-          tool_call_id: event.toolCallId || '',
-          status: event.status || 'running',
-          args: event.args,
-          result: '',
-          error: '',
-          started_at: event.timestamp || '',
-          ended_at: ''
-        })
-        break
-
-      case 'sub_agent': {
-        const tcId = event.toolCallId || ''
-        let existing: MessageBlock | undefined
-        if (tcId) {
-          for (let i = blocks.length - 1; i >= 0; i--) {
-            const b = blocks[i]
-            if (b.type === 'tool' && b.tool_call_id === tcId) {
-              existing = b
-              break
-            }
-          }
-        }
-        const subagentField = {
-          task_id: tcId,
-          subagent: event.subagent,
-          task: event.task,
-          status: event.status,
-          log_path: event.logPath,
-          elapsed_ms: event.durationMs,
-          final_message: event.finalOutput,
-        }
-        if (existing) {
-          existing.tool_name = 'delegate_to_subagent'
-          existing.status = event.status === 'success' ? 'completed' : (event.status || existing.status || 'running')
-          if (event.finalOutput) existing.result = event.finalOutput
-          if (event.status && event.status !== 'success') {
-            existing.error = event.content || existing.error || ''
-          }
-          existing.ended_at = event.timestamp || existing.ended_at || ''
-          existing.args = {
-            ...(existing.args || {}),
-            subagent_name: event.subagent || existing.args?.subagent_name || '',
-            task: event.task || existing.args?.task || '',
-          }
-          existing.subagent = { ...(existing.subagent || {}), ...subagentField }
-        } else {
-          blocks.push({
-            type: 'tool',
-            tool_name: 'delegate_to_subagent',
-            tool_call_id: tcId,
-            status: event.status === 'success' ? 'completed' : (event.status || 'running'),
-            args: {
-              subagent_name: event.subagent || '',
-              task: event.task || '',
-              description: '',
-            },
-            result: event.finalOutput || '',
-            error: event.status && event.status !== 'success' ? (event.content || '') : '',
-            started_at: event.timestamp || '',
-            ended_at: event.timestamp || '',
-            subagent: subagentField,
-          })
-        }
-        if (tcId) {
-          upsertSubagent({
-            task_id: tcId,
-            subagent: event.subagent,
-            task: event.task,
-            status: event.status,
-            log_path: event.logPath,
-            elapsed_ms: event.durationMs,
-            final_message: event.finalOutput,
-            message_id: messageId,
-          })
-        }
-        break
-      }
-
-      case 'tool_result':
-        for (let i = blocks.length - 1; i >= 0; i--) {
-          const b = blocks[i]
-          if (b.type === 'tool' && (b.tool_name === event.toolName || b.tool_name === event.toolCallId)) {
-            b.status = event.status || 'completed'
-            b.result = event.content
-            b.ended_at = event.timestamp || ''
-            if (event.sessionId) {
-              b.session_id = event.sessionId
-            }
-            break
-          }
-        }
-        break
-
-      case 'assistant_text':
-        if (blocks.length > 0 && blocks[blocks.length - 1].type === 'text' && blocks[blocks.length - 1].phase === 'answer') {
-          blocks[blocks.length - 1].text = (blocks[blocks.length - 1].text || '') + event.content
-        } else {
-          blocks.push({ type: 'text', text: event.content, phase: 'answer' })
-        }
-        break
-
-      case 'error':
-        blocks.push({
-          type: 'text',
-          text: event.content,
-          phase: 'answer',
-          error: event.content,
-        })
-        break
-
-      case 'run_metadata':
-        if (event.meta) {
-          snapshotMeta = normalizeRunMetadata(event.meta)
-        }
-        break
-    }
-  }
-
-  const reasoningJoined = parsed.filter(e => e.type === 'reasoning').map(e => e.content).join('')
-  const reasoningSegments = reasoningJoined ? [reasoningJoined] : []
-  const answerText = parsed.filter(e => e.type === 'assistant_text').map(e => e.content).join('')
-  const errorText = parsed.find(e => e.type === 'error')?.content || ''
-
-  const artifacts = parsed
-    .filter(e => e.type === 'tool_result' && e.fileChange)
-    .map(e => ({
-      file_path: e.fileChange!.file_path || '',
-      operation: e.fileChange!.operation || 'modify',
-      previous_content: e.fileChange!.previous_content || '',
-      new_content: e.fileChange!.new_content || '',
-      tool_name: e.toolName || '',
-      tool_call_id: e.toolCallId || '',
-      reverted: false,
-    }))
-
   if (seq !== undefined && isStaleSessionLoad(seq)) return
 
-  messages.value[msgIndex] = {
-    ...prev,
-    blocks,
-    reasoning: reasoningSegments,
-    tools: parsed
-      .filter(e => e.type === 'tool_call' || e.type === 'tool_result')
-      .reduce((acc: ToolInfo[], e) => {
-        if (e.type === 'tool_call') {
-          acc.push({
-            name: e.toolName || 'unknown',
-            status: e.status || 'running',
-            args: e.args,
-            output: ''
-          })
-        } else if (e.type === 'tool_result') {
-          const t = acc.find(t => t.name === e.toolName)
-          if (t) {
-            t.status = e.status || 'completed'
-            t.output = e.content
-          }
-        }
-        return acc
-      }, []),
-    content: answerText || errorText || prev.content,
-    hasSnapshot: true,
-    meta: snapshotMeta || prev.meta,
-    artifacts,
-  }
+  const next = !rawEvents?.length
+    ? buildReasoningContentFallback(prev, messageId, raw?.reasoning_content)
+    : buildMessageFromSnapshotEvents(prev, messageId, rawEvents, raw, upsertSubagent)
+  if (next) messages.value[msgIndex] = next
+}
+
+function applyReasoningContentFallback(
+  messageId: number,
+  msgIndex: number,
+  reasoningContent?: string | null,
+) {
+  const prev = messages.value[msgIndex]
+  const next = buildReasoningContentFallback(prev, messageId, reasoningContent)
+  if (next) messages.value[msgIndex] = next
 }
 
 async function loadMessageSnapshot(
@@ -1947,18 +1807,13 @@ async function loadMessageSnapshot(
   }
 }
 
-function buildSessionTitle(text: string): string {
-  const raw = text.trim().replace(/\n/g, ' ')
-  if (!raw) return '新对话'
-  return raw.slice(0, 18) + (raw.length > 18 ? '…' : '')
-}
-
 function resolveWorkDirForSend(): string {
   return (pendingWorkDir.value || workDir.value || defaultWorkDir.value || '').trim()
 }
 
 async function ensureSessionTitle(sessionId: string, text: string, workDirPath?: string) {
   const title = buildSessionTitle(text)
+  currentSessionTitle.value = title
   const resolvedWorkDir = (workDirPath || resolveWorkDirForSend()).trim()
   try {
     await updateSessionMeta(sessionId, {
@@ -2005,38 +1860,13 @@ async function refreshAssistantSnapshot(sessionId: string, assistantIdx: number)
   }
 }
 
-function applyReasoningContentFallback(
-  messageId: number,
-  msgIndex: number,
-  reasoningContent?: string | null
-) {
-  const prev = messages.value[msgIndex]
-  if (!prev || prev.role !== 'assistant') return
-
-  const rc = (reasoningContent || '').trim()
-  if (!rc) return
-
-  const segments = rc.split('\n').filter((line) => line.trim())
-  if (segments.length === 0) return
-
-  const blocks: MessageBlock[] = segments.map((text) => ({
-    type: 'text',
-    text,
-    phase: 'work',
-  }))
-
-  console.log(`[snapshot] 消息 ${messageId} 使用 reasoning_content 回退，${segments.length} 段`)
-
-  messages.value[msgIndex] = {
-    ...prev,
-    blocks,
-    reasoning: segments,
-    content: prev.content,
-  }
+function onHeaderMenuEsc(e: KeyboardEvent) {
+  if (e.key === 'Escape') closeHeaderMenu()
 }
 
 function onFocusConsole() {
-  rightPanelVisible.value = true
+  openBottomConsole()
+  window.dispatchEvent(new CustomEvent('aries:focus-console'))
 }
 
 // AI 回复中点击链接：把右侧面板展开（具体切到浏览器 tab 由 RightPanel 处理）
@@ -2065,29 +1895,17 @@ onMounted(() => {
   window.addEventListener('aries:add-to-chat', onAddToChat)
   window.addEventListener('aries:select-work-dir', onSelectWorkDir)
   window.addEventListener('aries:emergency-stop', onEmergencyStopEvent)
+  window.addEventListener('aries:refresh-sessions', onRefreshSessions)
+  window.addEventListener('click', closeHeaderMenu)
+  window.addEventListener('keydown', onHeaderMenuEsc)
   window.addEventListener('keydown', onGlobalEscKey, true)
-  // WebSocket 重连后：检查后端状态，恢复 working 状态并拉取漏掉的消息
-  setOnReconnect(async (sid) => {
-    try {
-      const running = await checkChatStatus(sid)
-      if (running) {
-        // 后端仍在运行：恢复 working 状态（不设置 isSending，避免 loadNewMessages 被短路）
-        markSessionWorking(sid)
-        if (sid === currentSessionId.value) {
-          void loadNewMessages(true).catch(() => {})
-        }
-      } else {
-        // 后端已结束：清除 working 状态
-        markSessionIdle(sid)
-        if (sid === currentSessionId.value) {
-          isSending.value = false
-          void loadNewMessages(true).catch(() => {})
-        }
+  // WebSocket 重连后：检查后端状态，恢复 working / loading UI（避免长时子 agent 导致误清）
+  setOnReconnect((sid) => {
+    void restoreSessionAfterWsReconnect(sid).catch(() => {
+      if (sid === currentSessionId.value) {
+        syncSessionWorkingState(sid)
       }
-    } catch {
-      // 检查失败：保守恢复 working 状态
-      markSessionWorking(sid)
-    }
+    })
   })
   loadWorkDir()
   // 确保模型列表已加载（避免 MainLayout 加载未完成导致下拉框为空）
@@ -2151,432 +1969,14 @@ onUnmounted(() => {
   window.removeEventListener('aries:add-to-chat', onAddToChat)
   window.removeEventListener('aries:select-work-dir', onSelectWorkDir)
   window.removeEventListener('aries:emergency-stop', onEmergencyStopEvent)
+  window.removeEventListener('aries:refresh-sessions', onRefreshSessions)
+  window.removeEventListener('click', closeHeaderMenu)
+  window.removeEventListener('keydown', onHeaderMenuEsc)
   window.removeEventListener('keydown', onGlobalEscKey, true)
 })
 
 function onSelectWorkDir() {
   void pickWorkDir()
-}
-
-// ---------- 宠物窗口状态推送 ----------
-let petStatusPhase = ''
-let petReasoningBuf = '' // 累积思考内容
-let petContentBuf = ''   // 累积回复内容
-
-function sendPetStatus(text: string) {
-  try {
-    window.electronAPI?.sendPetStatus(text)
-  } catch { /* 非 Electron 环境忽略 */ }
-}
-
-function clearPetStatus() {
-  petStatusPhase = ''
-  petReasoningBuf = ''
-  petContentBuf = ''
-  try {
-    window.electronAPI?.clearPetStatus()
-    window.electronAPI?.setPetState?.('idle')
-  } catch { /* 非 Electron 环境忽略 */ }
-}
-
-/** 阶段切换时，把上一阶段的文字内容推送到宠物窗口 */
-function flushPetStatus(oldPhase: string) {
-  if (oldPhase === 'reasoning' && petReasoningBuf.trim()) {
-    const text = petReasoningBuf.trim()
-    sendPetStatus(text.length > 200 ? text.slice(0, 200) + '…' : text)
-    petReasoningBuf = ''
-  } else if (oldPhase === 'content' && petContentBuf.trim()) {
-    const text = petContentBuf.trim()
-    sendPetStatus(text.length > 200 ? text.slice(0, 200) + '…' : text)
-    petContentBuf = ''
-  }
-}
-
-function applyStreamEvent(
-  assistantMsg: ChatMessage,
-  evt: StreamEvent,
-  opts?: { silent?: boolean; subagents?: SubagentRecord[] },
-) {
-  const silent = opts?.silent ?? false
-  if (evt.type === 'content' && evt.data) {
-    if (!silent) {
-      if (petStatusPhase !== 'content') {
-        flushPetStatus(petStatusPhase)
-        petStatusPhase = 'content'
-        window.electronAPI?.setPetState?.('waving')
-      }
-      petContentBuf += evt.data
-    }
-    assistantMsg.content += evt.data
-    const blocks = (assistantMsg.blocks || []).slice()
-    const lastBlock = blocks[blocks.length - 1]
-    if (lastBlock && lastBlock.type === 'text' && lastBlock.phase === 'answer') {
-      lastBlock.text = (lastBlock.text || '') + evt.data
-    } else {
-      blocks.push({ type: 'text', text: evt.data, phase: 'answer' })
-    }
-    assistantMsg.blocks = blocks
-  } else if (evt.type === 'reasoning') {
-    if (!silent) {
-      if (petStatusPhase !== 'reasoning') {
-        flushPetStatus(petStatusPhase)
-        petStatusPhase = 'reasoning'
-        window.electronAPI?.setPetState?.('waiting')
-      }
-      petReasoningBuf += evt.data
-    }
-    if (!assistantMsg.reasoning) assistantMsg.reasoning = []
-    const blocks = (assistantMsg.blocks || []).slice()
-
-    if (assistantMsg.reasoning.length === 0) {
-      assistantMsg.reasoning.push(evt.data)
-    } else {
-      assistantMsg.reasoning[assistantMsg.reasoning.length - 1] += evt.data
-    }
-    const lastBlock = blocks[blocks.length - 1]
-    if (lastBlock && lastBlock.type === 'text' && lastBlock.phase === 'work') {
-      lastBlock.text = (lastBlock.text || '') + evt.data
-    } else {
-      blocks.push({ type: 'text', text: evt.data, phase: 'work' })
-    }
-    assistantMsg.blocks = blocks
-  } else if (evt.type === 'tool_call') {
-    if (!assistantMsg.tools) assistantMsg.tools = []
-    if (!assistantMsg.blocks) assistantMsg.blocks = []
-    if (!silent) {
-      flushPetStatus(petStatusPhase)
-      petStatusPhase = 'tool'
-      window.electronAPI?.setPetState?.('review')
-    }
-    const toolCallId = String(evt.data.tool_call_id || '').trim()
-    // 查找已有的同 tool_call_id 的 tool block（避免危险命令确认重发时重复创建）
-    let existingBlockIdx = -1
-    if (toolCallId) {
-      existingBlockIdx = assistantMsg.blocks.findIndex(
-        (b) => b.type === 'tool' && b.tool_call_id === toolCallId
-      )
-    }
-    if (existingBlockIdx >= 0) {
-      // 更新已有 block 状态为 running
-      const blocks = assistantMsg.blocks.slice()
-      blocks[existingBlockIdx] = {
-        ...blocks[existingBlockIdx],
-        status: 'running',
-        args: evt.data.args || blocks[existingBlockIdx].args,
-        pending_confirmation: false,
-      }
-      assistantMsg.blocks = blocks
-      // 同步更新 tools
-      const lastTool = assistantMsg.tools[assistantMsg.tools.length - 1]
-      if (lastTool && lastTool.name === evt.data.tool_name) {
-        lastTool.status = 'running'
-      }
-    } else {
-      const toolBlock: MessageBlock = {
-        type: 'tool',
-        tool_name: evt.data.tool_name,
-        tool_call_id: evt.data.tool_call_id,
-        session_id: evt.data.session_id || '',
-        status: 'running',
-        args: evt.data.args,
-        result: '',
-        error: '',
-        started_at: '',
-        ended_at: ''
-      }
-      assistantMsg.tools.push({
-        name: evt.data.tool_name,
-        status: 'running',
-        args: evt.data.args,
-        output: ''
-      })
-      assistantMsg.blocks = [...assistantMsg.blocks, toolBlock]
-    }
-  } else if (evt.type === 'tool_result') {
-    if (!assistantMsg.tools) assistantMsg.tools = []
-    const _toolName = evt.data.tool_name || 'tool'
-    const _ok = evt.data.status !== 'error'
-    const _output = (evt.data.output || '').trim()
-    if (!silent) {
-      let _msg = `${_ok ? '✅' : '❌'} ${_toolName}`
-      if (_output) {
-        _msg += ': ' + (_output.length > 150 ? _output.slice(0, 150) + '…' : _output)
-      }
-      sendPetStatus(_msg)
-    }
-    // 收集 file_change 到 artifacts
-    if (evt.data.file_change) {
-      if (!assistantMsg.artifacts) assistantMsg.artifacts = []
-      assistantMsg.artifacts.push({
-        file_path: evt.data.file_change.file_path || '',
-        operation: evt.data.file_change.operation || 'modify',
-        previous_content: evt.data.file_change.previous_content || '',
-        new_content: evt.data.file_change.new_content || '',
-        tool_name: _toolName,
-        tool_call_id: String(evt.data.tool_call_id || ''),
-      })
-    }
-    const lastTool = assistantMsg.tools[assistantMsg.tools.length - 1]
-    if (lastTool && lastTool.name === evt.data.tool_name) {
-      lastTool.status = evt.data.status || 'completed'
-      lastTool.output = evt.data.output || ''
-    }
-    if (assistantMsg.blocks && assistantMsg.blocks.length > 0) {
-      const blocks = assistantMsg.blocks.slice()
-      const toolCallId = String(evt.data.tool_call_id || '').trim()
-      let targetIdx = -1
-      if (toolCallId) {
-        targetIdx = blocks.findIndex(
-          (b) => b.type === 'tool' && b.tool_call_id === toolCallId
-        )
-      }
-      if (targetIdx < 0) {
-        for (let i = blocks.length - 1; i >= 0; i -= 1) {
-          const b = blocks[i]
-          if (b.type === 'tool' && (!evt.data.tool_name || b.tool_name === evt.data.tool_name)) {
-            targetIdx = i
-            break
-          }
-        }
-      }
-      if (targetIdx >= 0) {
-        const block = blocks[targetIdx]
-        if (block.type === 'tool') {
-          const newStatus = evt.data.status || 'completed'
-          const isPendingConfirm = newStatus === 'pending_confirmation'
-          // 已自动确认的 tool，跳过 pending_confirmation 状态，保持 running
-          const isAutoConfirmed = block.tool_call_id && autoConfirmedToolIds.has(block.tool_call_id)
-          blocks[targetIdx] = {
-            ...block,
-            status: isAutoConfirmed && isPendingConfirm ? 'running' : newStatus,
-            result: evt.data.output || '',
-            ended_at: '',
-            pending_confirmation: isAutoConfirmed ? false : (isPendingConfirm ? block.pending_confirmation : false),
-            session_id: evt.data.session_id || (block as MessageBlock).session_id || '',
-            auto_detached: Boolean(evt.data.auto_detached || (block as MessageBlock).auto_detached),
-          }
-        }
-      }
-      assistantMsg.blocks = blocks
-    }
-    if (evt.data.status && evt.data.status !== 'pending_confirmation') {
-      clearConfirmCountdownTimer()
-    }
-  } else if (evt.type === 'confirmation_required') {
-    if (!assistantMsg.tools) assistantMsg.tools = []
-    const lastTool = assistantMsg.tools[assistantMsg.tools.length - 1]
-    if (lastTool && lastTool.name === evt.data.tool_name) {
-      lastTool.status = 'pending_confirmation'
-      lastTool.output = '等待确认…'
-    }
-    if (assistantMsg.blocks && assistantMsg.blocks.length > 0) {
-      const blocks = assistantMsg.blocks.slice()
-      const lastToolBlock = blocks[blocks.length - 1]
-      if (lastToolBlock && lastToolBlock.type === 'tool') {
-        lastToolBlock.status = 'pending_confirmation'
-        lastToolBlock.pending_confirmation = true
-        lastToolBlock.danger_info = evt.data.danger_info || ''
-        lastToolBlock.danger_types = evt.data.danger_types || []
-        lastToolBlock.tool_call_id = evt.data.tool_call_id
-        if (evt.data.command && lastToolBlock.args) {
-          lastToolBlock.args = { ...lastToolBlock.args, command: evt.data.command }
-        }
-      }
-      assistantMsg.blocks = blocks
-    }
-  } else if (evt.type === 'subagent_event') {
-    if (!silent) {
-      window.dispatchEvent(new CustomEvent('aries:subagent-stream', { detail: { eventType: evt.type, data: evt.data || {} } }))
-    }
-    // 子 Agent 实时进度：合并到匹配的 delegate_to_subagent 工具块上
-    if (!assistantMsg.blocks) assistantMsg.blocks = []
-    const subData = evt.data || {}
-    const subName = String(subData.subagent || '')
-    const taskId = String(subData.task_id || '')
-    // 找到最后一个还在 running 状态的 delegate_to_subagent 块（按 subagent 名匹配）
-    const blocks = assistantMsg.blocks
-    let target: MessageBlock | undefined
-    for (let i = blocks.length - 1; i >= 0; i--) {
-      const b = blocks[i]
-      if (b.type !== 'tool' || b.tool_name !== 'delegate_to_subagent') continue
-      // 优先用 task_id 精确匹配
-      if (taskId && b.subagent?.task_id === taskId) { target = b; break }
-      // fallback：subagent 名匹配且尚未绑定 task_id
-      if (!taskId && (!subName || !b.args || !b.args.subagent_name || b.args.subagent_name === subName)) {
-        target = b
-        break
-      }
-    }
-    if (target) {
-      target.subagent = {
-        task_id: taskId || target.subagent?.task_id,
-        subagent: subData.subagent,
-        task: subData.task,
-        status: subData.status,
-        round: subData.round,
-        last_event: subData.last_event,
-        elapsed_ms: subData.elapsed_ms,
-        log_path: subData.log_path,
-        inner_blocks: target.subagent?.inner_blocks,
-        final_message: target.subagent?.final_message,
-      }
-    }
-    // 同步到 sessionSubagents
-    if (taskId) {
-      const record: SubagentRecord = {
-        task_id: taskId,
-        subagent: subData.subagent,
-        task: subData.task,
-        status: subData.status,
-        round: subData.round,
-        last_event: subData.last_event,
-        elapsed_ms: subData.elapsed_ms,
-        log_path: subData.log_path,
-      }
-      if (opts?.subagents) {
-        upsertSubagentInList(opts.subagents, record)
-      } else {
-        upsertSubagent(record)
-      }
-    }
-  } else if (
-    evt.type === 'subagent_reasoning' ||
-    evt.type === 'subagent_content' ||
-    evt.type === 'subagent_tool_call' ||
-    evt.type === 'subagent_tool_result'
-  ) {
-    if (!silent) {
-      window.dispatchEvent(new CustomEvent('aries:subagent-stream', { detail: { eventType: evt.type, data: evt.data || {} } }))
-    }
-    // 子 Agent 的细粒度流式事件：追加到匹配 tool block 的 subagent.inner_blocks
-    if (!assistantMsg.blocks) assistantMsg.blocks = []
-    const d = evt.data || {}
-    const taskId = String(d.task_id || '')
-    const blocks = assistantMsg.blocks
-    let target: MessageBlock | undefined
-    for (let i = blocks.length - 1; i >= 0; i--) {
-      const b = blocks[i]
-      if (b.type !== 'tool' || b.tool_name !== 'delegate_to_subagent') continue
-      // 用 task_id 精确匹配（更稳），fallback 到 subagent 名
-      const sa = b.subagent
-      if (!sa) continue
-      if (taskId && sa.task_id === taskId) { target = b; break }
-      if (!taskId && d.subagent && b.args?.subagent_name === d.subagent) { target = b; break }
-    }
-    if (!target) return
-    if (!target.subagent) target.subagent = {}
-    if (!target.subagent.inner_blocks) target.subagent.inner_blocks = []
-    const inner: MessageBlock[] = target.subagent.inner_blocks
-
-    // 同时同步到 sessionSubagents
-    let sessRecord = taskId ? findSubagentByTaskId(taskId) : undefined
-    if (taskId && !sessRecord) {
-      // 第一次细粒度事件先于 subagent_event 到达的兜底
-      upsertSubagent({
-        task_id: taskId,
-        subagent: d.subagent,
-        status: 'running',
-      })
-      sessRecord = findSubagentByTaskId(taskId)
-    }
-    if (sessRecord) {
-      if (!sessRecord.inner_blocks) sessRecord.inner_blocks = []
-    }
-
-    if (evt.type === 'subagent_reasoning') {
-      const delta = String(d.delta || '')
-      if (!delta) return
-      const last = inner[inner.length - 1]
-      if (last && last.type === 'text' && last.phase === 'work') {
-        last.text = (last.text || '') + delta
-      } else {
-        inner.push({ type: 'text', text: delta, phase: 'work' })
-      }
-      if (sessRecord) {
-        const sLast = sessRecord.inner_blocks![sessRecord.inner_blocks!.length - 1]
-        if (sLast && sLast.type === 'text' && sLast.phase === 'work') {
-          sLast.text = (sLast.text || '') + delta
-        } else {
-          sessRecord.inner_blocks!.push({ type: 'text', text: delta, phase: 'work' })
-        }
-      }
-    } else if (evt.type === 'subagent_content') {
-      const delta = String(d.delta || '')
-      if (!delta) return
-      const last = inner[inner.length - 1]
-      if (last && last.type === 'text' && last.phase === 'answer') {
-        last.text = (last.text || '') + delta
-      } else {
-        inner.push({ type: 'text', text: delta, phase: 'answer' })
-      }
-      if (sessRecord) {
-        const sLast = sessRecord.inner_blocks![sessRecord.inner_blocks!.length - 1]
-        if (sLast && sLast.type === 'text' && sLast.phase === 'answer') {
-          sLast.text = (sLast.text || '') + delta
-        } else {
-          sessRecord.inner_blocks!.push({ type: 'text', text: delta, phase: 'answer' })
-        }
-      }
-    } else if (evt.type === 'subagent_tool_call') {
-      const newBlock: MessageBlock = {
-        type: 'tool',
-        tool_name: d.tool_name || 'unknown',
-        tool_call_id: d.tool_call_id || '',
-        status: d.status || 'running',
-        args: d.args,
-        result: '',
-        error: '',
-        started_at: '',
-        ended_at: '',
-      }
-      inner.push(newBlock)
-      if (sessRecord) {
-        sessRecord.inner_blocks!.push({ ...newBlock })
-      }
-    } else if (evt.type === 'subagent_tool_result') {
-      const tcId = String(d.tool_call_id || '')
-      for (let i = inner.length - 1; i >= 0; i--) {
-        const b = inner[i]
-        if (b.type === 'tool' && b.tool_call_id === tcId) {
-          b.status = d.status || 'completed'
-          b.result = typeof d.output === 'string' ? d.output : JSON.stringify(d.output || '')
-          b.error = d.error || ''
-          b.ended_at = ''
-          break
-        }
-      }
-      if (sessRecord) {
-        for (let i = sessRecord.inner_blocks!.length - 1; i >= 0; i--) {
-          const b = sessRecord.inner_blocks![i]
-          if (b.type === 'tool' && b.tool_call_id === tcId) {
-            b.status = d.status || 'completed'
-            b.result = typeof d.output === 'string' ? d.output : JSON.stringify(d.output || '')
-            b.error = d.error || ''
-            break
-          }
-        }
-      }
-      // 如果是 report_to_main 的结果，把 message 存为 final_message
-      if (d.tool_name === 'report_to_main' && d.status === 'completed') {
-        const finalMsg = typeof d.output === 'string' ? d.output : ''
-        target.subagent.final_message = finalMsg
-        if (sessRecord) sessRecord.final_message = finalMsg
-      }
-    }
-  } else if (evt.type === 'error') {
-    // 处理错误事件（如 API 错误、黑名单拦截等）
-    assistantMsg.isLoading = false
-    const errorMsg = typeof evt.data === 'string' ? evt.data : JSON.stringify(evt.data)
-    assistantMsg.content = errorMsg
-    if (!assistantMsg.blocks) assistantMsg.blocks = []
-    // 添加错误块，用 error 属性标记
-    assistantMsg.blocks.push({
-      type: 'text',
-      text: errorMsg,
-      phase: 'answer',
-      error: errorMsg,
-    })
-  }
 }
 
 function isStaleConfirmationError(e: unknown): boolean {
@@ -2917,35 +2317,112 @@ function scheduleScrollToBottom(force = false) {
   background: var(--bg-content);
 }
 
-.right-panel-toggle {
-  position: absolute;
-  top: 8px;
-  right: 48px;
-  z-index: 100;
+.chat-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  align-self: stretch;
+  width: calc(100% + 48px);
+  max-width: none;
+  margin-left: -24px;
+  margin-right: -24px;
+  height: 44px;
+  padding: 0 24px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+.chat-header-start {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.chat-header-doc-icon {
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.chat-header-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.chat-header-more-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.chat-header-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.chat-header-icon-btn:hover,
+.chat-header-icon-btn.active {
+  background: var(--accent-hover);
+  color: var(--text);
+}
+
+.chat-header-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 120px;
+  padding: 4px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-panel);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+  z-index: 30;
 }
 
-.right-panel-toggle:hover {
-  background: var(--accent-hover);
+.chat-header-menu-item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
   color: var(--text);
-  border-color: var(--border-strong);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
 }
 
-.chat-todo-button {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 100;
+.chat-header-menu-item:hover {
+  background: var(--accent-hover);
 }
 
 .chat-content {
@@ -2981,13 +2458,66 @@ function scheduleScrollToBottom(force = false) {
 }
 
 /* —— 对话：进行中 —— */
+.chat-composer-area {
+  width: 100%;
+  max-width: 900px;
+  flex-shrink: 0;
+}
+
+.bottom-console-dock {
+  align-self: stretch;
+  flex-shrink: 0;
+  margin-top: auto;
+  margin-left: -24px;
+  margin-right: -24px;
+  width: calc(100% + 48px);
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.bottom-console-panel {
+  position: relative;
+  min-height: 120px;
+  background: #fff;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.bottom-console-resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: row-resize;
+  z-index: 6;
+  touch-action: none;
+}
+
+.bottom-console-resize-handle::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 2px;
+  height: 2px;
+  background: transparent;
+  transition: background 0.12s;
+}
+
+.bottom-console-resize-handle:hover::after {
+  background: rgba(59, 130, 246, 0.45);
+}
+
 .chat-active {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   min-height: 0;
-  padding: 20px 24px 16px;
+  padding: 8px 24px 0;
 }
 
 .chat-messages {

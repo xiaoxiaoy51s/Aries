@@ -189,16 +189,50 @@
         </div>
       </div>
       <div class="composer-right">
-        <select
-          :value="selectedModel"
-          class="model-select"
-          @change="onModelSelectChange"
-        >
-          <option v-if="modelList.length === 0" value="" disabled>暂无模型</option>
-          <option v-for="model in modelList" :key="model.id" :value="model.id">
-            {{ model.name }}
-          </option>
-        </select>
+        <div class="approval-picker model-picker">
+          <button
+            type="button"
+            class="approval-trigger"
+            :title="currentModelOption?.name || '选择模型'"
+            @click="modelMenuOpen = !modelMenuOpen; if (modelMenuOpen) approvalMenuOpen = false"
+          >
+            <span class="approval-trigger-label">{{ currentModelOption?.name || '选择模型' }}</span>
+            <svg class="approval-trigger-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="m6 9 6 6 6-6"/>
+            </svg>
+          </button>
+          <div
+            v-if="modelMenuOpen"
+            class="approval-menu"
+            @mousedown.prevent
+          >
+            <div class="approval-menu-list">
+              <div v-if="modelList.length === 0" class="model-menu-empty">暂无模型</div>
+              <button
+                v-for="m in modelList"
+                :key="m.id"
+                type="button"
+                class="approval-menu-item model-menu-item"
+                :class="{ 'approval-menu-item--active': m.id === selectedModel }"
+                @click="onSelectModel(m.id)"
+              >
+                <span class="model-menu-label">{{ m.name }}</span>
+                <svg
+                  v-if="m.id === selectedModel"
+                  class="approval-menu-check"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                >
+                  <path d="M20 6 9 17l-5-5"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
         <button
           v-if="!isSending"
           type="button"
@@ -540,9 +574,9 @@ const emit = defineEmits<{
 const modelStore = useModelStore()
 
 /** 与设置页 ModelsTab 一致：按 model.id 激活并持久化到后端 config */
-async function onModelSelectChange(event: Event) {
-  const id = (event.target as HTMLSelectElement).value
+async function onSelectModel(id: string) {
   if (!id) return
+  modelMenuOpen.value = false
   emit('update:selectedModel', id)
   if (modelStore.activeModel?.id === id) return
   try {
@@ -551,6 +585,11 @@ async function onModelSelectChange(event: Event) {
     console.error('切换模型失败', e)
   }
 }
+
+const modelMenuOpen = ref(false)
+const currentModelOption = computed(
+  () => props.modelList.find((m) => m.id === props.selectedModel) || props.modelList[0] || null
+)
 
 const composerRef = ref<InstanceType<typeof SlashComposerInput>>()
 const workDirMenuOpen = ref(false)
@@ -1267,6 +1306,10 @@ function closeMenus(e: MouseEvent) {
   if (!target.closest('.review-panel')) {
     reviewPanelOpen.value = false
   }
+  if (!target.closest('.approval-picker')) {
+    approvalMenuOpen.value = false
+    modelMenuOpen.value = false
+  }
 }
 
 function onGlobalKeydown(e: KeyboardEvent) {
@@ -1280,6 +1323,8 @@ function onGlobalKeydown(e: KeyboardEvent) {
     if (mcpPanelOpen.value) mcpPanelOpen.value = false
     if (skillsPanelOpen.value) skillsPanelOpen.value = false
     if (reviewPanelOpen.value) reviewPanelOpen.value = false
+    if (approvalMenuOpen.value) approvalMenuOpen.value = false
+    if (modelMenuOpen.value) modelMenuOpen.value = false
   }
 }
 
@@ -1640,22 +1685,59 @@ defineExpose({
 }
 
 
-.model-select {
-  appearance: none;
-  border: none;
-  border-radius: 7px;
-  padding: 4px 24px 4px 10px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239a9a94' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 6px center;
-  cursor: pointer;
-  max-width: 200px;
-  transition: background 0.15s, color 0.15s;
+.model-picker {
+  position: relative;
 }
 
-.model-select:hover {
-  background-color: rgba(0, 0, 0, 0.04);
+.model-menu-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 10px 12px;
+  text-align: center;
+}
+
+/* 触发器：与 approval-trigger 复用同名类，模型按钮最大宽度与下拉一致 */
+.model-picker .approval-trigger {
+  max-width: 220px;
+}
+
+.model-picker .approval-trigger-label {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-picker .approval-menu {
+  left: auto;
+  right: 0;
+  width: max-content;
+  max-width: min(220px, calc(100vw - 24px));
+  min-width: 0;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.model-picker .model-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+}
+
+.model-picker .model-menu-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text);
+  line-height: 1.3;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.model-picker .approval-menu-check {
+  flex-shrink: 0;
 }
 
 .send-btn {

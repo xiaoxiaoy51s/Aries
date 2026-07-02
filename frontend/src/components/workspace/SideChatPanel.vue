@@ -48,6 +48,7 @@
       :model-list="modelList"
       :can-send="canSend"
       :show-work-dir="false"
+      :work-dir="workDir"
       :rows="2"
       is-bottom
       @send="sendMessage"

@@ -44,6 +44,16 @@ export async function deleteWorkDir(workDir: string) {
   return res.json()
 }
 
+export async function deleteWorkDirCascade(workDir: string) {
+  const res = await fetch(`${getBaseUrl()}/work-dirs/cascade`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ work_dir: workDir }),
+  })
+  if (!res.ok) throw new Error('删除工作目录及对话失败')
+  return res.json()
+}
+
 export async function archiveWorkDir(workDir: string, archived = true) {
   const res = await fetch(`${getBaseUrl()}/work-dirs/archive`, {
     method: 'PUT',

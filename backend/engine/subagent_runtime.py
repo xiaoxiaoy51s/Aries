@@ -375,6 +375,8 @@ async def run_subagent(
     cancel_event: asyncio.Event | None = None,
     on_event: EventEmitter | None = None,
     isolation: str = "",
+    session_id: str | None = None,
+    parent_tool_call_id: str | None = None,
 ) -> dict[str, Any]:
     """执行一次子 Agent 任务。
 
@@ -442,6 +444,27 @@ async def run_subagent(
     sub_logger.path = log_path  # 直接覆盖路径到 sub_agent 目录
     sub_logger.set_model(real_model)
     execution.log_path = str(log_path)
+
+    # 与主 Agent 一致：JSONL 每写入一行即 WebSocket 推送给前端
+    if session_id:
+        from services.chat_ws import (
+            notify_subagent_log_started,
+            notify_subagent_log_complete,
+            schedule_subagent_log_event_broadcast,
+        )
+        sub_logger._on_event = schedule_subagent_log_event_broadcast(
+            session_id,
+            task_id,
+            str(log_path),
+            parent_tool_call_id or "",
+        )
+        await notify_subagent_log_started(
+            session_id,
+            task_id,
+            parent_tool_call_id or "",
+            str(log_path),
+            subagent_name,
+        )
 
     # 4. 构造工具集：核心 + skills + 过滤后的 MCP + report_to_main
     #    显式不暴露 delegate_to_subagent，防止递归
@@ -567,6 +590,14 @@ async def run_subagent(
                 logger.warning("清理 worktree 失败: %s", exc)
 
         await _emit(on_event, execution)
+        if session_id:
+            from services.chat_ws import notify_subagent_log_complete
+            await notify_subagent_log_complete(
+                session_id,
+                task_id,
+                str(log_path),
+                parent_tool_call_id or "",
+            )
         # 注销取消事件（任务已结束）
         unregister_cancel_event(task_id)
 

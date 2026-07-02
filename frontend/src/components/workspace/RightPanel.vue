@@ -1,6 +1,5 @@
 <template>
   <aside v-show="visible" class="right-panel" :style="{ width: panelWidth + 'px' }">
-    <!-- 拖动调整宽度的 handle -->
     <div
       class="resize-handle"
       :class="{ resizing }"
@@ -10,22 +9,54 @@
       @pointercancel="stopResize"
     ></div>
 
-    <!-- 拖动期间盖一层透明遮罩，防止 webview / iframe 抢走鼠标事件 -->
     <div v-if="resizing" class="resize-shield"></div>
 
-    <!-- Tab 切换栏 -->
-    <div class="panel-tabs">
-      <button
-        v-for="tab in tabs"
-        :key="tab.id"
-        type="button"
-        class="panel-tab-btn"
-        :class="{ active: activeTab === tab.id }"
-        @click="activeTab = tab.id"
-      >
-        <span class="tab-icon" v-html="tab.icon"></span>
-        <span class="tab-label">{{ tab.label }}</span>
-      </button>
+    <div class="panel-tabbar">
+      <div class="panel-tab-list">
+        <button
+          v-for="tab in tabs"
+          :key="tab.id"
+          type="button"
+          class="panel-tab"
+          :class="{ active: tab.id === activeTabId }"
+          :title="tab.title"
+          @click="activeTabId = tab.id"
+        >
+          <span class="panel-tab-icon" v-html="iconForKind(tab.kind)"></span>
+          <span class="panel-tab-title">{{ tab.title }}</span>
+          <span
+            class="panel-tab-close"
+            title="关闭"
+            @click.stop="closeTab(tab.id)"
+          >×</span>
+        </button>
+      </div>
+
+      <div class="panel-tab-add-wrap">
+        <button
+          type="button"
+          class="panel-tab-add"
+          title="新建标签页"
+          aria-label="新建标签页"
+          :aria-expanded="addMenuOpen"
+          @click.stop="toggleAddMenu"
+        >
+          +
+        </button>
+        <div v-if="addMenuOpen" class="panel-add-menu" @mousedown.prevent>
+          <button
+            v-for="item in launcherItems"
+            :key="item.kind"
+            type="button"
+            class="panel-add-item"
+            @click="addTabFromMenu(item.kind)"
+          >
+            <span class="panel-add-icon" v-html="item.icon"></span>
+            <span class="panel-add-label">{{ item.label }}</span>
+          </button>
+        </div>
+      </div>
+
       <button type="button" class="panel-close-btn" title="关闭面板" @click="closePanel">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M18 6 6 18M6 6l12 12"/>
@@ -33,42 +64,69 @@
       </button>
     </div>
 
-    <!-- 面板内容 -->
     <div class="panel-content">
-      <ConsolePanel v-show="activeTab === 'console'" :visible="activeTab === 'console'" />
-
-      <BrowserPanel
-        v-show="activeTab === 'browser'"
-        :visible="activeTab === 'browser'"
-        :initial-url="browserPendingUrl"
-      />
-
-      <GitPanel v-show="activeTab === 'git'" :visible="activeTab === 'git'" @show-diff="onShowDiff" @show-commit-diff="onShowCommitDiff" />
-
-      <DiffPanel v-show="activeTab === 'diff'" :visible="activeTab === 'diff'" :file-path="diffFilePath" :commit-hash="diffCommitHash" :inline-original="inlineDiff?.original" :inline-modified="inlineDiff?.modified" :inline-path="inlineDiff?.path" :inline-key="inlineDiff?.key" />
-
-      <ExplorerPanel v-show="activeTab === 'explorer'" :visible="activeTab === 'explorer'" />
-
-      <SideChatPanel
-        v-show="activeTab === 'sidechat'"
-        :visible="activeTab === 'sidechat'"
-        :session-id="sessionId"
-        :work-dir="workDir"
-      />
-
-      <SubagentChatPanel
-        v-if="activeTab === 'subagent' && currentSubagentTaskId"
-        :key="currentSubagentTaskId"
-        :task-id="currentSubagentTaskId"
-        :initial="currentSubagentInitial"
-        @close="onCloseSubagent"
-      />
-      <div
-        v-else-if="activeTab === 'subagent' && !currentSubagentTaskId"
-        class="subagent-empty"
-      >
-        <p>暂无智能体在工作</p>
+      <div v-if="tabs.length === 0" class="panel-home">
+        <button
+          v-for="item in launcherItems"
+          :key="item.kind"
+          type="button"
+          class="panel-launcher-item"
+          @click="addTabFromMenu(item.kind)"
+        >
+          <span class="panel-launcher-icon" v-html="item.icon"></span>
+          <span class="panel-launcher-label">{{ item.label }}</span>
+        </button>
       </div>
+
+      <template v-for="tab in tabs" :key="tab.id">
+        <ConsolePanel
+          v-if="tab.kind === 'console'"
+          v-show="tab.id === activeTabId"
+          :visible="tab.id === activeTabId"
+          @close="closeTab(tab.id)"
+        />
+
+        <BrowserPanel
+          v-else-if="tab.kind === 'browser'"
+          v-show="tab.id === activeTabId"
+          :visible="tab.id === activeTabId"
+          :initial-url="tab.browserUrl || ''"
+        />
+
+        <GitPanel
+          v-else-if="tab.kind === 'git'"
+          v-show="tab.id === activeTabId"
+          :visible="tab.id === activeTabId"
+          @show-diff="onShowDiff"
+          @show-commit-diff="onShowCommitDiff"
+        />
+
+        <DiffPanel
+          v-else-if="tab.kind === 'diff'"
+          v-show="tab.id === activeTabId"
+          :visible="tab.id === activeTabId"
+          :file-path="tab.diffFilePath || null"
+          :commit-hash="tab.diffCommitHash || null"
+          :inline-original="tab.inlineOriginal"
+          :inline-modified="tab.inlineModified"
+          :inline-path="tab.inlinePath"
+          :inline-key="tab.inlineKey"
+        />
+
+        <ExplorerPanel
+          v-else-if="tab.kind === 'explorer'"
+          v-show="tab.id === activeTabId"
+          :visible="tab.id === activeTabId"
+        />
+
+        <SideChatPanel
+          v-else-if="tab.kind === 'sidechat'"
+          v-show="tab.id === activeTabId"
+          :visible="tab.id === activeTabId"
+          :session-id="sessionId"
+          :work-dir="workDir"
+        />
+      </template>
     </div>
   </aside>
 </template>
@@ -81,9 +139,21 @@ import GitPanel from '@/components/workspace/GitPanel.vue'
 import DiffPanel from '@/components/workspace/DiffPanel.vue'
 import ExplorerPanel from '@/components/workspace/ExplorerPanel.vue'
 import SideChatPanel from '@/components/workspace/SideChatPanel.vue'
-import SubagentChatPanel from '@/components/workspace/SubagentChatPanel.vue'
 
-type PanelTabId = 'console' | 'browser' | 'git' | 'diff' | 'explorer' | 'sidechat' | 'subagent'
+type PanelKind = 'console' | 'browser' | 'git' | 'explorer' | 'sidechat' | 'diff'
+
+interface WorkspaceTab {
+  id: string
+  kind: PanelKind
+  title: string
+  browserUrl?: string
+  diffFilePath?: string
+  diffCommitHash?: string | null
+  inlineOriginal?: string
+  inlineModified?: string
+  inlinePath?: string
+  inlineKey?: number
+}
 
 const props = defineProps<{
   visible: boolean
@@ -96,56 +166,123 @@ const emit = defineEmits<{
   close: []
 }>()
 
-const tabs: { id: PanelTabId; label: string; icon: string }[] = [
+const launcherItems: { kind: Exclude<PanelKind, 'diff'>; label: string; icon: string }[] = [
   {
-    id: 'console',
+    kind: 'console',
     label: '控制台',
-    icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7 9 3 3-3 3"/><path d="M13 15h4"/><rect x="3" y="3" width="18" height="18" rx="2"/></svg>',
+    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7 9 3 3-3 3"/><path d="M13 15h4"/><rect x="3" y="3" width="18" height="18" rx="2"/></svg>',
   },
   {
-    id: 'browser',
+    kind: 'browser',
     label: '浏览器',
-    icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
+    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
   },
   {
-    id: 'git',
+    kind: 'git',
     label: 'Git',
-    icon: '<svg t="1782021694076" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="17174" width="14" height="14"><path d="M512 64c-16.128 0-31.872 5.888-44 18.016l-90.016 90.976c-4.864 2.624-8.96 6.4-11.968 11.008l-284.032 284a62.304 62.304 0 0 0 0 88l386.016 386.016a62.56 62.56 0 0 0 88 0l386.016-386.016a62.304 62.304 0 0 0 0-88L555.968 81.984A61.536 61.536 0 0 0 512 64z m0 64.992L895.008 512 512 895.008 128.992 512l265.024-264.992 56 56A63.36 63.36 0 0 0 448 320c0 23.616 12.864 43.872 32 55.008v273.984c-19.136 11.136-32 31.36-32 55.008a63.968 63.968 0 1 0 128 0c0-23.616-12.864-43.872-32-55.008v-250.976l98.016 97.984A63.968 63.968 0 0 0 704 576c35.328 0 63.968-28.64 63.968-64a63.968 63.968 0 0 0-80-62.016L573.984 336A63.968 63.968 0 0 0 512 256a63.36 63.36 0 0 0-16.96 2.016l-56-56z" p-id="17175"></path></svg>',
+    icon: '<svg width="16" height="16" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M512 64c-16.128 0-31.872 5.888-44 18.016l-90.016 90.976c-4.864 2.624-8.96 6.4-11.968 11.008l-284.032 284a62.304 62.304 0 0 0 0 88l386.016 386.016a62.56 62.56 0 0 0 88 0l386.016-386.016a62.304 62.304 0 0 0 0-88L555.968 81.984A61.536 61.536 0 0 0 512 64z m0 64.992L895.008 512 512 895.008 128.992 512l265.024-264.992 56 56A63.36 63.36 0 0 0 448 320c0 23.616 12.864 43.872 32 55.008v273.984c-19.136 11.136-32 31.36-32 55.008a63.968 63.968 0 1 0 128 0c0-23.616-12.864-43.872-32-55.008v-250.976l98.016 97.984A63.968 63.968 0 0 0 704 576c35.328 0 63.968-28.64 63.968-64a63.968 63.968 0 0 0-80-62.016L573.984 336A63.968 63.968 0 0 0 512 256a63.36 63.36 0 0 0-16.96 2.016l-56-56z"/></svg>',
   },
-  // {
-  //   id: 'diff',
-  //   label: 'Diff',
-  //   icon: '<svg t="1782021749400" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="18230" data-spm-anchor-id="a313x.search_index.0.i34.37323a814IBpRH" width="14" height="14"><path d="M470.857143 382.971429c0-4.457143-3.542857-8.114286-8-8.114286h-48c-4.342857 0-8 3.657143-8 8.114286V480h-96.571429c-4.685714 0-8.571429 3.542857-8.571428 8v48c0 4.342857 3.885714 8 8.571428 8H406.857143v97.028571c0 4.457143 3.657143 8.114286 8 8.114286h48c4.457143 0 8-3.657143 8-8.114286V544h96.571428c4.685714 0 8.571429-3.657143 8.571429-8v-48c0-4.457143-3.885714-8-8.571429-8H470.857143v-97.028571zM567.428571 731.428571h-257.142857c-4.685714 0-8.571429 3.657143-8.571428 8v48c0 4.342857 3.885714 8 8.571428 8h257.142857c4.685714 0 8.571429-3.657143 8.571429-8v-48c0-4.342857-3.885714-8-8.571429-8z m-8.114285-574.4c-6.857143-6.857143-16.114286-10.742857-25.828572-10.742857H146.285714c-20.228571 0-36.571429 16.342857-36.571428 36.571429v804.571428c0 20.228571 16.342857 36.571429 36.571428 36.571429h585.142857c20.228571 0 36.571429-16.342857 36.571429-36.571429V380.914286c0-9.714286-3.885714-18.971429-10.742857-25.828572L559.314286 157.028571zM685.714286 941.714286H192V228.571429h322.514286L685.714286 399.771429V941.714286z m217.371428-664.457143L625.485714 10.171429c-6.857143-6.514286-15.885714-10.171429-25.371428-10.171429H265.142857c-5.028571 0-9.142857 4.114286-9.142857 9.142857v64c0 5.028571 4.114286 9.142857 9.142857 9.142857h316.571429l250.285714 240.685715V868.571429c0 5.028571 4.114286 9.142857 9.142857 9.142857h64c5.028571 0 9.142857-4.114286 9.142857-9.142857V303.542857c0-9.942857-4-19.428571-11.2-26.285714z" p-id="18231"></path></svg>',
-  // },
   {
-    id: 'explorer',
+    kind: 'explorer',
     label: '文件',
-    icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
+    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
   },
   {
-    id: 'sidechat',
+    kind: 'sidechat',
     label: '临时对话',
-    icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M12 8v4M10 10h4"/></svg>',
   },
-  // {
-  //   id: 'subagent',
-  //   label: '查看智能体',
-  //   icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="9" cy="10" r="1"/><circle cx="15" cy="10" r="1"/><path d="M9 16h6"/></svg>',
-  // },
 ]
 
-const activeTab = ref<PanelTabId>('console')
-const panelWidth = ref(480)
-const diffFilePath = ref<string | null>(null)
-const diffCommitHash = ref<string | null>(null)
-// 由 AssistantMessage 链接点击触发，传给 BrowserPanel 让其加载
-const browserPendingUrl = ref<string>('')
+const kindIcons: Record<PanelKind, string> = {
+  console: launcherItems[0].icon,
+  browser: launcherItems[1].icon,
+  git: launcherItems[2].icon,
+  explorer: launcherItems[3].icon,
+  sidechat: launcherItems[4].icon,
+  diff: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
+}
 
-// 拖动调整宽度（pointer 事件 + setPointerCapture：跨越 webview 也能稳定跟随）
+const kindLabels: Record<PanelKind, string> = {
+  console: '控制台',
+  browser: '新选项卡',
+  git: 'Git',
+  explorer: '文件',
+  sidechat: '临时对话',
+  diff: 'Diff',
+}
+
+const tabs = ref<WorkspaceTab[]>([])
+const activeTabId = ref('')
+const addMenuOpen = ref(false)
+const panelWidth = ref(480)
+
 const resizing = ref(false)
 let startX = 0
 let startWidth = 0
 let activePointerId: number | null = null
+
+function iconForKind(kind: PanelKind): string {
+  return kindIcons[kind]
+}
+
+function newTabId(): string {
+  return crypto.randomUUID()
+}
+
+function toggleAddMenu() {
+  addMenuOpen.value = !addMenuOpen.value
+}
+
+function closeAddMenu() {
+  addMenuOpen.value = false
+}
+
+function addTabFromMenu(kind: Exclude<PanelKind, 'diff'>, opts?: { browserUrl?: string }) {
+  closeAddMenu()
+
+  if (kind !== 'browser') {
+    const existing = tabs.value.find((t) => t.kind === kind)
+    if (existing) {
+      activeTabId.value = existing.id
+      return
+    }
+  }
+
+  const tab: WorkspaceTab = {
+    id: newTabId(),
+    kind,
+    title: kindLabels[kind],
+    browserUrl: opts?.browserUrl,
+  }
+  if (opts?.browserUrl) {
+    tab.title = hostFromUrl(opts.browserUrl) || kindLabels.browser
+  }
+  tabs.value.push(tab)
+  activeTabId.value = tab.id
+}
+
+function openOrFocusTab(kind: Exclude<PanelKind, 'diff'>, opts?: { browserUrl?: string }) {
+  addTabFromMenu(kind, opts)
+}
+
+function closeTab(id: string) {
+  const idx = tabs.value.findIndex((t) => t.id === id)
+  if (idx < 0) return
+  tabs.value.splice(idx, 1)
+  if (activeTabId.value === id) {
+    const next = tabs.value[idx] || tabs.value[idx - 1]
+    activeTabId.value = next?.id || ''
+  }
+}
+
+function hostFromUrl(url: string): string {
+  try {
+    return new URL(url).hostname || ''
+  } catch {
+    return ''
+  }
+}
 
 function startResize(e: PointerEvent) {
   resizing.value = true
@@ -160,10 +297,8 @@ function startResize(e: PointerEvent) {
 
 function onResize(e: PointerEvent) {
   if (!resizing.value || e.pointerId !== activePointerId) return
-  // 向左拖动增大宽度
   const delta = startX - e.clientX
-  const newWidth = Math.min(Math.max(startWidth + delta, 320), 1200)
-  panelWidth.value = newWidth
+  panelWidth.value = Math.min(Math.max(startWidth + delta, 320), 1200)
 }
 
 function stopResize(e: PointerEvent) {
@@ -178,83 +313,75 @@ function stopResize(e: PointerEvent) {
 }
 
 function closePanel() {
+  closeAddMenu()
   emit('close')
 }
 
 function onShowDiff(filePath: string) {
-  diffFilePath.value = filePath
-  diffCommitHash.value = null
-  activeTab.value = 'diff'
+  const tab: WorkspaceTab = {
+    id: newTabId(),
+    kind: 'diff',
+    title: filePath.split(/[/\\]/).pop() || 'Diff',
+    diffFilePath: filePath,
+    diffCommitHash: null,
+  }
+  tabs.value.push(tab)
+  activeTabId.value = tab.id
 }
 
 function onShowCommitDiff(filePath: string, hash: string) {
-  diffFilePath.value = filePath
-  diffCommitHash.value = hash
-  activeTab.value = 'diff'
+  const tab: WorkspaceTab = {
+    id: newTabId(),
+    kind: 'diff',
+    title: filePath.split(/[/\\]/).pop() || 'Diff',
+    diffFilePath: filePath,
+    diffCommitHash: hash,
+  }
+  tabs.value.push(tab)
+  activeTabId.value = tab.id
 }
 
 watch(() => props.inlineDiff, (val) => {
-  if (val) {
-    diffFilePath.value = val.path
-    diffCommitHash.value = null
-    activeTab.value = 'diff'
+  if (!val) return
+  const tab: WorkspaceTab = {
+    id: newTabId(),
+    kind: 'diff',
+    title: val.path.split(/[/\\]/).pop() || 'Diff',
+    diffFilePath: val.path,
+    diffCommitHash: null,
+    inlineOriginal: val.original,
+    inlineModified: val.modified,
+    inlinePath: val.path,
+    inlineKey: val.key,
   }
+  tabs.value.push(tab)
+  activeTabId.value = tab.id
 })
 
-// 监听外部的 focus-console 事件（从 ToolBlock 的「查看终端」按钮触发）
-function onFocusConsole() {
-  activeTab.value = 'console'
-}
-
-// 监听 AI 回复中点击链接：切到浏览器面板并加载 URL
 function onOpenUrl(e: Event) {
   const url = (e as CustomEvent).detail?.url
   if (typeof url !== 'string' || !url) return
-  // 父级面板若被关闭也尝试请求展开（这里只能切 tab，开/关由上层管理）
-  activeTab.value = 'browser'
-  // 用 timestamp 拼一下确保同一 URL 也能触发 watch
-  browserPendingUrl.value = url
+  addTabFromMenu('browser', { browserUrl: url })
 }
 
-// —— 查看智能体 ——
-const currentSubagentTaskId = ref<string>('')
-const currentSubagentInitial = ref<any>(null)
-
-function onViewSubagent(e: Event) {
-  const detail = (e as CustomEvent).detail || {}
-  if (!detail.taskId) return
-  currentSubagentTaskId.value = detail.taskId
-  currentSubagentInitial.value = {
-    subagent: detail.subagent,
-    task: detail.task,
-    status: detail.status,
-    round: detail.round,
-    last_event: detail.lastEvent,
-    elapsed_ms: detail.elapsedMs,
-    log_path: detail.logPath,
-    inner_blocks: detail.innerBlocks,
-    final_message: detail.finalMessage,
-  }
-  activeTab.value = 'subagent'
+function onFocusConsole() {
+  openOrFocusTab('console')
 }
 
-function onCloseSubagent() {
-  currentSubagentTaskId.value = ''
-  currentSubagentInitial.value = null
-  // 切回控制台
-  activeTab.value = 'console'
+function onDocumentClick() {
+  closeAddMenu()
 }
 
 onMounted(() => {
-  window.addEventListener('aries:focus-console', onFocusConsole)
   window.addEventListener('aries:open-url', onOpenUrl as EventListener)
-  window.addEventListener('aries:view-subagent', onViewSubagent as EventListener)
+  window.addEventListener('aries:focus-console', onFocusConsole)
+  document.addEventListener('click', onDocumentClick)
 })
 
 onUnmounted(() => {
-  window.removeEventListener('aries:focus-console', onFocusConsole)
   window.removeEventListener('aries:open-url', onOpenUrl as EventListener)
-  window.removeEventListener('aries:view-subagent', onViewSubagent as EventListener)
+  window.removeEventListener('aries:focus-console', onFocusConsole)
+  document.removeEventListener('click', onDocumentClick)
 })
 </script>
 
@@ -282,7 +409,6 @@ onUnmounted(() => {
   width: 8px;
   cursor: col-resize;
   z-index: 10;
-  /* 命中区域稍宽，但视觉上仍是细线 */
   touch-action: none;
 }
 
@@ -303,7 +429,6 @@ onUnmounted(() => {
   background: rgba(59, 130, 246, 0.6);
 }
 
-/* 拖动时全屏遮罩，确保 webview/iframe 不会拦截 pointer 事件 */
 .resize-shield {
   position: fixed;
   inset: 0;
@@ -312,60 +437,174 @@ onUnmounted(() => {
   background: transparent;
 }
 
-.panel-tabs {
+.panel-tabbar {
   display: flex;
   align-items: center;
-  gap: 0;
-  padding: 0 4px;
-  background: var(--bg-sidebar);
+  gap: 4px;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  min-height: 36px;
+  min-height: 40px;
+  box-sizing: border-box;
 }
 
-.panel-tab-btn {
+.panel-tab-list {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.panel-tab-list::-webkit-scrollbar {
+  display: none;
+}
+
+.panel-tab {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 6px 10px;
+  gap: 6px;
+  max-width: 168px;
+  padding: 6px 8px 6px 10px;
   border: none;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-secondary);
   font-size: 12px;
   cursor: pointer;
-  border-radius: 4px;
-  transition: background 0.12s, color 0.12s;
   white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+  flex-shrink: 0;
 }
 
-.panel-tab-btn:hover {
+.panel-tab:hover {
   background: var(--accent-hover);
   color: var(--text);
 }
 
-.panel-tab-btn.active {
-  background: var(--bg-panel);
+.panel-tab.active {
+  background: #f0f0f0;
   color: var(--text);
   font-weight: 500;
 }
 
-.tab-icon {
+.panel-tab-icon {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
 }
 
-.panel-close-btn {
-  margin-left: auto;
+.panel-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.panel-tab-close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+
+.panel-tab-close:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.panel-tab-add-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.panel-tab-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.panel-tab-add:hover {
+  background: var(--accent-hover);
+  color: var(--text);
+}
+
+.panel-add-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 220px;
+  padding: 6px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12);
+  z-index: 30;
+}
+
+.panel-add-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.panel-add-item:hover {
+  background: var(--accent-hover);
+}
+
+.panel-add-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.panel-add-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.panel-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
   border: none;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: 6px;
+  flex-shrink: 0;
   transition: background 0.12s, color 0.12s;
 }
 
@@ -382,12 +621,49 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-.subagent-empty {
+.panel-home {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: var(--text-muted);
-  font-size: 13px;
+  gap: 8px;
+  padding: 24px 20px;
+  box-sizing: border-box;
+}
+
+.panel-launcher-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 280px;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 8px;
+  background: #f3f3f3;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.panel-launcher-item:hover {
+  background: #e8e8e8;
+}
+
+.panel-launcher-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.panel-launcher-label {
+  flex: 1;
+  min-width: 0;
 }
 </style>

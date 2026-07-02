@@ -978,20 +978,19 @@ defineExpose({ openFilePicker, clearImages, focus })
   align-items: center;
   gap: 0;
   max-width: 100%;
-  height: 26px;
+  min-height: 22px;
   margin: 0 2px;
-  padding: 0;
+  padding: 2px 0;
   background: rgba(37, 99, 235, 0.08);
   border: 1px solid rgba(37, 99, 235, 0.25);
   border-radius: 6px;
   color: #2563eb;
   font-size: 13px;
-  line-height: 1;
-  vertical-align: middle;
+  line-height: 1.35;
+  vertical-align: baseline;
   white-space: nowrap;
   cursor: default;
   user-select: none;
-  overflow: hidden;
 }
 
 :deep(.skill-tag-icon) {
@@ -1008,7 +1007,9 @@ defineExpose({ openFilePicker, clearImages, focus })
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 500;
+  line-height: 1.35;
 }
 
 /* 子 Agent chip（@subagent:xxx），紫色系 */
@@ -1017,20 +1018,19 @@ defineExpose({ openFilePicker, clearImages, focus })
   align-items: center;
   gap: 0;
   max-width: 100%;
-  height: 26px;
+  min-height: 22px;
   margin: 0 2px;
-  padding: 0;
+  padding: 2px 0;
   background: rgba(139, 92, 246, 0.08);
   border: 1px solid rgba(139, 92, 246, 0.25);
   border-radius: 6px;
   color: #7c3aed;
   font-size: 13px;
-  line-height: 1;
-  vertical-align: middle;
+  line-height: 1.35;
+  vertical-align: baseline;
   white-space: nowrap;
   cursor: default;
   user-select: none;
-  overflow: hidden;
 }
 
 :deep(.subagent-tag-icon) {
@@ -1047,7 +1047,9 @@ defineExpose({ openFilePicker, clearImages, focus })
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 500;
+  line-height: 1.35;
 }
 
 /* 纯文件路径 chip（无行号） */

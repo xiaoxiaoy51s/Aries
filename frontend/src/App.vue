@@ -2,7 +2,7 @@
   <div id="app" :class="{ 'sidebar-collapsed': !sidebarOpen, 'is-booting': !backendReady }">
     <!-- 自定义标题栏 -->
     <div class="title-bar">
-      <div class="title-bar-left">
+      <div v-show="backendReady" class="title-bar-left">
         <button
           type="button"
           class="title-bar-toggle"
@@ -270,9 +270,9 @@ function onMenuSelect(menuKey: string, item: { id?: string; divider?: boolean })
   --radius-lg: 16px;
   --sidebar-width: 260px;
   --shadow-panel: 0 1px 2px rgba(80, 120, 180, 0.04), 0 4px 16px rgba(80, 120, 180, 0.03);
-  /* 侧边栏 / 标题栏：极浅蓝，接近白 */
-  --glass-surface: rgba(252, 253, 255, 0.82);
-  --glass-surface-soft: rgba(250, 251, 254, 0.72);
+  /* 侧边栏 / 标题栏：极浅蓝玻璃 */
+  --glass-surface: rgba(209, 220, 231, 0.82);
+  --glass-surface-soft: rgba(157, 192, 223, 0.72);
   --glass-border: rgba(232, 237, 245, 0.95);
   --glass-highlight: rgba(255, 255, 255, 0.95);
   --glass-blur: blur(24px) saturate(1.12);
@@ -283,6 +283,11 @@ function onMenuSelect(menuKey: string, item: { id?: string; divider?: boolean })
   --glass-shadow-top:
     inset 0 1px 0 var(--glass-highlight),
     0 2px 12px rgba(80, 120, 180, 0.03);
+  --boot-bg-color: #f8fafc;
+  --boot-bg-image:
+    radial-gradient(ellipse 90% 70% at 8% 10%, rgba(236, 244, 255, 0.35) 0%, transparent 55%),
+    radial-gradient(ellipse 80% 60% at 92% 90%, rgba(240, 246, 255, 0.25) 0%, transparent 50%),
+    linear-gradient(165deg, #fbfcfe 0%, #f8fafc 50%, #fafbfd 100%);
 }
 
 body {
@@ -299,7 +304,16 @@ body {
 }
 
 #app.is-booting {
-  background: #ffffff;
+  background-color: var(--boot-bg-color);
+  background-image: var(--boot-bg-image);
+}
+
+#app.is-booting .title-bar {
+  background: transparent;
+  border-bottom: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 #app {

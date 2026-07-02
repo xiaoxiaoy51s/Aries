@@ -9,9 +9,16 @@
           type="button"
           class="tab-btn"
           :class="{ active: tab.id === activeTabId }"
+          :title="tab.title"
           @click="switchTab(tab.id)"
         >
-          <span class="tab-status" :class="{ running: tab.connected }"></span>
+          <span class="tab-icon" aria-hidden="true">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="m7 9 3 3-3 3"/>
+              <path d="M13 15h4"/>
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+            </svg>
+          </span>
           <span class="tab-title">{{ tab.title }}</span>
           <span
             v-if="tabs.length > 1"
@@ -34,17 +41,16 @@
         </button>
       </div>
       <div class="console-actions">
-        <button type="button" class="action-btn" title="清屏" @click="clearScreen">
+        <button
+          type="button"
+          class="action-btn"
+          title="收起控制台"
+          aria-label="收起控制台"
+          @click="emit('close')"
+        >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-            <line x1="9" y1="9" x2="15" y2="15"></line>
-            <line x1="15" y1="9" x2="9" y2="15"></line>
-          </svg>
-        </button>
-        <button type="button" class="action-btn" title="重置终端" @click="resetShell">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="23 4 23 10 17 10"></polyline>
-            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <path d="M18 6 6 18M6 6l12 12"/>
           </svg>
         </button>
       </div>
@@ -92,6 +98,10 @@ import { storeToRefs } from 'pinia'
 
 const props = defineProps<{
   visible?: boolean
+}>()
+
+const emit = defineEmits<{
+  close: []
 }>()
 
 const workspace = useWorkspaceStore()
@@ -417,6 +427,10 @@ function connectTab(tab: TerminalTab, reset = true) {
   }
 }
 
+function workDirDisplayPath(dir: string): string {
+  return dir.replace(/\/+$/, '').trim() || '终端'
+}
+
 function addTerminal(reset = true, sessionIdOverride?: string, isAgentTerminal = false) {
   if (!workDir.value) return
   if (tabs.value.length >= MAX_CONSOLE_TABS) return
@@ -426,7 +440,7 @@ function addTerminal(reset = true, sessionIdOverride?: string, isAgentTerminal =
   const tab: TerminalTab = {
     id: newTabId(),
     sessionId: tabSessionId,
-    title: isAgentTerminal ? 'AI 终端' : `终端 ${tabCounter}`,
+    title: workDirDisplayPath(workDir.value),
     connected: false,
     attached: false,
     term: null,
@@ -473,18 +487,6 @@ function closeTab(id: string) {
   }
 }
 
-function clearScreen() {
-  const tab = activeTab.value
-  if (!tab) return
-  tab.term?.clear()
-}
-
-function resetShell() {
-  const tab = activeTab.value
-  if (!tab) return
-  connectTab(tab, true)
-}
-
 function disposeAllTabs() {
   for (const tab of tabs.value) {
     tab.ws?.close()
@@ -520,7 +522,7 @@ function onOpenTerminal(e: Event) {
   const tab: TerminalTab = {
     id: newTabId(),
     sessionId: detail.sessionId,
-    title: detail.command ? `AI: ${detail.command.slice(0, 15)}` : `终端 ${tabCounter}`,
+    title: detail.command ? `AI: ${detail.command.slice(0, 15)}` : workDirDisplayPath(workDir.value),
     connected: false,
     attached: false,
     term: null,
@@ -538,13 +540,15 @@ function onOpenTerminal(e: Event) {
 
 watch(() => props.visible, (visible) => {
   if (visible && workDir.value && tabs.value.length > 0) {
-    const tab = activeTab.value
-    if (tab) {
-      nextTick(() => fitTab(tab))
-      if (tab.ws?.readyState !== WebSocket.OPEN) {
-        connectTab(tab, false)
+    nextTick(() => {
+      for (const tab of tabs.value) {
+        fitTab(tab)
+        if (tab.id === activeTabId.value && tab.ws?.readyState !== WebSocket.OPEN) {
+          connectTab(tab, false)
+        }
       }
-    }
+      activeTab.value?.term?.focus()
+    })
   }
 })
 
@@ -612,9 +616,8 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 0 4px 0 4px;
-  background: #f3f3f3;
-  border-bottom: 1px solid #e5e5e5;
+  padding: 6px 8px;
+  background: #ffffff;
   flex-shrink: 0;
   min-height: 35px;
 }
@@ -622,7 +625,7 @@ onUnmounted(() => {
 .tab-bar {
   display: flex;
   align-items: center;
-  gap: 1px;
+  gap: 6px;
   flex: 1;
   min-width: 0;
   overflow-x: auto;
@@ -632,45 +635,40 @@ onUnmounted(() => {
   height: 0;
 }
 
-/* 标签按钮（对齐 VS Code terminal tab 样式） */
+/* 标签按钮：灰色圆角胶囊 */
 .tab-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  max-width: 140px;
-  padding: 6px 10px;
+  gap: 6px;
+  max-width: 320px;
+  padding: 5px 10px;
   border: none;
-  border-right: 1px solid #e5e5e5;
-  background: transparent;
+  border-radius: 6px;
+  background: #f0f0f0;
   color: #6e6e6e;
   font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.1s, color 0.1s;
+  transition: background 0.12s, color 0.12s;
 }
 
 .tab-btn:hover {
-  background: #ffffff;
+  background: #e6e6e6;
   color: #424242;
 }
 
 .tab-btn.active {
-  background: #ffffff;
-  color: #000000;
-  border-bottom: 2px solid #005fb8;
-  padding-bottom: 4px;
+  background: #e4e4e4;
+  color: #1a1a1a;
 }
 
-.tab-status {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #9e9e9e;
+.tab-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
-}
-
-.tab-status.running {
-  background: #107c10;
+  color: inherit;
+  opacity: 0.85;
 }
 
 .tab-title {
@@ -684,7 +682,7 @@ onUnmounted(() => {
   justify-content: center;
   width: 16px;
   height: 16px;
-  border-radius: 3px;
+  border-radius: 50%;
   font-size: 14px;
   line-height: 1;
   opacity: 0.6;
@@ -692,7 +690,7 @@ onUnmounted(() => {
 
 .tab-close:hover {
   opacity: 1;
-  background: #e5e5e5;
+  background: #d5d5d5;
 }
 
 .tab-add {
@@ -705,12 +703,12 @@ onUnmounted(() => {
   background: transparent;
   color: #6e6e6e;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: 999px;
   flex-shrink: 0;
 }
 
 .tab-add:hover {
-  background: #ffffff;
+  background: #f0f0f0;
   color: #424242;
 }
 

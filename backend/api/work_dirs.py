@@ -13,6 +13,8 @@ from db.work_dirs import (
     get_latest_work_dir,
     DEFAULT_WORK_DIR,
 )
+from db.sessions import list_sessions_by_work_dir, delete_session_meta
+from db.chat import delete_session
 
 router = APIRouter(prefix="/work-dirs", tags=["work-dirs"])
 
@@ -30,6 +32,10 @@ class WorkDirArchive(BaseModel):
 class WorkDirRename(BaseModel):
     work_dir: str
     name: str
+
+
+class WorkDirDeleteCascade(BaseModel):
+    work_dir: str
 
 
 @router.get("/")
@@ -57,6 +63,22 @@ def remove_work_dir(work_dir: str):
     """删除一条工作目录记录（不影响 sessions 表中的数据）。"""
     delete_work_dir(work_dir)
     return {"success": True, "work_dir": work_dir}
+
+
+@router.delete("/cascade")
+def remove_work_dir_cascade(payload: WorkDirDeleteCascade):
+    """删除工作目录及其下的所有会话、消息、记忆。"""
+    work_dir = payload.work_dir.strip()
+    sessions = list_sessions_by_work_dir(work_dir)
+    for s in sessions:
+        delete_session(s["session_id"])
+        delete_session_meta(s["session_id"])
+    delete_work_dir(work_dir)
+    return {
+        "success": True,
+        "work_dir": work_dir,
+        "deleted_sessions": len(sessions),
+    }
 
 
 @router.put("/archive")

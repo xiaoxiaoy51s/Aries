@@ -1,5 +1,5 @@
 <template>
-  <div class="tool-block" :class="{ 'tool-block--expanded': isExpanded, 'tool-block--confirm': pendingConfirmation, 'tool-block--file-edit': !!fileEditPreview }">
+  <div class="tool-block" :class="{ 'tool-block--expanded': isExpanded, 'tool-block--confirm': pendingConfirmation, 'tool-block--file-edit': !!fileEditPreview, 'tool-block--subagent': isSubagentDelegate }">
     <!-- 文件编辑/写入：diff 卡片样式 -->
     <template v-if="fileEditPreview">
       <div class="file-edit-wrap">
@@ -9,101 +9,177 @@
           :error="error"
           @click="toggleExpand"
         />
-        <div v-if="hasTerminalSession || isSubagentDelegate || isTodoWrite" class="tool-actions tool-actions--overlay">
-          <button
-            v-if="isTodoWrite"
-            type="button"
-            class="view-terminal-btn"
-            title="查看任务清单"
-            @click.stop="openTodos"
-          >查看任务</button>
-        </div>
       </div>
       <div v-if="isExpanded && status === 'running' && !pendingConfirmation && !result && !error" class="file-edit-running">
         运行中...
+      </div>
+      <ToolActionBar
+        :show-terminal="hasTerminalSession"
+        :show-todo="isTodoWrite"
+        :show-background="showBackgroundBtn"
+        :auto-detached="autoDetached"
+        @open-terminal="openTerminal"
+        @open-todos="openTodos"
+        @toggle-background="autoDetached ? stopService() : doBackground()"
+      />
+    </template>
+
+    <!-- 子智能体委派：内嵌展示完整工作过程（思考 + 工具 + 回复） -->
+    <template v-else-if="isSubagentDelegate">
+      <div class="subagent-embed" @click="toggleExpand">
+        <div class="subagent-embed-header">
+          <svg class="subagent-embed-chevron" :class="{ expanded: isExpanded }" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+            <path d="m9 18 6-6-6-6"/>
+          </svg>
+          <span class="sa-name">{{ subagentDisplayName }}</span>
+          <span v-if="subagentTaskText" class="sa-task">{{ subagentTaskText }}</span>
+          <span class="sa-status">{{ subagentStatusLabel }}</span>
+          <span v-if="subagentElapsedText" class="sa-elapsed">{{ subagentElapsedText }}</span>
+        </div>
+        <div v-if="isExpanded" class="subagent-embed-body" @click.stop>
+          <AssistantMessage
+            v-if="subagentBlocks.length > 0"
+            class="subagent-embed-message"
+            :blocks="subagentBlocks"
+            :is-loading="subagentIsRunning"
+            text-color="#1a1a1a"
+            :font-size="13"
+          />
+          <div v-else class="subagent-embed-empty">
+            {{ subagentIsRunning ? '智能体正在启动…' : '暂无工作过程' }}
+          </div>
+        </div>
       </div>
     </template>
 
     <!-- 其他工具：原有样式 -->
     <template v-else>
     <!-- 折叠状态：显示工具名和参数预览 -->
-    <div v-if="!isExpanded" class="tool-header" @click="toggleExpand">
-      <div class="tool-title">
-        <span class="tool-name">{{ toolName }}</span>
-        <span class="tool-args-preview">{{ argsPreview }}</span>
-      </div>
-      <span v-if="pendingConfirmation" class="confirm-badge">待确认</span>
-      <div v-if="hasTerminalSession || isSubagentDelegate || isTodoWrite" class="tool-actions">
-        <button
-          v-if="hasTerminalSession"
-          type="button"
-          class="view-terminal-btn"
-          title="在控制台查看命令执行过程"
-          @click.stop="openTerminal"
-        >查看终端</button>
-        <button
-          v-if="isSubagentDelegate"
-          type="button"
-          class="view-terminal-btn"
-          title="查看智能体实时工作过程"
-          @click.stop="viewSubagent"
-        >查看智能体</button>
-        <button
-          v-if="isTodoWrite"
-          type="button"
-          class="view-terminal-btn"
-          title="查看任务清单"
-          @click.stop="openTodos"
-        >查看任务</button>
-        <button
-          v-if="showBackgroundBtn"
-          type="button"
-          class="background-btn"
-          :title="autoDetached ? '停止后台服务' : '转入后台运行'"
-          @click.stop="autoDetached ? stopService() : doBackground()"
-        >{{ autoDetached ? '停止服务' : '后台运行' }}</button>
-      </div>
-    </div>
+    <template v-if="!isExpanded">
+      <template v-if="isCliExecutor && cliCommand">
+        <div class="cli-command-card" @click="toggleExpand">
+          <div class="cli-command-header">
+            <div class="cli-meta">
+              <span v-if="cliDirName" class="cli-dir-name">{{ cliDirName }}</span>
+              <span class="cli-status">{{ cliStatusLabel }}</span>
+            </div>
+            <ToolActionBar
+              class="cli-action-bar"
+              :show-terminal="hasTerminalSession"
+              :show-stop="showStopBtn"
+              :show-background="showBackgroundBtn"
+              :auto-detached="autoDetached"
+              plain
+              @open-terminal="openTerminal"
+              @stop-command="stopService"
+              @toggle-background="autoDetached ? stopService() : doBackground()"
+            />
+          </div>
+          <div class="cli-command-body">
+            <span class="cli-prompt">$</span>
+            <code class="cli-command-text">{{ cliCommand }}</code>
+          </div>
+        </div>
+      </template>
+      <template v-else-if="isTodoWrite && toolTodos.length">
+        <div class="todo-card" @click="toggleExpand">
+          <div class="todo-card-header">
+            <span class="todo-card-title">任务规划（{{ toolTodos.length }}）</span>
+            <ToolActionBar
+              :show-todo="isTodoWrite"
+              plain
+              @open-todos="openTodos"
+            />
+          </div>
+          <ul class="todo-mini-list">
+            <li
+              v-for="todo in toolTodos"
+              :key="todo.id"
+              class="todo-mini-item"
+              :class="`todo-mini-status-${todo.status}`"
+            >
+              <span class="todo-mini-icon">
+                <svg v-if="todo.status === 'completed'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+                <svg v-else-if="todo.status === 'in_progress'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <circle cx="12" cy="12" r="9" stroke-dasharray="40 16"/>
+                </svg>
+                <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="9"/>
+                </svg>
+              </span>
+              <span class="todo-mini-content">{{ todo.content }}</span>
+              <span class="todo-mini-priority">{{ todo.priority }}</span>
+            </li>
+          </ul>
+        </div>
+      </template>
+      <template v-else>
+        <div class="tool-header" @click="toggleExpand">
+          <div class="tool-title">
+            <span class="tool-name">{{ toolName }}</span>
+            <span class="tool-args-preview">{{ argsPreview }}</span>
+          </div>
+          <span v-if="pendingConfirmation" class="confirm-badge">待确认</span>
+        </div>
+        <ToolActionBar
+          :show-terminal="hasTerminalSession"
+          :show-todo="isTodoWrite"
+          :show-background="showBackgroundBtn"
+          :auto-detached="autoDetached"
+          @open-terminal="openTerminal"
+          @open-todos="openTodos"
+          @toggle-background="autoDetached ? stopService() : doBackground()"
+        />
+      </template>
+    </template>
 
     <!-- 展开状态：显示完整内容 -->
     <div v-else class="tool-body">
       <!-- 头部（可点击折叠） -->
-      <div class="tool-body-header" @click="toggleExpand">
-        <div class="tool-title">
-          <span class="tool-name">{{ toolName }}</span>
-          <span class="tool-args-preview">{{ argsPreview }}</span>
+      <template v-if="isCliExecutor && cliCommand">
+        <div class="cli-command-card" @click="toggleExpand">
+          <div class="cli-command-header">
+            <div class="cli-meta">
+              <span v-if="cliDirName" class="cli-dir-name">{{ cliDirName }}</span>
+              <span class="cli-status">{{ cliStatusLabel }}</span>
+            </div>
+            <ToolActionBar
+              class="cli-action-bar"
+              :show-terminal="hasTerminalSession"
+              :show-stop="showStopBtn"
+              :show-background="showBackgroundBtn"
+              :auto-detached="autoDetached"
+              plain
+              @open-terminal="openTerminal"
+              @stop-command="stopService"
+              @toggle-background="autoDetached ? stopService() : doBackground()"
+            />
+          </div>
+          <div class="cli-command-body">
+            <span class="cli-prompt">$</span>
+            <code class="cli-command-text">{{ cliCommand }}</code>
+          </div>
         </div>
-        <div v-if="hasTerminalSession || isSubagentDelegate || isTodoWrite" class="tool-actions">
-          <button
-            v-if="hasTerminalSession"
-            type="button"
-            class="view-terminal-btn"
-            title="在控制台查看命令执行过程"
-            @click.stop="openTerminal"
-          >查看终端</button>
-          <button
-            v-if="isSubagentDelegate"
-            type="button"
-            class="view-terminal-btn"
-            title="查看智能体实时工作过程"
-            @click.stop="viewSubagent"
-          >查看智能体</button>
-          <button
-            v-if="isTodoWrite"
-            type="button"
-            class="view-terminal-btn"
-            title="查看任务清单"
-            @click.stop="openTodos"
-          >查看任务</button>
-          <button
-            v-if="showBackgroundBtn"
-            type="button"
-            class="background-btn"
-            :title="autoDetached ? '停止后台服务' : '转入后台运行'"
-            @click.stop="autoDetached ? stopService() : doBackground()"
-          >{{ autoDetached ? '停止服务' : '后台运行' }}</button>
+      </template>
+      <template v-else>
+        <div class="tool-body-header" @click="toggleExpand">
+          <div class="tool-title">
+            <span class="tool-name">{{ toolName }}</span>
+            <span class="tool-args-preview">{{ argsPreview }}</span>
+          </div>
         </div>
-      </div>
+        <ToolActionBar
+          :show-terminal="hasTerminalSession"
+          :show-todo="isTodoWrite"
+          :show-background="showBackgroundBtn"
+          :auto-detached="autoDetached"
+          @open-terminal="openTerminal"
+          @open-todos="openTodos"
+          @toggle-background="autoDetached ? stopService() : doBackground()"
+        />
+      </template>
 
       <!-- 参数详情 -->
       <div class="tool-section">
@@ -134,10 +210,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { backgroundTerminalCommand, getTerminalSessionId, stopTerminalCommand } from '@/api/terminal'
 import FileEditPreviewCard from './FileEditPreviewCard.vue'
+import ToolActionBar from './ToolActionBar.vue'
+import AssistantMessage from './AssistantMessage.vue'
 import { buildFileEditPreview } from '@/utils/fileEditPreview'
+import { parseDelegateToolResult, finalizeSubagentDisplayBlocks } from '@/utils/subagentLogParser'
 
 defineOptions({ name: 'ToolBlock' })
 
@@ -211,6 +290,36 @@ const subagentElapsedText = computed(() => {
   return `${s.toFixed(1)}s`
 })
 
+// 即使 subagent_event 尚未到达（子 Agent 刚启动），也用 args 里的占位信息展示名称/任务
+const subagentDisplayName = computed(() => {
+  return props.subagent?.subagent || props.args?.subagent_name || '智能体'
+})
+const subagentTaskText = computed(() => {
+  return props.subagent?.task || props.args?.task || ''
+})
+const subagentIsRunning = computed(() => {
+  const s = props.subagent?.status || ''
+  if (s === 'running' || s === 'pending' || s === 'stalled') return true
+  return props.status === 'running'
+})
+
+watch(
+  () => subagentIsRunning.value,
+  (running) => {
+    if (running && isSubagentDelegate.value) isExpanded.value = true
+  },
+  { immediate: true },
+)
+
+// 子 Agent 内容由 chatPage 通过 subagent_log_event WebSocket 增量写入 inner_blocks
+const subagentBlocks = computed<InnerBlock[]>(() => {
+  const rawBlocks = (props.subagent?.inner_blocks || []).map((b) => ({ ...b }))
+  const finalText = props.subagent?.final_message
+    || parseDelegateToolResult(props.result).final_message
+    || ''
+  return finalizeSubagentDisplayBlocks(rawBlocks, finalText)
+})
+
 const autoDetached = computed(() => props.autoDetached || isBackgrounded.value)
 
 const showBackgroundBtn = computed(() => {
@@ -258,9 +367,31 @@ const isCliExecutor = computed(() => {
   return props.toolName === 'cli_executor'
 })
 
+const cliCommand = computed(() => {
+  return String(props.args?.command || props.preview || '')
+})
+
+const cliDirName = computed(() => {
+  const wd = String(props.args?.working_dir || '')
+  if (!wd) return ''
+  return wd.replace(/\\/g, '/').split('/').filter(Boolean).pop() || wd
+})
+
+const cliStatusLabel = computed(() => {
+  if (props.status === 'completed') return '已完成'
+  if (props.status === 'error') return '失败'
+  return '在沙箱中'
+})
+
 const hasTerminalSession = computed(() => {
   return isCliExecutor.value && (!!props.sessionId || !!props.toolCallId)
 })
+
+const showStopBtn = computed(() => {
+  return isCliExecutor.value && props.status === 'running' && !autoDetached.value
+})
+
+const toolTodos = computed(() => extractToolTodos())
 
 async function openTerminal() {
   if (isOpeningTerminal.value) return
@@ -356,40 +487,6 @@ function extractToolTodos(): TodoItem[] {
   return []
 }
 
-function viewSubagent() {
-  // 即使 subagent 还没绑定（子 Agent 刚启动，subagent_event 尚未到达），
-  // 也允许打开面板：用 args 里的 subagent_name/task 做 fallback，
-  // taskId 用 toolCallId 临时充当，SubagentChatPanel 会在收到第一个
-  // subagent_event 时自动锁定真实 task_id。
-  const sa = props.subagent || ({} as any)
-  const initial = {
-    subagent: sa.subagent || props.args?.subagent_name || '',
-    task: sa.task || props.args?.task || '',
-    status: sa.status || 'running',
-    round: sa.round,
-    last_event: sa.last_event,
-    elapsed_ms: sa.elapsed_ms,
-    log_path: sa.log_path,
-    inner_blocks: sa.inner_blocks,
-    final_message: sa.final_message,
-  }
-  window.dispatchEvent(new CustomEvent('aries:focus-console'))
-  window.dispatchEvent(new CustomEvent('aries:view-subagent', {
-    detail: {
-      taskId: sa.task_id || props.toolCallId || '',
-      subagent: initial.subagent,
-      task: initial.task,
-      status: initial.status,
-      round: initial.round,
-      lastEvent: initial.last_event,
-      elapsedMs: initial.elapsed_ms,
-      logPath: initial.log_path,
-      innerBlocks: initial.inner_blocks,
-      finalMessage: initial.final_message,
-    }
-  }))
-}
-
 // 后端 Python 端用 `${chatSessionId}:${toolCallId}` 作为 invocation key
 // 前端调用 background/stop 时必须用这个复合 key，否则 signal_detach 找不到事件
 function buildInvocationId(): string {
@@ -432,13 +529,6 @@ async function stopService() {
   position: relative;
 }
 
-.tool-actions--overlay {
-  position: absolute;
-  top: 6px;
-  right: 8px;
-  z-index: 1;
-}
-
 .tool-body--file-edit {
   margin-top: 8px;
   border-top: 1px solid #f1f5f9;
@@ -473,7 +563,6 @@ async function stopService() {
 .tool-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   padding: 2px 4px;
   cursor: pointer;
   user-select: none;
@@ -492,48 +581,6 @@ async function stopService() {
   background: #fef3c7;
   padding: 1px 6px;
   border-radius: 999px;
-}
-
-.tool-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.view-terminal-btn {
-  font-size: 10px;
-  color: #000000;
-  background: transparent;
-  border: none;
-  padding: 2px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-  margin-left: 6px;
-  flex-shrink: 0;
-  font-weight: 500;
-  letter-spacing: 0.5px;
-  transition: background 0.15s;
-}
-
-.view-terminal-btn:hover {
-  background: rgba(0, 0, 0, 0.06);
-}
-
-.background-btn {
-  font-size: 10px;
-  color: #6b7280;
-  background: #f3f4f6;
-  border: 1px solid #d1d5db;
-  padding: 2px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background 0.15s;
-}
-
-.background-btn:hover {
-  background: #e5e7eb;
 }
 
 .tool-title {
@@ -569,7 +616,6 @@ async function stopService() {
 .tool-body-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   padding: 2px 4px;
   background: transparent;
   border-bottom: none;
@@ -626,117 +672,227 @@ async function stopService() {
   font-style: italic;
 }
 
-.sa-inline-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 8px;
-  padding: 1px 8px;
-  border-radius: 10px;
-  font-size: 11px;
-  border: 1px solid transparent;
+/* ---- 子 Agent 内嵌卡片（全白背景） ---- */
+.tool-block--subagent {
+  border-left: none;
+  padding-left: 0;
+  margin: 6px 0;
 }
-.sa-inline-pill .sa-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #888;
-}
-.sa-inline-pill .sa-inline-text { font-weight: 500; }
-.sa-inline-pill .sa-inline-meta { color: var(--text-muted); }
 
-/* ---- 子 Agent 进度条 ---- */
-.subagent-progress {
+.subagent-embed {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 4px 0;
+  cursor: pointer;
+}
+.subagent-embed:hover {
+  background: #ffffff;
+}
+
+.subagent-embed-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-radius: 6px;
+  gap: 7px;
   font-size: 12px;
-  margin: 4px 0 6px;
-  background: rgba(74, 144, 217, 0.08);
-  border: 1px solid rgba(74, 144, 217, 0.18);
 }
-.subagent-progress .sa-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #4a90d9;
-  flex-shrink: 0;
-}
-.subagent-status--running .sa-dot { background: #4a90d9; animation: sa-pulse 1.4s infinite ease-in-out; }
-.subagent-status--stalled .sa-dot { background: #ff9500; }
-.subagent-status--success .sa-dot { background: #34c759; }
-.subagent-status--failed .sa-dot,
-.subagent-status--timeout .sa-dot,
-.subagent-status--cancelled .sa-dot { background: #ff3b30; }
-@keyframes sa-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-.subagent-status--stalled { background: rgba(255, 149, 0, 0.08); border-color: rgba(255, 149, 0, 0.3); }
-.subagent-status--success { background: rgba(52, 199, 89, 0.08); border-color: rgba(52, 199, 89, 0.3); }
-.subagent-status--failed,
-.subagent-status--timeout,
-.subagent-status--cancelled { background: rgba(255, 59, 48, 0.08); border-color: rgba(255, 59, 48, 0.3); }
 
-.subagent-progress .sa-name { font-weight: 600; color: var(--text); }
-.subagent-progress .sa-status { color: var(--text-secondary); }
-.subagent-progress .sa-round,
-.subagent-progress .sa-elapsed { color: var(--text-muted); font-size: 11px; }
-.subagent-progress .sa-event {
+.subagent-embed-chevron {
+  flex-shrink: 0;
+  color: #9ca3af;
+  transition: transform 0.18s;
+}
+.subagent-embed-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.sa-name { font-weight: 600; color: #111827; flex-shrink: 0; }
+.sa-task {
   flex: 1;
-  color: var(--text-muted);
+  min-width: 0;
+  color: #6b7280;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.sa-status { color: #6b7280; flex-shrink: 0; }
+.sa-elapsed { color: #9ca3af; font-size: 11px; flex-shrink: 0; }
 
-.subagent-detail { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
-.subagent-detail .sa-pill {
-  display: inline-block;
-  padding: 1px 8px;
-  border-radius: 10px;
-  font-size: 11px;
-  margin-left: 6px;
+.subagent-embed-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #f0f0f0;
+  cursor: default;
+  background: #ffffff;
 }
-.subagent-detail .sa-meta { color: var(--text-muted); margin-left: 8px; font-size: 11px; }
-.subagent-detail .sa-event-line { color: var(--text-secondary); }
-.subagent-detail .sa-task-line { color: var(--text-muted); }
-.subagent-detail code { font-size: 11px; }
 
-/* 子 Agent 流式工作过程 */
-.subagent-stream {
+.subagent-embed-body :deep(.subagent-embed-message) {
+  background: #ffffff;
+}
+
+.subagent-embed-body :deep(.work-block),
+.subagent-embed-body :deep(.work-content),
+.subagent-embed-body :deep(.text-block),
+.subagent-embed-body :deep(.assistant-message) {
+  background: #ffffff;
+}
+
+.subagent-embed-empty {
+  font-size: 12px;
+  color: #9ca3af;
+  font-style: italic;
+  background: #ffffff;
+}
+
+/* ---- CLI 命令卡片 ---- */
+.cli-command-card {
+  background: #f3f4f6;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 4px 0;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.cli-command-card:hover {
+  background: #e5e7eb;
+}
+
+.cli-command-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.cli-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cli-dir-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.cli-status {
+  font-size: 11px;
+  color: #6b7280;
+  background: #e5e7eb;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.cli-action-bar {
+  flex-shrink: 0;
+}
+
+.cli-command-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #1f2937;
+}
+
+.cli-prompt {
+  color: #9ca3af;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.cli-command-text {
+  font-family: inherit;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+/* ---- 任务规划卡片 ---- */
+.todo-card {
+  background: #f3f4f6;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 4px 0;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.todo-card:hover {
+  background: #e5e7eb;
+}
+
+.todo-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.todo-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.todo-mini-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 8px 10px;
-  background: rgba(0, 0, 0, 0.02);
-  border-radius: 6px;
-  border-left: 2px solid rgba(74, 144, 217, 0.3);
 }
-.subagent-reasoning {
-  color: #94a3b8;
+
+.todo-mini-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   font-size: 12px;
   line-height: 1.5;
-  white-space: pre-wrap;
+  color: #1f2937;
+}
+
+.todo-mini-icon {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+  color: #9ca3af;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.todo-mini-status-completed .todo-mini-icon {
+  color: #111827;
+}
+
+.todo-mini-status-in_progress .todo-mini-icon {
+  color: #111827;
+}
+
+.todo-mini-content {
+  flex: 1;
   word-break: break-word;
 }
-.subagent-answer {
-  color: var(--text);
-  font-size: 13px;
-  line-height: 1.55;
-  padding: 4px 0;
+
+.todo-mini-status-completed .todo-mini-content {
+  text-decoration: line-through;
+  color: #6b7280;
 }
-.subagent-final {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px dashed var(--border);
-}
-.subagent-final .section-label {
-  display: block;
-  margin-bottom: 4px;
-  font-size: 11px;
-  color: var(--text-muted);
+
+.todo-mini-priority {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: #6b7280;
+  text-transform: uppercase;
 }
 </style>

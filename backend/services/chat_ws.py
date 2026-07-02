@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import WebSocket
 
@@ -220,3 +220,78 @@ async def notify_log_complete(
         "message_id": message_id,
         "jsonl_path": jsonl_path,
     })
+
+
+async def notify_subagent_log_started(
+    session_id: str,
+    task_id: str,
+    tool_call_id: str,
+    jsonl_path: str,
+    subagent: str = "",
+) -> None:
+    """子 Agent JSONL 日志开始：前端绑定 delegate 工具块并准备接收 log_event。"""
+    await _manager.broadcast(session_id, {
+        "type": "subagent_log_started",
+        "session_id": session_id,
+        "task_id": task_id,
+        "tool_call_id": tool_call_id,
+        "jsonl_path": jsonl_path,
+        "subagent": subagent,
+    })
+
+
+async def notify_subagent_log_event(
+    session_id: str,
+    task_id: str,
+    jsonl_path: str,
+    event: dict[str, Any],
+    tool_call_id: str = "",
+) -> None:
+    """子 Agent JSONL 每写入一行即推送（与主 Agent log_event 机制一致）。"""
+    await _manager.broadcast(session_id, {
+        "type": "subagent_log_event",
+        "session_id": session_id,
+        "task_id": task_id,
+        "tool_call_id": tool_call_id,
+        "jsonl_path": jsonl_path,
+        "event": event,
+    })
+
+
+async def notify_subagent_log_complete(
+    session_id: str,
+    task_id: str,
+    jsonl_path: str,
+    tool_call_id: str = "",
+) -> None:
+    """子 Agent JSONL 日志结束。"""
+    await _manager.broadcast(session_id, {
+        "type": "subagent_log_complete",
+        "session_id": session_id,
+        "task_id": task_id,
+        "tool_call_id": tool_call_id,
+        "jsonl_path": jsonl_path,
+    })
+
+
+def schedule_subagent_log_event_broadcast(
+    session_id: str,
+    task_id: str,
+    jsonl_path: str,
+    tool_call_id: str = "",
+) -> "Callable[[dict[str, Any]], None]":
+    """子 Agent SessionLogger.on_event 回调：每写一行 JSONL 即 WebSocket 推送。"""
+
+    def _on_event(event: dict[str, Any]) -> None:
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(
+                    notify_subagent_log_event(
+                        session_id, task_id, jsonl_path, event, tool_call_id
+                    )
+                )
+        except RuntimeError:
+            pass
+
+    return _on_event

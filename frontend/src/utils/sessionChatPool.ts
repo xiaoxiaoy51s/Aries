@@ -166,6 +166,8 @@ export function ensureSessionWs(sessionId: string, wsBase: string): Promise<void
       entry.pingTimer = setInterval(() => {
         if (entry.ws.readyState === WebSocket.OPEN) {
           entry.ws.send('ping')
+          // 客户端已发 ping 即视为连接存活，避免子 agent 长时间无业务消息时误判断连
+          resetWatchdog()
         }
       }, PING_INTERVAL)
       resetWatchdog()

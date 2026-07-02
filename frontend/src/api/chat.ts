@@ -186,13 +186,15 @@ export function stopChat(sessionId: string, workDir?: string): Promise<void> {
     })
 }
 
-export async function checkChatStatus(sessionId: string): Promise<boolean> {
+/** @returns true=运行中, false=已结束, null=无法确认（网络错误等） */
+export async function checkChatStatus(sessionId: string): Promise<boolean | null> {
   try {
     const res = await fetch(`${getBaseUrl()}/chat/status/${sessionId}`)
+    if (!res.ok) return null
     const data = await res.json()
     return !!data.running
   } catch {
-    return false
+    return null
   }
 }
 
@@ -217,9 +219,42 @@ export async function* streamTempChat(
       work_dir: workDir || undefined,
     }),
   })
-  yield* _noopStream()
+  yield* parseSseResponse(res)
 }
 
 async function* _noopStream(): AsyncGenerator<StreamEvent> {
   // 流式 API 已统一替换为 WebSocket + JSONL 推送；此处不再产生任何事件
+}
+
+async function* parseSseResponse(res: Response): AsyncGenerator<StreamEvent> {
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(err || '请求失败')
+  }
+
+  const reader = res.body?.getReader()
+  if (!reader) throw new Error('无法读取响应')
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const data = line.slice(6)
+      if (data === '[DONE]') return
+      try {
+        const json = JSON.parse(data) as Record<string, unknown>
+        const event = jsonToStreamEvent(json)
+        if (event) yield event
+      } catch {
+        // ignore invalid json
+      }
+    }
+  }
 }

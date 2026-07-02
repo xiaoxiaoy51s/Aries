@@ -339,6 +339,8 @@ async def run_delegate_items(
             work_dir=work_dir,
             cancel_event=cancel_event,
             on_event=_on_parallel_subagent_event,
+            session_id=session_id,
+            parent_tool_call_id=tool_id,
         )
         if item.get("sub_isolation"):
             run_kwargs["isolation"] = item["sub_isolation"]

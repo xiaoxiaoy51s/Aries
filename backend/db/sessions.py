@@ -103,3 +103,26 @@ def delete_session_meta(session_id: str) -> None:
     conn = get_connection()
     conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
     conn.commit()
+
+
+def list_sessions_by_work_dir(work_dir: str) -> list[dict]:
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT session_id, title, work_dir, created_at, updated_at
+        FROM sessions
+        WHERE work_dir = ?
+        ORDER BY datetime(COALESCE(updated_at, created_at)) DESC
+        """,
+        (work_dir,),
+    ).fetchall()
+    return [
+        {
+            "session_id": r[0],
+            "title": r[1] or "",
+            "work_dir": r[2] or "",
+            "created_at": r[3] or "",
+            "updated_at": r[4] or "",
+        }
+        for r in rows
+    ]

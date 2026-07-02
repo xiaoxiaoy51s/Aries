@@ -48,7 +48,12 @@
             class="project-item"
             :class="{ active: currentProject?.work_dir === project.work_dir }"
           >
-            <button type="button" class="project-row" @click="selectProject(project)">
+            <button
+              type="button"
+              class="project-row"
+              @click="selectProject(project)"
+              @contextmenu.prevent="onProjectContextMenu($event, project)"
+            >
               <span class="project-expand">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpanded(project.work_dir) }">
                   <path d="m9 18 6-6-6-6"/>
@@ -60,18 +65,6 @@
                 </svg>
               </span>
               <span class="project-name" :title="project.name">{{ project.name }}</span>
-              <span class="project-actions">
-                <span class="project-btn" title="新建对话" @click.stop="createNewChatInProject(project)">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 5v14M5 12h14"/>
-                  </svg>
-                </span>
-                <span class="project-btn" title="打开文件夹" @click.stop="openProjectDir(project)">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-                  </svg>
-                </span>
-              </span>
             </button>
             <ul v-if="project.sessions?.length && isExpanded(project.work_dir)" class="session-list project-sessions">
               <li
@@ -163,6 +156,35 @@
       </div>
     </Teleport>
 
+    <!-- 项目右键菜单 -->
+    <Teleport to="body">
+      <div
+        v-if="projectContextMenu.open"
+        class="session-ctx-menu"
+        :style="{ top: projectContextMenu.y + 'px', left: projectContextMenu.x + 'px' }"
+      >
+        <button class="session-ctx-item" @click="ctxNewChatInProject">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 5v14M5 12h14"/>
+          </svg>
+          <span>新建对话</span>
+        </button>
+        <button class="session-ctx-item" @click="ctxOpenProjectDir">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+          <span>打开文件夹</span>
+        </button>
+        <div class="session-ctx-divider"></div>
+        <button class="session-ctx-item session-ctx-danger" @click="ctxDeleteProject">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+          <span>删除工作目录</span>
+        </button>
+      </div>
+    </Teleport>
+
     <!-- 重命名弹窗 -->
     <div v-if="showRenameModal" class="modal-overlay" @click="cancelRename">
       <div class="modal-dialog" @click.stop>
@@ -198,6 +220,21 @@
         </div>
       </div>
     </div>
+
+    <!-- 删除工作目录确认弹窗 -->
+    <div v-if="showDeleteProjectModal" class="modal-overlay" @click="cancelDeleteProject">
+      <div class="modal-dialog" @click.stop>
+        <div class="modal-header">确认删除工作目录</div>
+        <div class="modal-body">
+          <p>确定删除工作目录「{{ projectToDelete?.name || projectToDelete?.work_dir }}」及其全部对话？</p>
+          <p>此操作不可恢复。</p>
+        </div>
+        <div class="modal-footer">
+          <button class="modal-btn modal-btn-cancel" @click="cancelDeleteProject">取消</button>
+          <button class="modal-btn modal-btn-danger" @click="confirmDeleteProject">删除</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -211,12 +248,15 @@ import { useUpdateStore } from '@/stores/update'
 import SearchDialog from '@/components/SearchDialog.vue'
 import SessionLoadingDots from '@/components/SessionLoadingDots.vue'
 import { listProjects, updateSessionMeta, deleteSession } from '@/api/sessions'
+import { deleteWorkDirCascade } from '@/api/work_dirs'
 import { workingSessionIds } from '@/utils/sessionWorkStore'
 import { useModelStore } from '@/stores/model'
 import { useSidebar } from '@/composables/useSidebar'
+import { useWorkspaceStore } from '@/stores/workspace'
 
 const modelStore = useModelStore()
 const { sidebarOpen } = useSidebar()
+const workspaceStore = useWorkspaceStore()
 
 interface ProjectSession {
   session_id: string
@@ -257,6 +297,10 @@ const renameInputRef = ref<HTMLInputElement | null>(null)
 const showDeleteModal = ref(false)
 const sessionToDelete = ref<ProjectSession | null>(null)
 
+// 删除工作目录弹窗状态
+const showDeleteProjectModal = ref(false)
+const projectToDelete = ref<Project | null>(null)
+
 // 会话右键菜单状态
 const sessionContextMenu = ref<{
   open: boolean
@@ -264,6 +308,14 @@ const sessionContextMenu = ref<{
   y: number
   session: ProjectSession | null
 }>({ open: false, x: 0, y: 0, session: null })
+
+// 项目右键菜单状态
+const projectContextMenu = ref<{
+  open: boolean
+  x: number
+  y: number
+  project: Project | null
+}>({ open: false, x: 0, y: 0, project: null })
 
 function onSessionContextMenu(e: MouseEvent, session: ProjectSession) {
   // 简单边界处理：菜单宽 ~140，高 ~80，避免溢出窗口
@@ -278,6 +330,38 @@ function closeSessionContextMenu() {
   if (sessionContextMenu.value.open) {
     sessionContextMenu.value = { open: false, x: 0, y: 0, session: null }
   }
+}
+
+function onProjectContextMenu(e: MouseEvent, project: Project) {
+  const menuWidth = 160
+  const menuHeight = 130
+  const x = Math.min(e.clientX, window.innerWidth - menuWidth - 4)
+  const y = Math.min(e.clientY, window.innerHeight - menuHeight - 4)
+  projectContextMenu.value = { open: true, x, y, project }
+}
+
+function closeProjectContextMenu() {
+  if (projectContextMenu.value.open) {
+    projectContextMenu.value = { open: false, x: 0, y: 0, project: null }
+  }
+}
+
+function ctxNewChatInProject() {
+  const p = projectContextMenu.value.project
+  closeProjectContextMenu()
+  if (p) createNewChatInProject(p)
+}
+
+function ctxOpenProjectDir() {
+  const p = projectContextMenu.value.project
+  closeProjectContextMenu()
+  if (p) openProjectDir(p)
+}
+
+function ctxDeleteProject() {
+  const p = projectContextMenu.value.project
+  closeProjectContextMenu()
+  if (p) deleteProjectItem(p)
 }
 
 function ctxRename() {
@@ -314,6 +398,18 @@ async function loadProjects(retries = 5, delay = 1500) {
   }
 }
 
+function onRenameSession(e: Event) {
+  const sessionId = (e as CustomEvent).detail?.sessionId as string | undefined
+  if (!sessionId) return
+  for (const project of projects.value) {
+    const session = project.sessions?.find((s) => s.session_id === sessionId)
+    if (session) {
+      renameSession(session)
+      return
+    }
+  }
+}
+
 function onRefreshProjects() {
   void loadProjects()
 }
@@ -322,6 +418,7 @@ function onGlobalCloseCtxMenu(e: MouseEvent | KeyboardEvent) {
   // 任何点击 / Esc 都关闭菜单（菜单按钮自身的点击会先调到 ctxRename/ctxDelete 然后再触发这里）
   if (e instanceof KeyboardEvent && e.key !== 'Escape') return
   closeSessionContextMenu()
+  closeProjectContextMenu()
 }
 
 onMounted(async () => {
@@ -330,20 +427,23 @@ onMounted(async () => {
   updateStore.check().catch(() => {})
   window.addEventListener('aries:refresh-sessions', onRefreshProjects)
   window.addEventListener('aries:workdir-changed', onRefreshProjects)
+  window.addEventListener('aries:rename-session', onRenameSession)
   window.addEventListener('aries:open-session', onOpenSession)
   window.addEventListener('aries:open-settings', onOpenSettings)
   window.addEventListener('click', onGlobalCloseCtxMenu)
   window.addEventListener('keydown', onGlobalCloseCtxMenu)
   window.addEventListener('contextmenu', (e) => {
-    // 在非会话项上右键也要关掉旧菜单（会话项 onSessionContextMenu 会重新打开）
+    // 在非会话项/非项目行上右键也要关掉旧菜单（对应项的右键会重新打开）
     const target = e.target as HTMLElement | null
     if (!target?.closest('.session-sub')) closeSessionContextMenu()
+    if (!target?.closest('.project-row')) closeProjectContextMenu()
   })
 })
 
 onUnmounted(() => {
   window.removeEventListener('aries:refresh-sessions', onRefreshProjects)
   window.removeEventListener('aries:workdir-changed', onRefreshProjects)
+  window.removeEventListener('aries:rename-session', onRenameSession)
   window.removeEventListener('aries:open-session', onOpenSession)
   window.removeEventListener('aries:open-settings', onOpenSettings)
   window.removeEventListener('click', onGlobalCloseCtxMenu)
@@ -354,7 +454,9 @@ function createNewChat() {
   currentPage.value = 'chat'
   currentSessionId.value = null
   currentProject.value = null
-  window.dispatchEvent(new CustomEvent('aries:new-chat'))
+  window.dispatchEvent(new CustomEvent('aries:new-chat', {
+    detail: { workDir: workspaceStore.workDir }
+  }))
 }
 
 function selectProject(project: Project) {
@@ -493,6 +595,42 @@ async function confirmDelete() {
 function cancelDelete() {
   showDeleteModal.value = false
   sessionToDelete.value = null
+}
+
+function deleteProjectItem(project: Project) {
+  projectToDelete.value = project
+  showDeleteProjectModal.value = true
+}
+
+async function confirmDeleteProject() {
+  if (!projectToDelete.value) return
+  const deletedWorkDir = projectToDelete.value.work_dir
+  try {
+    await deleteWorkDirCascade(deletedWorkDir)
+    // 如果删除的是当前选中的项目，清空选中状态
+    if (currentProject.value?.work_dir === deletedWorkDir) {
+      currentProject.value = null
+    }
+    // 如果删除的是当前工作目录，重置为默认并通知 ChatPage 刷新历史
+    if (workspaceStore.workDir === deletedWorkDir) {
+      workspaceStore.setWorkDir('')
+      window.dispatchEvent(new CustomEvent('aries:workdir-changed', { detail: workspaceStore.workDir }))
+    } else {
+      // 仅通知 ChatPage 刷新历史工作目录列表
+      window.dispatchEvent(new CustomEvent('aries:workdir-changed', { detail: workspaceStore.workDir }))
+    }
+    showDeleteProjectModal.value = false
+    projectToDelete.value = null
+    await loadProjects()
+  } catch (e) {
+    console.error('删除工作目录失败', e)
+    alert('删除工作目录失败：' + (e as Error).message)
+  }
+}
+
+function cancelDeleteProject() {
+  showDeleteProjectModal.value = false
+  projectToDelete.value = null
 }
 </script>
 
@@ -926,7 +1064,7 @@ function cancelDelete() {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  padding: 10px 12px 12px calc(var(--sidebar-width) + 10px);
+  padding: 0 0 0 var(--sidebar-width);
   box-sizing: border-box;
   transition: padding 0.25s ease;
   position: relative;
@@ -934,10 +1072,6 @@ function cancelDelete() {
 
 .workspace-panel {
   flex: 1;
-  background: var(--bg-content);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-panel);
   display: flex;
   flex-direction: column;
   overflow: hidden;
