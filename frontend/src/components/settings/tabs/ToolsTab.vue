@@ -131,6 +131,12 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
+import { useModelStore } from '@/stores/model'
+
+const modelStore = useModelStore()
+function getBaseUrl(): string {
+  return modelStore.getBaseUrl()
+}
 
 interface RoutingConfig {
   prompt_flag?: string
@@ -226,7 +232,7 @@ async function browseAddCLI() {
 async function fetchTools() {
   loading.value = true
   try {
-    const resp = await fetch('/api/tools/detect')
+    const resp = await fetch(`${getBaseUrl()}/api/tools/detect`)
     const data = await resp.json()
     tools.value = Object.values(data.tools) as ToolInfo[]
   } catch (e) {
@@ -254,7 +260,7 @@ async function confirmConnect() {
   const path = connectDialog.path.trim()
   if (!path) return
   try {
-    const resp = await fetch('/api/tools/connect', {
+    const resp = await fetch(`${getBaseUrl()}/api/tools/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cli_id: connectDialog.cliId, path }),
@@ -274,7 +280,7 @@ async function confirmConnect() {
 
 async function disconnect(cliId: string) {
   try {
-    await fetch('/api/tools/disconnect', {
+    await fetch(`${getBaseUrl()}/api/tools/disconnect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cli_id: cliId }),
@@ -289,7 +295,7 @@ async function confirmAddCLI() {
   const path = addPath.value.trim()
   if (!path) return
   try {
-    const resp = await fetch('/api/tools/custom', {
+    const resp = await fetch(`${getBaseUrl()}/api/tools/custom`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path }),
@@ -311,7 +317,7 @@ async function confirmAddCLI() {
 async function deleteCustomCLI(cliId: string) {
   if (!confirm(`确定要删除自定义工具 "${cliId}" 吗？`)) return
   try {
-    const resp = await fetch(`/api/tools/custom/${cliId}`, { method: 'DELETE' })
+    const resp = await fetch(`${getBaseUrl()}/api/tools/custom/${cliId}`, { method: 'DELETE' })
     const data = await resp.json()
     if (data.success) {
       await fetchTools()

@@ -901,13 +901,15 @@ async function loadNewMessages(force: boolean = false) {
     await nextTick()
     scheduleScrollToBottom(true)
 
-    // 异步加载所有助手消息的快照
+    // 异步加载所有尚未加载快照的助手消息
     for (let i = 0; i < allMsgs.length; i++) {
       if (allMsgs[i].role !== 'assistant') continue
       const messageId = allMsgs[i].id
-      if (messageId) {
-        await loadMessageSnapshot(messageId, i, allMsgs[i])
-      }
+      if (!messageId) continue
+      // 跳过已加载 blocks 的消息，避免 WebSocket 事件反复触发 jsonl 请求
+      const existing = messages.value[i]
+      if (existing?.blocks && existing.blocks.length > 0) continue
+      await loadMessageSnapshot(messageId, i, allMsgs[i])
     }
   } catch (err) {
     console.error('加载新消息失败', err)
