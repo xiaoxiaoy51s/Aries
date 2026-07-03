@@ -1,5 +1,9 @@
 <template>
-  <div class="app-container" :class="{ 'sidebar-collapsed': !sidebarOpen }">
+  <div
+    class="app-container"
+    :class="{ 'sidebar-collapsed': !sidebarOpen, 'sidebar-resizing': sidebarResizing }"
+    :style="{ '--sidebar-width': sidebarWidth + 'px' }"
+  >
     <!-- 侧边栏 -->
     <aside class="sidebar">
       <div class="sidebar-actions">
@@ -101,6 +105,16 @@
           <span v-if="hasUpdate" class="sidebar-update-dot" title="有新版本" />
         </button>
       </div>
+
+      <div
+        v-show="sidebarOpen"
+        class="sidebar-resize-handle"
+        :class="{ resizing: sidebarResizing }"
+        @pointerdown="startSidebarResize"
+        @pointermove="onSidebarResize"
+        @pointerup="stopSidebarResize"
+        @pointercancel="stopSidebarResize"
+      />
     </aside>
 
     <!-- 主工作区 -->
@@ -255,7 +269,48 @@ import { useSidebar } from '@/composables/useSidebar'
 import { useWorkspaceStore } from '@/stores/workspace'
 
 const modelStore = useModelStore()
-const { sidebarOpen } = useSidebar()
+const {
+  sidebarOpen,
+  sidebarWidth,
+  clampSidebarWidth,
+  persistSidebarWidth,
+} = useSidebar()
+
+const sidebarResizing = ref(false)
+let sidebarResizeStartX = 0
+let sidebarResizeStartWidth = 0
+let sidebarResizePointerId: number | null = null
+
+function startSidebarResize(e: PointerEvent) {
+  sidebarResizing.value = true
+  sidebarResizeStartX = e.clientX
+  sidebarResizeStartWidth = sidebarWidth.value
+  sidebarResizePointerId = e.pointerId
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  e.preventDefault()
+}
+
+function onSidebarResize(e: PointerEvent) {
+  if (!sidebarResizing.value || e.pointerId !== sidebarResizePointerId) return
+  const delta = e.clientX - sidebarResizeStartX
+  sidebarWidth.value = clampSidebarWidth(sidebarResizeStartWidth + delta)
+}
+
+function stopSidebarResize(e: PointerEvent) {
+  if (!sidebarResizing.value) return
+  sidebarResizing.value = false
+  if (sidebarResizePointerId !== null) {
+    try {
+      ;(e.currentTarget as HTMLElement).releasePointerCapture(sidebarResizePointerId)
+    } catch { /* ignore */ }
+    sidebarResizePointerId = null
+  }
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+  persistSidebarWidth()
+}
 const workspaceStore = useWorkspaceStore()
 
 interface ProjectSession {
@@ -503,6 +558,9 @@ async function openProjectDir(project: Project) {
 
 async function selectSession(id: string) {
   currentSessionId.value = id
+  // 强制触发 ChatPage watch（避免 sessionIdToLoad 未变化时不重新加载）
+  sessionIdToLoad.value = null
+  await nextTick()
   sessionIdToLoad.value = id
   currentPage.value = 'chat'
   if (isPlatformId(id)) {
@@ -655,6 +713,11 @@ function cancelDeleteProject() {
   padding-left: 12px;
 }
 
+.app-container.sidebar-resizing .sidebar,
+.app-container.sidebar-resizing .workspace {
+  transition: none;
+}
+
 /* —— 侧边栏（浮层叠在内容区上方，才能透出模糊） —— */
 .sidebar {
   position: absolute;
@@ -693,9 +756,37 @@ function cancelDeleteProject() {
   z-index: 0;
 }
 
-.sidebar > * {
+.sidebar > *:not(.sidebar-resize-handle) {
   position: relative;
   z-index: 1;
+}
+
+.sidebar-resize-handle {
+  position: absolute;
+  right: -4px;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 60;
+  touch-action: none;
+}
+
+.sidebar-resize-handle::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+  transition: background 0.12s;
+  transform: translateX(-50%);
+}
+
+.sidebar-resize-handle:hover::before,
+.sidebar-resize-handle.resizing::before {
+  background: rgba(59, 130, 246, 0.6);
 }
 
 .sidebar-actions {

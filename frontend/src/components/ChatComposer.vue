@@ -104,19 +104,38 @@
             <div v-if="item.badge" class="plugin-menu-badge">{{ item.badge }}</div>
           </div>
         </div>
-        <div v-if="filteredSubagentItems.length" class="plugin-menu-divider"></div>
-        <div v-if="filteredSubagentItems.length" class="plugin-menu-group">
+        <div v-if="filteredAgentModeItems.length || filteredSubagentItems.length" class="plugin-menu-divider"></div>
+        <div v-if="filteredAgentModeItems.length || filteredSubagentItems.length" class="plugin-menu-group">
           <div class="plugin-menu-group-title">子Agent</div>
+          <div
+            v-for="(item, mIdx) in filteredAgentModeItems"
+            :key="item.id"
+            class="plugin-menu-item"
+            :class="{
+              'plugin-menu-item--active': filteredPluginItems.length + mIdx === pluginSelectedIndex,
+              'plugin-menu-item--disabled': item.disabled,
+            }"
+            @click="onPluginClick(item)"
+            @mouseenter="pluginSelectedIndex = filteredPluginItems.length + mIdx"
+          >
+            <div class="plugin-menu-icon" v-html="pluginIconFor(item.icon)"></div>
+            <div class="plugin-menu-text">
+              <span class="plugin-menu-label">{{ item.label }}</span>
+              <span class="plugin-menu-desc">{{ item.description }}</span>
+            </div>
+            <div v-if="item.badge" class="plugin-menu-badge">{{ item.badge }}</div>
+          </div>
+          <div v-if="filteredAgentModeItems.length && filteredSubagentItems.length" class="plugin-menu-divider plugin-menu-divider--inner"></div>
           <div
             v-for="(agent, aIdx) in filteredSubagentItems"
             :key="agent.id"
             class="plugin-menu-item"
             :class="{
-              'plugin-menu-item--active': filteredPluginItems.length + aIdx === pluginSelectedIndex,
+              'plugin-menu-item--active': filteredPluginItems.length + filteredAgentModeItems.length + aIdx === pluginSelectedIndex,
               'plugin-menu-item--disabled': agent.disabled,
             }"
             @click="onSubagentClick(agent)"
-            @mouseenter="pluginSelectedIndex = filteredPluginItems.length + aIdx"
+            @mouseenter="pluginSelectedIndex = filteredPluginItems.length + filteredAgentModeItems.length + aIdx"
           >
             <div class="plugin-menu-icon" v-html="pluginIconFor(agent.icon)"></div>
             <div class="plugin-menu-text">
@@ -925,13 +944,16 @@ const attachedImagesProxy = computed({
   set: (val) => emit('update:attachedImages', val)
 })
 
+const AGENT_MODE_ITEMS: PluginItem[] = [
+  { id: 'ask', icon: 'message-circle', label: '问答', description: '回答问题、解释代码（只读）' },
+  { id: 'explore', icon: 'compass', label: '探索', description: '快速扫描代码库、定位关键文件（只读）' },
+  { id: 'plan', icon: 'map', label: '规划', description: '制定实现计划，不修改代码' },
+]
+
 const pluginItems = computed<PluginItem[]>(() => {
   const percent = props.contextUsagePercent ?? 0
   const compactBadge = percent > 0 ? `已使用 ${percent}%` : undefined
   return [
-    { id: 'ask', icon: 'message-circle', label: '问答', description: '回答问题、解释代码（只读）' },
-    { id: 'explore', icon: 'compass', label: '探索', description: '快速扫描代码库、定位关键文件（只读）' },
-    { id: 'plan', icon: 'map', label: '规划', description: '制定实现计划，不修改代码' },
     { id: 'role', icon: 'shield', label: '规则', description: '设置 AI 行为约束规则' },
     { id: 'mcp', icon: 'cpu', label: 'MCP', description: '显示 MCP 服务器状态' },
     { id: 'skill', icon: 'zap', label: '技能', description: '查看和调用可用技能' },
@@ -1035,6 +1057,14 @@ const filteredPluginItems = computed(() => {
   )
 })
 
+const filteredAgentModeItems = computed(() => {
+  const q = currentSlashQuery.value
+  if (!q) return AGENT_MODE_ITEMS
+  return AGENT_MODE_ITEMS.filter(
+    (i) => i.id.toLowerCase().includes(q) || i.label.toLowerCase().includes(q)
+  )
+})
+
 const filteredSubagentItems = computed(() => {
   const q = currentSlashQuery.value
   if (!q) return subagentItems.value
@@ -1044,10 +1074,10 @@ const filteredSubagentItems = computed(() => {
 })
 
 const totalPluginItems = computed(
-  () => filteredPluginItems.value.length + filteredSubagentItems.value.length
+  () => filteredPluginItems.value.length + filteredAgentModeItems.value.length + filteredSubagentItems.value.length
 )
 
-watch([filteredPluginItems, filteredSubagentItems], () => {
+watch([filteredPluginItems, filteredAgentModeItems, filteredSubagentItems], () => {
   if (pluginSelectedIndex.value >= totalPluginItems.value) {
     pluginSelectedIndex.value = 0
   }
@@ -1064,7 +1094,7 @@ function onPluginKeydown(e: KeyboardEvent) {
     const n = totalPluginItems.value
     if (n > 0) pluginSelectedIndex.value = (pluginSelectedIndex.value - 1 + n) % n
   } else if (e.key === 'Enter' || e.key === 'Tab') {
-    const list = [...filteredPluginItems.value, ...filteredSubagentItems.value]
+    const list = [...filteredPluginItems.value, ...filteredAgentModeItems.value, ...filteredSubagentItems.value]
     const item = list[pluginSelectedIndex.value]
     if (item) {
       e.preventDefault()
@@ -1084,6 +1114,14 @@ function onPluginKeydown(e: KeyboardEvent) {
 
 function pluginIconFor(name: string): string {
   const ICON_PATHS: Record<string, string> = {
+    'message-circle':
+      '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+    compass:
+      '<circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>',
+    map:
+      '<polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/>',
+    shield:
+      '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
     'file-text':
       '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/>',
     cpu:

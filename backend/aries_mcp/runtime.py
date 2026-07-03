@@ -378,10 +378,18 @@ def _stdio_server_params(server: dict[str, Any]):
     if command_str in ("npx",):
         arg_list = _prepare_npx_args(arg_list, env_dict)
 
+    # 提取 cwd（MCP 子进程的工作目录）
+    cwd = server.get("cwd")
+    if isinstance(cwd, str) and cwd.strip():
+        cwd = cwd.strip()
+    else:
+        cwd = None
+
     return StdioServerParameters(
         command=resolved_command,
         args=arg_list,
         env=env_dict,
+        cwd=cwd,
     )
 
 

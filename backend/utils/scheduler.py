@@ -65,7 +65,6 @@ async def scan_and_execute():
 
 async def execute_task(task: dict):
     from services.platform_chat import run_agent_in_session, session_id_for
-    from services.platform_push import push_message_to_platform
 
     task_id = task["id"]
     title = (task.get("title") or "").strip()
@@ -107,28 +106,19 @@ async def execute_task(task: dict):
         print(f"[Scheduler] 任务 {task_id} AI 回复: {(reply or '')[:120]}", flush=True)
         logger.info("[Scheduler] 任务 %s AI 回复长度=%s", task_id, len(reply or ""))
 
-        await _push_task_reply(task_id, push_platform, reply, push_message_to_platform)
+        if push_platform in ("wechat", "qq", "feishu"):
+            print(
+                f"[Scheduler] 任务 {task_id} 结果已写入会话，"
+                f"是否推送到 {push_platform} 由 AI 通过 send_message_to_user / send_file_to_user 等工具自行决定",
+                flush=True,
+            )
+
         _handle_post_execution(task, task_id, session_id=session_id)
 
     except Exception as e:
         print(f"[Scheduler] 任务 {task_id} 执行失败: {e}", flush=True)
         logger.exception("[Scheduler] 任务 %s 执行失败", task_id)
         update_task_status(task_id, "failed", executed_at=local_now_iso())
-
-
-async def _push_task_reply(task_id, push_platform, reply, push_message_to_platform):
-    if push_platform not in ("wechat", "qq", "feishu"):
-        print(f"[Scheduler] 任务 {task_id} 未推送到手机（session 为网页会话）", flush=True)
-        return
-
-    try:
-        pushed = await push_message_to_platform(push_platform, reply or "")
-        status = "成功" if pushed else "失败（请检查平台绑定，并先用手机发一条消息）"
-        print(f"[Scheduler] 任务 {task_id} 推送到 {push_platform}: {status}", flush=True)
-        logger.info("[Scheduler] 任务 %s 推送到 %s: %s", task_id, push_platform, status)
-    except Exception as e:
-        print(f"[Scheduler] 任务 {task_id} 推送到 {push_platform} 异常: {e}", flush=True)
-        logger.exception("[Scheduler] 任务 %s 推送异常", task_id)
 
 
 def _handle_post_execution(task: dict, task_id: int, *, session_id: str) -> None:

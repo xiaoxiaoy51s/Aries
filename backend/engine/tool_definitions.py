@@ -94,7 +94,9 @@ def _handle_create_scheduled_task(
         if schedule_type == SCHEDULE_INTERVAL and interval_mins:
             lines.append(f"interval_minutes：{interval_mins}")
         lines.append(f"session_id：{effective_session or '（新建网页会话）'}")
-        lines.append(f"结果推送：{_notify_label(resolved_notify)}")
+        lines.append(f"目标会话：{_notify_label(resolved_notify)}")
+        if resolved_notify in ("wechat", "qq", "feishu"):
+            lines.append("主动推送：需 AI 自行调用 send_message_to_user / send_file_to_user 决定是否发送（系统不再自动推送）")
         lines.append(f"执行后自动删除：{'是' if payload.get('auto_delete') else '否'}")
         output = "\n".join(lines)
 
@@ -122,27 +124,84 @@ def _get_file_manager(work_dir: str | None) -> Any:
     return FileManagerTool(work_dir=work_dir)
 
 
+def _normalize_platform(raw: str | None) -> str | None:
+    """将 AI 传入的平台名映射为内部标识（wechat/qq/feishu）。"""
+    key = (raw or "").strip()
+    if not key:
+        return None
+    lower = key.lower()
+    if lower in ("wechat", "微信"):
+        return "wechat"
+    if lower in ("qq",):
+        return "qq"
+    if key in ("QQ",) or lower in ("feishu", "飞书"):
+        return "feishu"
+    return None
+
+
+def _platform_send_gate(platform: str | None, *, kind: str) -> dict | None:
+    from services.bot_manager import is_platform_bound, platform_unbound_message
+
+    if not platform:
+        return {
+            "success": False,
+            "error": "缺少或无效的平台参数",
+            "output": "请指定 platform：微信、QQ 或 飞书",
+        }
+
+    if not is_platform_bound(platform):
+        msg = platform_unbound_message(platform)
+        return {"success": False, "error": msg, "output": msg}
+    return None
+
+
+async def _handle_send_message_to_user(
+    kwargs: dict,
+    session_id: str | None = None,
+) -> dict:
+    """将文本消息发送到指定平台（飞书/QQ/微信）。"""
+    from services.bot_manager import PLATFORM_NAMES
+    from services.platform_push import push_message_to_platform
+
+    message = str(kwargs.get("message") or "").strip()
+    if not message:
+        return {"success": False, "error": "缺少 message 参数", "output": "缺少 message 参数"}
+
+    platform = _normalize_platform(str(kwargs.get("platform") or ""))
+    gate = _platform_send_gate(platform, kind="消息")
+    if gate:
+        return gate
+
+    ok = await push_message_to_platform(platform, message)
+    label = PLATFORM_NAMES.get(platform, platform)
+    if ok:
+        preview = message if len(message) <= 80 else message[:80] + "…"
+        return {
+            "success": True,
+            "error": "",
+            "output": f"已通过{label}发送消息: {preview}",
+        }
+    return {
+        "success": False,
+        "error": f"{label}消息发送失败",
+        "output": f"{label}消息发送失败，请检查 bot 是否在线，并确认用户曾向 bot 发送过消息",
+    }
+
 
 async def _handle_send_file_to_user(
     kwargs: dict,
     work_dir: str = "",
     session_id: str | None = None,
 ) -> dict:
-    """将文件发送到用户当前使用的平台（飞书/QQ）。
-
-    根据 session_id 判断平台：
-    - __feishu__ → 飞书文件发送
-    - __qq__ → QQ 文件发送
-    - __wechat__ → 微信暂不支持
-    - 其他 → 网页会话不支持
-    """
+    """将文件发送到指定平台（飞书/QQ）。"""
     from pathlib import Path
+
+    from services.bot_manager import PLATFORM_NAMES
 
     file_path = str(kwargs.get("file_path") or "").strip()
     if not file_path:
         return {"success": False, "error": "缺少 file_path 参数", "output": "缺少 file_path 参数"}
 
-    # 解析文件路径（支持相对路径）
     raw_path = Path(file_path)
     if not raw_path.is_absolute() and work_dir:
         raw_path = Path(work_dir) / raw_path
@@ -151,36 +210,31 @@ async def _handle_send_file_to_user(
     if not Path(resolved).is_file():
         return {"success": False, "error": f"文件不存在: {resolved}", "output": f"文件不存在: {resolved}"}
 
-    # 判断平台
-    sid = (session_id or "").strip()
-    platform = None
-    if sid == "__feishu__":
-        platform = "feishu"
-    elif sid == "__qq__":
-        platform = "qq"
-    elif sid == "__wechat__":
-        platform = "wechat"
-    elif sid.startswith("__"):
-        platform = sid.strip("__")
+    platform = _normalize_platform(str(kwargs.get("platform") or ""))
+    gate = _platform_send_gate(platform, kind="文件")
+    if gate:
+        return gate
+
+    label = PLATFORM_NAMES.get(platform, platform)
+
+    if platform == "wechat":
+        return {"success": False, "error": "微信暂不支持发送文件", "output": "微信平台暂不支持发送文件功能"}
 
     if platform == "feishu":
         from services.feishu_file import send_file_to_feishu
         ok = send_file_to_feishu(resolved)
         if ok:
-            return {"success": True, "error": "", "output": f"已通过飞书发送文件: {Path(resolved).name}"}
+            return {"success": True, "error": "", "output": f"已通过{label}发送文件: {Path(resolved).name}"}
         return {"success": False, "error": "飞书文件发送失败", "output": "飞书文件发送失败，请检查 bot 是否在线及文件大小"}
 
     if platform == "qq":
         from services.qq_file import send_file_to_qq
         ok = await send_file_to_qq(resolved)
         if ok:
-            return {"success": True, "error": "", "output": f"已通过QQ发送文件: {Path(resolved).name}"}
+            return {"success": True, "error": "", "output": f"已通过{label}发送文件: {Path(resolved).name}"}
         return {"success": False, "error": "QQ文件发送失败", "output": "QQ文件发送失败，请检查 bot 是否在线及文件大小"}
 
-    if platform == "wechat":
-        return {"success": False, "error": "微信暂不支持发送文件", "output": "微信平台暂不支持发送文件功能"}
-
-    return {"success": False, "error": "当前会话不支持发送文件", "output": "网页会话不支持发送文件，请在飞书/QQ对话中使用"}
+    return {"success": False, "error": "未知平台", "output": "未知平台，请使用：微信、QQ 或 飞书"}
 
 
 async def _handle_check_command_status(kwargs: dict) -> dict:
@@ -320,6 +374,11 @@ async def execute_async(
                 cli_kwargs["invocation_id"] = invocation_id
             cli_kwargs["cancel_event"] = cancel_event
             return await executor.execute_async(**cli_kwargs)
+
+        if tool == "send_message_to_user":
+            merged_kwargs = dict(args) if args else {}
+            merged_kwargs.update(kwargs)
+            return await _handle_send_message_to_user(merged_kwargs, session_id=session_id)
 
         if tool == "send_file_to_user":
             merged_kwargs = dict(args) if args else {}

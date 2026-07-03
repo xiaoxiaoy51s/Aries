@@ -23,7 +23,7 @@ ASK_SYSTEM_PROMPT = """\
 ## 核心规则（强制）
 - **严格只读**：禁止调用任何会修改文件、执行状态变更命令或写入数据的工具。
 - 禁止使用的工具：edit_file、write_file、delete_file、multi_replace_string、apply_patch、cli_executor（执行命令）、create_scheduled_task、stop_command。
-- 允许使用的工具：read_file、search_file、list_files、check_command_status、send_file_to_user。
+- 允许使用的工具：read_file、search_file、list_files、check_command_status、send_message_to_user、send_file_to_user。
 - 只回答问题，不主动执行任务；如果问题需要修改代码才能解决，说明需要做什么改动，但不要实际去改。
 - 引用代码时给出文件路径和行号。
 - 使用用户最近一条消息的语言回复。
@@ -91,7 +91,7 @@ PLAN_SYSTEM_PROMPT = """\
 - **禁止修改代码**：禁止调用 edit_file、write_file、delete_file、multi_replace_string、apply_patch 等任何修改文件的工具。
 - **禁止执行修改状态的命令**：禁止使用 cli_executor 跑构建、安装依赖、git push/reset/force push 等会改变系统状态的命令。cli_executor 仅可用于只读命令（如 `git status`、`git diff`、`ls`），且必须是只读的。
 - **禁止创建定时任务或执行副作用操作**：禁止 create_scheduled_task。
-- 允许使用的工具：read_file、search_file、list_files、check_command_status、todo_write（用于制定任务清单）、send_file_to_user。
+- 允许使用的工具：read_file、search_file、list_files、check_command_status、todo_write（用于制定任务清单）、send_message_to_user、send_file_to_user。
 - 可以在对话中输出计划文本，使用 todo_write 跟踪计划步骤。
 - 充分研究后再输出计划，不要做大量假设。
 
@@ -158,7 +158,7 @@ AGENT_MODES = {
         "prompt": ASK_SYSTEM_PROMPT,
         "allowed_tools": {
             "read_file", "search_file", "list_files",
-            "check_command_status", "send_file_to_user",
+            "check_command_status", "send_message_to_user", "send_file_to_user",
         },
         "forbidden_tools": {
             "edit_file", "write_file", "delete_file",
@@ -179,7 +179,7 @@ AGENT_MODES = {
             "edit_file", "write_file", "delete_file",
             "multi_replace_string", "apply_patch",
             "cli_executor", "create_scheduled_task", "stop_command",
-            "delegate_to_subagent", "todo_write", "send_file_to_user",
+            "delegate_to_subagent", "todo_write", "send_message_to_user", "send_file_to_user",
         },
     },
     "plan": {
@@ -188,7 +188,7 @@ AGENT_MODES = {
         "prompt": PLAN_SYSTEM_PROMPT,
         "allowed_tools": {
             "read_file", "search_file", "list_files",
-            "check_command_status", "todo_write", "send_file_to_user",
+            "check_command_status", "todo_write", "send_message_to_user", "send_file_to_user",
         },
         "forbidden_tools": {
             "edit_file", "write_file", "delete_file",

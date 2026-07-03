@@ -31,6 +31,30 @@ def is_platform_enabled(platform: str) -> bool:
     return config.get(platform, {}).get("enabled", False)
 
 
+PLATFORM_NAMES = {"qq": "QQ", "feishu": "飞书", "wechat": "微信"}
+
+
+def is_platform_bound(platform: str) -> bool:
+    """检查平台是否已绑定且启用（有凭据且 enabled=true）。"""
+    config = _load_bot_config()
+    pconf = config.get(platform, {})
+    if not pconf.get("enabled", False):
+        return False
+    if platform == "feishu":
+        from services.feishu_link import is_configured
+        return is_configured()
+    if platform == "qq":
+        return bool((pconf.get("app_id") or "").strip() and (pconf.get("app_secret") or "").strip())
+    if platform == "wechat":
+        return bool((pconf.get("bot_token") or "").strip())
+    return False
+
+
+def platform_unbound_message(platform: str) -> str:
+    name = PLATFORM_NAMES.get(platform, platform)
+    return f"用户暂未绑定{name}平台，无法发送。请停止发送并告知用户前往设置中绑定{name}。"
+
+
 def start_all_bots():
     started = {"qq": 0, "wechat": 0, "feishu": 0}
     if is_platform_enabled("qq"):

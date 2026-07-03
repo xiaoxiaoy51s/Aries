@@ -250,6 +250,8 @@ import {
   parseStoredImagePaths,
   sessionHasActiveWork,
 } from '@/utils/chatMessageHelpers'
+import { rebuildAssistantFromJsonl } from '@/utils/jsonlCatchUp'
+import { streamDiag, setStreamDebugEnabled } from '@/utils/streamDebug'
 import { handleSubagentLogWsPayload } from '@/utils/chatSubagentWs'
 import {
   buildMessageFromSnapshotEvents,
@@ -285,6 +287,8 @@ import {
   setOnReconnect,
   buildWsKeepSet,
   isSessionWsConnected,
+  reconnectSessionWs,
+  setKeepAliveSession,
   type SessionChatSnapshot,
 } from '@/utils/sessionChatPool'
 
@@ -494,6 +498,7 @@ function ensureLogPlaceholder(messageId: number, jsonlPath: string) {
   if (currentSessionId.value) {
     markSessionWorking(currentSessionId.value)
   }
+  streamDiag('State', 'ensureLogPlaceholder', streamStateSnapshot({ messageId, jsonlPath }))
   nextTick(() => scheduleScrollToBottom(true))
 }
 
@@ -528,6 +533,7 @@ function applyLogEvent(event: Record<string, any>, messageId: number, jsonlPath:
     return
   }
   if (evtType === 'log_complete') {
+    streamDiag('Event', 'applyLogEvent log_complete (nested)', streamStateSnapshot({ messageId }))
     completeLogMessage(messageId)
     return
   }
@@ -644,6 +650,7 @@ function findAssistantMessageIndex(messageId: number): number {
  * log_complete：标记当前 placeholder 完成，更新 isLoading / isSending
  */
 function completeLogMessage(messageId: number) {
+  streamDiag('State', 'completeLogMessage → UI idle', streamStateSnapshot({ messageId, source: 'log_complete' }))
   const idx = findAssistantMessageIndex(messageId)
   const pendingMeta = messageId ? pendingRunMetaByMessageId.get(messageId) : undefined
   if (idx >= 0) {
@@ -842,11 +849,32 @@ const messages = ref<ChatMessage[]>([])
 const composerIsSending = computed(() => {
   const sid = currentSessionId.value
   if (!sid || stoppedSessions.has(sid)) return false
+  if (isSessionWorking(sid)) return true
   return sessionHasActiveWork(messages.value, isSending.value)
 })
 
-/** 清除过期的 sending / loading UI（后端未跑时不应显示转圈） */
-function clearStaleSendingUi() {
+/** 诊断用：当前流式/UI 状态快照（安全，不抛错） */
+function streamStateSnapshot(extra?: Record<string, unknown>) {
+  try {
+    const sid = currentSessionId.value
+    return {
+      sessionId: sid,
+      isSending: isSending.value,
+      isSessionWorking: sid ? isSessionWorking(sid) : false,
+      wsConnected: sid ? isSessionWsConnected(sid) : false,
+      activeAssistantMessageId,
+      activeAssistantIdx,
+      loadingAssistantCount: messages.value.filter((m) => m?.role === 'assistant' && m.isLoading).length,
+      ...extra,
+    }
+  } catch {
+    return { ...(extra || {}) }
+  }
+}
+
+/** 清除过期的 sending / loading UI（仅在后端确认已结束时调用） */
+function clearStaleSendingUi(reason = 'unknown') {
+  streamDiag('State', 'clearStaleSendingUi', streamStateSnapshot({ reason }))
   isSending.value = false
   let changed = false
   messages.value = messages.value.map((m) => {
@@ -908,8 +936,18 @@ function syncSessionWorkingState(sessionId?: string) {
     ? isSending.value
     : !!loadSessionSnapshot(sid)?.isSending
   const working = sessionHasActiveWork(msgs, sending)
+  const prevWorking = isSessionWorking(sid)
   if (working) markSessionWorking(sid)
   else markSessionIdle(sid)
+  if (prevWorking !== working) {
+    streamDiag('State', 'syncSessionWorkingState', streamStateSnapshot({
+      sid,
+      working,
+      prevWorking,
+      sending,
+      loadingAssistantCount: msgs.filter((m) => m && (m as ChatMessage).role === 'assistant' && (m as ChatMessage).isLoading).length,
+    }))
+  }
   persistCurrentSessionSnapshot(sid)
 }
 
@@ -923,8 +961,9 @@ function syncSnapshotWorkingState(sessionId: string, snapshot: SessionChatSnapsh
 }
 
 /** 后端仍在跑但 UI 丢失 loading 时，恢复输入框停止按钮与消息 loading 态 */
-function restoreRunningAssistantUi() {
+function restoreRunningAssistantUi(reason = 'unknown') {
   if (!currentSessionId.value) return
+  streamDiag('State', 'restoreRunningAssistantUi', streamStateSnapshot({ reason }))
   isSending.value = true
 
   let idx = activeAssistantIdx
@@ -958,7 +997,89 @@ function restoreRunningAssistantUi() {
   activeAssistantIdx = idx
 }
 
+async function catchUpActiveAssistantFromJsonl(sessionId: string): Promise<boolean> {
+  if (sessionId !== currentSessionId.value) return false
+  streamDiag('Resume', 'catchUpActiveAssistantFromJsonl start', streamStateSnapshot({ sessionId }))
+
+  let messageId = activeAssistantMessageId
+  let idx = messageId ? findAssistantMessageIndex(messageId) : activeAssistantIdx
+
+  if (idx == null || idx < 0) {
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      const m = messages.value[i]
+      if (m.role === 'assistant' && (m.isLoading || messageHasRunningWork(m))) {
+        idx = i
+        messageId = m.messageId || null
+        break
+      }
+    }
+  }
+
+  if (idx == null || idx < 0) {
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      if (messages.value[i].role === 'assistant') {
+        idx = i
+        messageId = messages.value[i].messageId || null
+        break
+      }
+    }
+  }
+
+  if (idx == null || idx < 0 || !messageId) {
+    streamDiag('Resume', 'catchUp skip: no messageId', streamStateSnapshot({ sessionId }))
+    return false
+  }
+
+  const prev = messages.value[idx]
+  if (!prev || prev.role !== 'assistant') return false
+
+  try {
+    const rebuilt = await rebuildAssistantFromJsonl(
+      modelStore.getBaseUrl(),
+      messageId,
+      prev,
+      upsertSubagent,
+    )
+    if (!rebuilt) {
+      streamDiag('Resume', 'catchUp skip: empty jsonl', streamStateSnapshot({ sessionId, messageId }))
+      return false
+    }
+
+    const running = await checkChatStatus(sessionId)
+    streamDiag('Resume', 'catchUp jsonl rebuilt', streamStateSnapshot({
+      sessionId,
+      messageId,
+      backendRunning: running,
+      contentLen: rebuilt.content?.length ?? 0,
+    }))
+    // 仅在后端明确 false 时才清 loading；null（网络抖动）保持 loading，交由权威轮询纠正
+    const stillRunning = running !== false
+    messages.value[idx] = {
+      ...rebuilt,
+      isLoading: stillRunning,
+    }
+    activeAssistantMessageId = messageId
+    activeAssistantIdx = idx
+    if (stillRunning) {
+      isSending.value = true
+      markSessionWorking(sessionId)
+    }
+    return true
+  } catch (err) {
+    streamDiag('Resume', 'catchUp failed', streamStateSnapshot({
+      sessionId,
+      messageId,
+      error: String((err as Error)?.message || err),
+    }))
+    return false
+  }
+}
+
 async function restoreSessionAfterWsReconnect(sessionId: string) {
+  streamDiag('Resume', 'restoreSessionAfterWsReconnect start', {
+    ...streamStateSnapshot(),
+    targetSessionId: sessionId,
+  })
   const snap = loadSessionSnapshot(sessionId)
   const msgs = sessionId === currentSessionId.value
     ? messages.value
@@ -973,10 +1094,20 @@ async function restoreSessionAfterWsReconnect(sessionId: string) {
     running === true ||
     (localActive && running !== false)
 
+  streamDiag('Resume', 'restoreSessionAfterWsReconnect status', {
+    sessionId,
+    running,
+    localActive,
+    shouldBeWorking,
+    wsConnected: isSessionWsConnected(sessionId),
+  })
+
   if (!shouldBeWorking) {
     markSessionIdle(sessionId)
     if (sessionId === currentSessionId.value) {
-      clearStaleSendingUi()
+      if (running === false) {
+        clearStaleSendingUi('restoreAfterWsReconnect: backend not running')
+      }
       void loadNewMessages(true).catch(() => {})
     }
     return
@@ -985,6 +1116,7 @@ async function restoreSessionAfterWsReconnect(sessionId: string) {
   markSessionWorking(sessionId)
   if (sessionId === currentSessionId.value) {
     if (running === true || localActive) {
+      await catchUpActiveAssistantFromJsonl(sessionId)
       restoreRunningAssistantUi()
     }
     syncSessionWorkingState(sessionId)
@@ -1110,6 +1242,9 @@ async function processChatWsPayload(data: Record<string, unknown>) {
     applyLogEvent(evt, evtMessageId, String(data.jsonl_path || ''))
     syncSessionWorkingState()
   } else if (data.type === 'log_complete') {
+    streamDiag('Event', 'processChatWsPayload log_complete (top-level)', streamStateSnapshot({
+      messageId: data.message_id,
+    }))
     stoppedSessions.delete(currentSessionId.value || '')
     completeLogMessage(Number(data.message_id) || 0)
   } else if (
@@ -1181,6 +1316,8 @@ function handleChatWsForSession(sessionId: string, data: Record<string, unknown>
 async function ensureChatWsReady() {
   const sid = currentSessionId.value
   if (!sid) return
+  // 当前查看的 session 始终保活 WS：即使 working 被误清，也会重连并用后端状态自愈
+  setKeepAliveSession(sid)
   const wsBase = modelStore.getBaseUrl().replace(/^http/, 'ws')
   setSessionWsHandler(sid, (data) => handleChatWsForSession(sid, data))
   await ensureSessionWs(sid, wsBase)
@@ -1200,35 +1337,93 @@ function stopChatWs(clearRouting = true) {
   }
 }
 
-/** 周期性健康检查：确保 working session 的 WebSocket 保持连接 */
-function healthCheckWorkingSessions() {
+/**
+ * 需要后端连续确认结束的次数，避免单次抖动误清（后端 is_bg_running
+ * 在任务结束后立刻 false，2 次 = 约 2×轮询间隔的确认窗口）。
+ */
+const IDLE_CONFIRM_THRESHOLD = 2
+const sessionIdleFalseCount = new Map<string, number>()
+/** 防止轮询请求重叠（上一轮未完成时跳过） */
+let pollInFlight = false
+
+/**
+ * 权威状态轮询：以后端 /chat/status 为唯一真相。
+ *
+ * 设计目标（回应「只要后端还在写该 session 的日志就不能断开」）：
+ * - 后端 running=true → 强制保持 working + loading，并确保 WS 连接（断则重连补拉）
+ * - 后端 running=false → 需连续多次确认才置为 idle（防抖动/防上一轮误清）
+ * - 后端 running=null（网络错误）→ 保持现状，绝不主动断开
+ *
+ * 这样即使 WS 抖动或前端状态被误清，也会在一个轮询周期内自愈。
+ */
+async function pollAuthoritativeStatus() {
+  if (pollInFlight) return
   const sid = currentSessionId.value
-  const localActive = sid ? sessionHasActiveWork(messages.value, isSending.value) : false
-
-  // working 标记残留但本地无活动 → 向后端确认并清理
-  if (sid && isSessionWorking(sid) && !localActive) {
-    void checkChatStatus(sid).then((running) => {
-      if (running !== true && sid === currentSessionId.value) {
-        markSessionIdle(sid)
-        clearStaleSendingUi()
-      }
-    }).catch(() => {})
-  }
-
-  const workingIds = [...workingSessionIds.value]
-  if (sid && localActive && !workingIds.includes(sid)) {
-    syncSessionWorkingState(sid)
-    workingIds.push(sid)
-  }
-
-  if (workingIds.length === 0) return
+  const candidates = new Set<string>(workingSessionIds.value)
+  if (sid) candidates.add(sid)
+  if (candidates.size === 0) return
 
   const wsBase = modelStore.getBaseUrl().replace(/^http/, 'ws')
-  for (const wsSid of workingIds) {
-    if (!isSessionWsConnected(wsSid)) {
-      console.info(`[HealthCheck] ${wsSid} WS 断开，尝试重连`)
-      setSessionWsHandler(wsSid, (data) => handleChatWsForSession(wsSid, data))
-      void ensureSessionWs(wsSid, wsBase).catch(() => {})
+  pollInFlight = true
+  try {
+    await runAuthoritativeStatusPoll(candidates, wsBase)
+  } finally {
+    pollInFlight = false
+  }
+}
+
+async function runAuthoritativeStatusPoll(candidates: Set<string>, wsBase: string) {
+  for (const cand of candidates) {
+    // 用户主动停止的会话不再拉起
+    if (stoppedSessions.has(cand)) {
+      sessionIdleFalseCount.delete(cand)
+      continue
+    }
+
+    let running: boolean | null
+    try {
+      running = await checkChatStatus(cand)
+    } catch {
+      running = null
+    }
+    // 轮询期间可能已切走当前会话
+    const isCurrent = cand === currentSessionId.value
+
+    if (running === true) {
+      sessionIdleFalseCount.delete(cand)
+      markSessionWorking(cand)
+      // 保证 WS 在线：断了就带补拉重连
+      if (!isSessionWsConnected(cand)) {
+        streamDiag('Health', 'poll: backend running but WS down → reconnect', { cand, isCurrent })
+        setSessionWsHandler(cand, (data) => handleChatWsForSession(cand, data))
+        reconnectSessionWs(cand, wsBase)
+      }
+      if (isCurrent) {
+        const hasLoading = messages.value.some((m) => m.role === 'assistant' && m.isLoading)
+        if (!isSending.value || !hasLoading) {
+          streamDiag('State', 'poll: backend running → restore UI', streamStateSnapshot({ cand }))
+          restoreRunningAssistantUi('poll: backend running')
+        }
+        isSending.value = true
+      }
+    } else if (running === false) {
+      const count = (sessionIdleFalseCount.get(cand) || 0) + 1
+      sessionIdleFalseCount.set(cand, count)
+      if (count >= IDLE_CONFIRM_THRESHOLD) {
+        sessionIdleFalseCount.delete(cand)
+        if (isSessionWorking(cand)) {
+          streamDiag('State', 'poll: backend idle confirmed → mark idle', streamStateSnapshot({ cand }))
+          markSessionIdle(cand)
+          if (isCurrent) {
+            clearStaleSendingUi('poll: backend not running (confirmed)')
+          } else {
+            syncSessionWorkingState(cand)
+          }
+        }
+      }
+    } else {
+      // running === null：网络错误，保持现状，不清状态
+      streamDiag('Health', 'poll: status null (network?) → keep', { cand })
     }
   }
 }
@@ -1362,6 +1557,8 @@ function onNewChat(e?: Event) {
     persistCurrentSessionSnapshot(currentSessionId.value)
     stopChatWs(false)
   }
+  // 新对话：清除保活标记（旧 session 若仍 working 由 workingSessionIds 继续保活）
+  setKeepAliveSession(null)
   currentSessionId.value = undefined
   currentSessionTitle.value = ''
   bottomConsoleOpen.value = false
@@ -1516,6 +1713,7 @@ async function finishSessionSwitch(id: string, seq: number): Promise<void> {
   void ensureChatWsReady()
   if (isStaleSessionLoad(seq)) return
   emit('sessionLoaded')
+  // 非阻塞：切换会话不等待状态检查/补拉，避免切换卡顿
   void tryResumeSession(id)
   void refreshSessionContextUsage(id, seq)
 }
@@ -1634,84 +1832,106 @@ async function loadSessionById(id: string) {
   if (!id) return
   const seq = ++loadSessionSeq
 
-  const prevId = currentSessionId.value
-  if (prevId && prevId !== id) {
-    persistCurrentSessionSnapshot(prevId)
-    stopChatWs(false)
-  }
-
-  currentSessionId.value = id
-  isSending.value = false
-  inputMessage.value = ''
-  clearAttachedImages()
-  clearComposerCommand()
-
-  const cached = loadSessionSnapshot(id)
-  if (cached?.messages?.length) {
-    restoreSessionSnapshot(cached)
-    // 快照里的 isSending/isLoading 可能过期；若后端仍在跑，tryResumeSession 会恢复
-    clearStaleSendingUi()
-    await nextTick()
-    if (isStaleSessionLoad(seq)) return
-    scheduleScrollToBottom(true)
-    void applySessionWorkDir(id, seq)
-    const wsBase = modelStore.getBaseUrl().replace(/^http/, 'ws')
-    for (const wsSid of buildWsKeepSet(id)) {
-      setSessionWsHandler(wsSid, (data) => handleChatWsForSession(wsSid, data))
-      void ensureSessionWs(wsSid, wsBase)
+  try {
+    const prevId = currentSessionId.value
+    if (prevId && prevId !== id) {
+      persistCurrentSessionSnapshot(prevId)
+      stopChatWs(false)
     }
-    pruneSessionWsKeep(buildWsKeepSet(id))
-    scheduleSnapshotLoads(cached.messages as ChatMessage[], cached.messages as ChatMessage[], seq)
+
+    currentSessionId.value = id
+    isSending.value = false
+    inputMessage.value = ''
+    clearAttachedImages()
+    clearComposerCommand()
+
+    const cached = loadSessionSnapshot(id)
+    if (cached?.messages?.length) {
+      restoreSessionSnapshot(cached)
+      await nextTick()
+      if (isStaleSessionLoad(seq)) return
+      scheduleScrollToBottom(true)
+      void applySessionWorkDir(id, seq)
+      const wsBase = modelStore.getBaseUrl().replace(/^http/, 'ws')
+      for (const wsSid of buildWsKeepSet(id)) {
+        setSessionWsHandler(wsSid, (data) => handleChatWsForSession(wsSid, data))
+        void ensureSessionWs(wsSid, wsBase)
+      }
+      pruneSessionWsKeep(buildWsKeepSet(id))
+      scheduleSnapshotLoads(cached.messages as ChatMessage[], cached.messages as ChatMessage[], seq)
+      await finishSessionSwitch(id, seq)
+      return
+    }
+
+    activeAssistantMessageId = null
+    activeAssistantIdx = null
+    sessionSubagents.value = []
+    messages.value = []
+    hasActiveChat.value = false
+
+    await fetchSessionFromBackend(id, seq)
+    if (isStaleSessionLoad(seq)) return
     await finishSessionSwitch(id, seq)
-    return
+  } catch (err) {
+    console.error('[ChatPage] loadSessionById failed', id, err)
+    if (!isStaleSessionLoad(seq)) {
+      emit('sessionLoaded')
+    }
   }
-
-  activeAssistantMessageId = null
-  activeAssistantIdx = null
-  sessionSubagents.value = []
-  messages.value = []
-  hasActiveChat.value = false
-
-  await fetchSessionFromBackend(id, seq)
-  if (isStaleSessionLoad(seq)) return
-  await finishSessionSwitch(id, seq)
 }
 
 async function tryResumeSession(sessionId: string) {
-  // 流式输出已切换为 WebSocket + JSONL，无需 SSE resume
-  // 仅做最终状态检查：若后台任务仍在运行，确保 placeholder 是 loading 状态
+  streamDiag('Resume', 'tryResumeSession start', streamStateSnapshot({ targetSessionId: sessionId }))
   try {
     const running = await checkChatStatus(sessionId)
-    if (running !== true) {
+    streamDiag('Resume', 'tryResumeSession checkChatStatus', { sessionId, running })
+    if (running === false) {
       if (sessionId === currentSessionId.value) {
-        clearStaleSendingUi()
+        clearStaleSendingUi('tryResumeSession: backend not running')
+        syncSessionWorkingState(sessionId)
       }
       return
     }
+    if (running !== true) {
+      streamDiag('Resume', 'tryResumeSession uncertain (null) → keep snapshot', { sessionId })
+      syncSessionWorkingState(sessionId)
+      return
+    }
+    if (sessionId === currentSessionId.value) {
+      await catchUpActiveAssistantFromJsonl(sessionId)
+    }
     // 找最后一条 assistant 消息
-    let assistantIdx = -1
-    for (let i = messages.value.length - 1; i >= 0; i--) {
-      if (messages.value[i].role === 'assistant') {
-        assistantIdx = i
-        break
+    let assistantIdx = activeAssistantIdx ?? -1
+    if (assistantIdx < 0 || messages.value[assistantIdx]?.role !== 'assistant') {
+      for (let i = messages.value.length - 1; i >= 0; i--) {
+        if (messages.value[i].role === 'assistant') {
+          assistantIdx = i
+          break
+        }
       }
     }
     if (assistantIdx < 0) {
-      // 没有 placeholder → 等待 log_started 事件创建
       isSending.value = true
+      markSessionWorking(sessionId)
+      syncSessionWorkingState(sessionId)
       return
     }
     const msg = messages.value[assistantIdx]
-    // 标记为 loading，等待 WebSocket 推送后续事件
     if (!msg.isLoading) {
-      msg.isLoading = true
-      messages.value[assistantIdx] = { ...msg }
+      messages.value[assistantIdx] = { ...msg, isLoading: true }
     }
+    activeAssistantIdx = assistantIdx
+    if (msg.messageId) activeAssistantMessageId = msg.messageId
     isSending.value = true
     markSessionWorking(sessionId)
     syncSessionWorkingState(sessionId)
-  } catch {
-    // ignore
+    streamDiag('Resume', 'tryResumeSession restored loading', streamStateSnapshot({ sessionId }))
+  } catch (err) {
+    streamDiag('Resume', 'tryResumeSession error', {
+      sessionId,
+      error: String((err as Error)?.message || err),
+    })
+    syncSessionWorkingState(sessionId)
   }
 }
 
@@ -1887,6 +2107,10 @@ function onAddToChat(e: Event) {
 }
 
 onMounted(() => {
+  ;(window as unknown as { ariesStreamDebug?: { on: () => void; off: () => void } }).ariesStreamDebug = {
+    on: () => setStreamDebugEnabled(true),
+    off: () => setStreamDebugEnabled(false),
+  }
   window.addEventListener('aries:new-chat', onNewChat)
   window.addEventListener('aries:workdir-changed', onWorkDirChanged)
   window.addEventListener('aries:focus-console', onFocusConsole)
@@ -1915,8 +2139,8 @@ onMounted(() => {
   }
   // 自动恢复桌面宠物
   restorePet()
-  // 周期性健康检查：确保 working session 的 WebSocket 保持连接
-  healthCheckTimer = setInterval(healthCheckWorkingSessions, 15000)
+  // 权威状态轮询：以后端 /chat/status 为唯一真相，避免 WS 抖动/误清导致 UI 提前结束
+  healthCheckTimer = setInterval(() => { void pollAuthoritativeStatus() }, 4000)
 })
 
 // ---------- 宠物持久化恢复 ----------
@@ -1956,6 +2180,7 @@ onUnmounted(() => {
     healthCheckTimer = null
   }
   if (currentSessionId.value) persistCurrentSessionSnapshot(currentSessionId.value)
+  setKeepAliveSession(null)
   closeAllSessionWs()
   if (scrollIdleTimer) {
     clearTimeout(scrollIdleTimer)
@@ -2158,6 +2383,10 @@ async function sendMessage() {
   const imagesToSend = attachedImages.value.map((img) => img.data)
   if (!message && imagesToSend.length === 0) return
 
+  const sessionIdAtSend = currentSessionId.value || crypto.randomUUID().replace(/-/g, '')
+  // 不做发送前的阻塞式状态检查（避免每次发送多一次网络往返导致卡顿）：
+  // 后端 is_bg_running 会拒绝并发请求，前端在 catch 中按 e.running 处理。
+
   const userDisplayContent = message || (imagesToSend.length > 1 ? `[${imagesToSend.length} 张图片]` : '[图片]')
 
   messages.value.push({
@@ -2185,7 +2414,6 @@ async function sendMessage() {
   activeAssistantIdx = assistantIdx
 
   const isNewSession = !currentSessionId.value
-  const sessionIdAtSend = currentSessionId.value || crypto.randomUUID().replace(/-/g, '')
   startStreamDuration(sessionIdAtSend, '__pending__')
   markSessionWorking(sessionIdAtSend)
   if (isNewSession) {
@@ -2224,13 +2452,29 @@ async function sendMessage() {
     // POST /chat/completions 或 /chat/vision：返回 { status, session_id }
     // 实时数据通过 WebSocket（log_started / log_event / log_complete）推送
     if (imagesToSend.length > 0) {
-      await startVision(chatMessages, imagesToSend, sessionIdAtSend, workDirAtSend)
+      const result = await startVision(chatMessages, imagesToSend, sessionIdAtSend, workDirAtSend)
+      if (result.status === 'error') {
+        throw Object.assign(new Error(result.error || '请求失败'), { running: result.running })
+      }
     } else {
-      await startChat(chatMessages, sessionIdAtSend, workDirAtSend)
+      const result = await startChat(chatMessages, sessionIdAtSend, workDirAtSend)
+      if (result.status === 'error') {
+        throw Object.assign(new Error(result.error || '请求失败'), { running: result.running })
+      }
     }
     // 重要：不在这里设置 isSending=false / isLoading=false
     // 这些由 completeLogMessage() 在收到 log_complete 事件时设置
   } catch (e: any) {
+    if (e?.running) {
+      messages.value.splice(assistantIdx - 1, 2)
+      inputMessage.value = message
+      isSending.value = false
+      await catchUpActiveAssistantFromJsonl(sessionIdAtSend)
+      restoreRunningAssistantUi()
+      syncSessionWorkingState(sessionIdAtSend)
+      showToast(e.message || '当前仍在生成中', 'warning')
+      return
+    }
     if (e?.name !== 'AbortError') {
       messages.value.push({
         role: 'assistant',

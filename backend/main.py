@@ -16,10 +16,9 @@ from contextlib import asynccontextmanager
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-# 最早期：加载 env.json，把配置的 node/python/git 路径加到 PATH 最前面
-# 这样所有子进程（Node.js CLI Server、cli_executor、MCP）都自动使用配置的版本
-from utils.env_config import apply_env_to_path
-_env_applied = apply_env_to_path()
+# 最早期：释放内置 Node、写入 env.json，并把 node/python/git 路径加到 PATH 最前面
+from utils.env_config import init_runtime_env
+_env_applied = init_runtime_env()
 if _env_applied:
     print(f"[Startup] env.json 运行时配置已加载: {_env_applied}")
 
@@ -97,14 +96,13 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"[Plugins] 同步失败: {exc}")
 
-    # 首次启动：把安装包内的 Node 释放到 ~/.Aries/runtimes/node/
+    # 内置 Node 已在进程启动最早阶段释放并写入 env.json（init_runtime_env）
     try:
-        from utils.bundled_node import ensure_bundled_node_installed
-        installed = ensure_bundled_node_installed()
-        if installed:
-            print(f"[Node] 使用内置 Node: {installed}")
+        from utils.bundled_node import get_default_node_install_dir, get_default_node_exe
+        if get_default_node_exe().is_file():
+            print(f"[Node] 使用内置 Node: {get_default_node_install_dir()}")
     except Exception as exc:
-        print(f"[Node] 内置 Node 释放失败: {exc}")
+        print(f"[Node] 内置 Node 检查失败: {exc}")
 
     stale = reset_stale_running_tasks()
     if stale:

@@ -3,6 +3,8 @@ import re
 import subprocess
 from typing import Optional, Tuple
 
+from .agent_modes import _match_marker
+
 from prompt.code_review_prompts import (
     CODE_REVIEW_SYSTEM_PROMPT,
     CODE_REVIEW_USER_PROMPTS,
@@ -18,11 +20,7 @@ CODE_REVIEW_MARKER_RE = re.compile(
 
 def extract_code_review_marker(text: str) -> Tuple[Optional[str], str]:
     """提取代码审查标记，返回 (模式, 清理后的文本)"""
-    match = CODE_REVIEW_MARKER_RE.match(text or "")
-    if not match:
-        return None, text
-    mode = (match.group(1) or "branch").lower()
-    return mode, (text[match.end():] or "").lstrip()
+    return _match_marker(CODE_REVIEW_MARKER_RE, text, default="branch", lower=True)
 
 
 def detect_base_branch(work_dir: str) -> str:

@@ -143,6 +143,46 @@ def get_env_runtime(runtime: str) -> dict[str, Any] | None:
     return config.get(runtime)
 
 
+def ensure_bundled_node_in_env() -> str:
+    """释放内置 Node 并写入 env.json，确保子进程能用到 ~/.Aries 内的 Node。"""
+    from utils.bundled_node import (
+        DEFAULT_BUNDLED_NODE_VERSION,
+        ensure_bundled_node_installed,
+        get_default_node_exe,
+    )
+
+    ensure_bundled_node_installed()
+    node_exe = get_default_node_exe()
+    if not node_exe.is_file():
+        return ""
+
+    path_str = str(node_exe)
+    saved = get_env_runtime("node")
+    should_write = (
+        not saved
+        or not saved.get("path")
+        or not Path(saved["path"]).is_file()
+        or saved.get("source") in (None, "", "builtin")
+    )
+    if should_write:
+        save_env_config(
+            "node",
+            {
+                "path": path_str,
+                "version": DEFAULT_BUNDLED_NODE_VERSION,
+                "source": "builtin",
+            },
+        )
+        print(f"[EnvConfig] 已写入内置 Node 路径到 env.json: {path_str}")
+    return path_str
+
+
+def init_runtime_env() -> dict[str, str]:
+    """启动时：释放内置 Node → 写入 env.json → 前置 PATH。"""
+    ensure_bundled_node_in_env()
+    return apply_env_to_path()
+
+
 def clear_env_runtime(runtime: str) -> dict[str, Any]:
     """清除指定运行时的保存配置"""
     global _cache, _cache_mtime

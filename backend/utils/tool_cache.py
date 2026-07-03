@@ -41,6 +41,7 @@ _NON_CACHEABLE_TOOLS: frozenset[str] = frozenset({
     "create_scheduled_task",
     "delegate_to_subagent",
     "send_file_to_user",
+    "send_message_to_user",
     "check_command_status",
 })
 

@@ -13,6 +13,24 @@ from typing import Optional, Tuple
 
 from prompt.agent_prompts import AGENT_MODES, get_agent_mode
 
+
+def _match_marker(regex: re.Pattern, text: str, default: Optional[str] = None, lower: bool = False) -> Tuple[Optional[str], str]:
+    """Extract a leading regex marker from text.
+
+    Returns (group_value, cleaned_text). If no match, returns (None, original).
+    ``default`` is used when the captured group is None (optional group in regex).
+    ``lower`` controls whether the result is lowercased.
+    """
+    match = regex.match(text or "")
+    if not match:
+        return None, text
+    value = match.group(1) if match.group(1) is not None else default
+    if lower and value is not None:
+        value = value.lower()
+    cleaned = (text[match.end():] or "").lstrip()
+    return value, cleaned
+
+
 AGENT_MARKER_RE = re.compile(
     r"^@(ask|explore|plan)(?=\s|\n|$)",
     re.IGNORECASE,
@@ -33,12 +51,7 @@ def extract_agent_marker(text: str) -> Tuple[Optional[str], str]:
 
     Supported markers: @ask, @explore, @plan
     """
-    match = AGENT_MARKER_RE.match(text or "")
-    if not match:
-        return None, text
-    agent_name = match.group(1).lower()
-    cleaned = (text[match.end():] or "").lstrip()
-    return agent_name, cleaned
+    return _match_marker(AGENT_MARKER_RE, text, lower=True)
 
 
 def extract_subagent_marker(text: str) -> Tuple[Optional[str], str]:
@@ -49,12 +62,7 @@ def extract_subagent_marker(text: str) -> Tuple[Optional[str], str]:
 
     Supported markers: @subagent:<name>
     """
-    match = SUBAGENT_MARKER_RE.match(text or "")
-    if not match:
-        return None, text
-    subagent_name = match.group(1)
-    cleaned = (text[match.end():] or "").lstrip()
-    return subagent_name, cleaned
+    return _match_marker(SUBAGENT_MARKER_RE, text)
 
 
 def build_agent_mode_context(agent_name: str) -> str:

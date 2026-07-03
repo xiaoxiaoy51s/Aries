@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "create_scheduled_task",
-    "description": "创建定时任务。到达 scheduled_at 后，系统按 task_content 自动运行 AI，并将结果推送到 session_id 对应的会话。不传 session_id 时默认使用当前会话（即 system prompt 中的 session_id）。",
+    "description": "创建定时任务。到达 scheduled_at 后，系统按 task_content 自动运行 AI，结果写入 session_id 对应会话。不传 session_id 时默认使用当前会话（即 system prompt 中的 session_id）。\n\n系统不再自动向手机平台推送结果；若需发送消息或文件到飞书/QQ/微信，AI 应在任务执行时自行调用 send_message_to_user / send_file_to_user 决定是否发送。",
     "parameters": {
       "type": "object",
       "properties": {
@@ -30,7 +30,7 @@
         },
         "session_id": {
           "type": "string",
-          "description": "结果推送会话 ID。网页会话填 UUID；手机推送填 __wechat__/__qq__/__feishu__。不传则默认当前会话。当值为 __wechat__/__qq__/__feishu__ 时，系统自动通过对应平台推送结果并在执行后自动删除任务记录。"
+          "description": "结果写入的会话 ID。网页会话填 UUID；平台会话填 __wechat__/__qq__/__feishu__。不传则默认当前会话。当值为 __wechat__/__qq__/__feishu__ 时，执行后自动删除任务记录；是否向用户发送消息/文件由 AI 调用 send_message_to_user / send_file_to_user 自行决定。"
         }
       },
       "required": ["title", "task_content"],

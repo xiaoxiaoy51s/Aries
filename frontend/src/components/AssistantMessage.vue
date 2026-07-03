@@ -35,7 +35,7 @@
             <span class="work-title">{{ isLoading && groupIndex === groupedBlocks.length - 1 ? '思考中…' : '思考过程' }}</span>
           </div>
           <div v-show="isWorkOpen(groupIndex)" class="work-content">
-            <template v-for="(block, idx) in group.items" :key="`${block.type}-${block.tool_call_id || idx}`">
+            <template v-for="(block, idx) in group.items" :key="`${groupIndex}-${idx}-${block.type}-${block.tool_call_id || ''}`">
               <ToolBlock
                 v-if="block.type === 'tool'"
                 :tool-name="block.tool_name || 'unknown'"

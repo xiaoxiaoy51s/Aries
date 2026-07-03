@@ -27,7 +27,8 @@ def _session_context_note(session_id: str | None) -> str:
         return (
             f"当前 session_id：`{sid}`\n"
             f"消息来源：{label}（用户从此平台发来消息；"
-            f"创建定时任务时若用户未指定推送平台，默认推送到{label}）"
+            f"创建定时任务时若用户未指定会话，默认写入{label}会话；"
+            f"是否向用户发送消息/文件请调用 send_message_to_user / send_file_to_user 并指定 platform（微信/QQ/飞书），系统不会自动推送）"
         )
     return (
         f"当前 session_id：`{sid}`\n"

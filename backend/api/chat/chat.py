@@ -39,6 +39,7 @@ from .background import (
     stream_chat_with_background,
     _background_tasks,
 )
+from services.chat_stream_manager import is_bg_running
 
 
 def _resolve_chat_request(request: ChatRequest) -> ChatRequest:
@@ -83,6 +84,14 @@ async def stream_chat(request: ChatRequest) -> dict:
 
     session_id = request.session_id or uuid4().hex
     is_new_session = not get_session(session_id)
+
+    if is_bg_running(session_id):
+        return {
+            "status": "error",
+            "session_id": session_id,
+            "error": "当前会话仍在生成中，请等待完成或点击停止后再发送",
+            "running": True,
+        }
 
     effective_work_dir = _resolve_and_persist_work_dir(session_id, request.work_dir)
 

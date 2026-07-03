@@ -259,6 +259,7 @@ CORE_TOOL_NAMES = {
     "delete_file",
     "todo_write",
     "send_file_to_user",
+    "send_message_to_user",
 }
 
 

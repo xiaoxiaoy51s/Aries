@@ -21,6 +21,7 @@ export interface StartChatResponse {
   session_id: string
   subagent_mode?: string
   error?: string
+  running?: boolean
 }
 
 export function jsonToStreamEvent(json: Record<string, unknown>): StreamEvent | null {
