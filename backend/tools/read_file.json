@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "read_file",
-    "description": "读取文件内容，支持行号范围读取和截断保护。\n\n【两种模式】\n- 普通模式：传 file_path（相对路径默认在工作目录，或绝对路径）\n- 技能文件模式：传 skill_name + file_path，读取技能目录下的文件。skill_name 可以是 ~/.Aries/skills/{skill_name}/ 下的用户技能，也可以是内置插件技能（如 web_search）\n\n编码固定 utf-8。大文件建议先用 offset + limit 读取片段。",
+    "description": "读取文件内容，支持行号范围读取和截断保护。\n\n【两种模式】\n- 普通模式：传 file_path（相对路径默认在工作目录，或绝对路径）\n- 技能文件模式：传 skill_name + file_path，读取技能目录下的文件。skill_name 可以是 ~/.Aries/skills/{skill_name}/ 下的用户技能，也可以是内置插件技能（如 web_search）\n\n【文档解析】支持读取 PDF（.pdf）、Word（.docx）、Excel（.xlsx/.xlsm）文档，自动抽取全部文本内容。大文档会按 max_chars 截断，可用 offset/limit 翻页继续读取。\n\n编码固定 utf-8。大文件建议先用 offset + limit 读取片段。",
     "parameters": {
       "type": "object",
       "properties": {

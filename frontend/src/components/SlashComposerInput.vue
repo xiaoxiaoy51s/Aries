@@ -99,9 +99,9 @@ const maxRows = computed(() => props.maxRows || 5)
 //   1. 带行号: ##D:\path\file.py#L1-20##
 //   2. 纯文件: ##D:\path\file.py##
 //   3. 文件夹: ##D:\path\folder\##
-const fileRefWithLinesPattern = /##((?:[A-Za-z]:\\[^\s\n#]+|\/[^\s\n#]+)#L\d+-\d+)##/g
-const plainFileRefPattern = /##((?:[A-Za-z]:\\[^\s\n#]+\.[a-zA-Z0-9_]+|\/[^\s\n#]+\.[a-zA-Z0-9_]+))##/g
-const folderRefPattern = /##((?:[A-Za-z]:\\[^\s\n#]*|\/[^\s\n#]*)[\\/])##/g
+const fileRefWithLinesPattern = /##((?:[A-Za-z]:\\[^#\n]+|\/[^#\n]+)#L\d+-\d+)##/g
+const plainFileRefPattern = /##((?:[A-Za-z]:\\[^#\n]+\.[a-zA-Z0-9_]+|\/[^#\n]+\.[a-zA-Z0-9_]+))##/g
+const folderRefPattern = /##((?:[A-Za-z]:\\[^#\n]*|\/[^#\n]*)[\\/])##/g
 const codeReviewPattern = /^@code_review(?:\s+(?:unstaged|staged|branch|commit|full))?/
 const codeReviewAnyPattern = /@code_review(?:\s+(?:unstaged|staged|branch|commit|full))?/
 const agentModePattern = /^@(ask|explore|plan)/

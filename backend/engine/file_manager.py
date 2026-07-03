@@ -113,15 +113,20 @@ class FileManagerTool:
         if target.is_dir():
             return self._error_response("路径是目录，不是文件", normalized_path)
         try:
-            with open(target, "rb") as f:
-                chunk = f.read(8192)
-                if b"\x00" in chunk:
-                    return self._error_response("无法读取二进制文件", normalized_path)
-        except Exception as exc:
-            return self._error_response(f"读取失败: {exc}", normalized_path)
-        try:
-            with open(target, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
+            # 文档类型（PDF/Word/Excel）走解析器抽取文本
+            from utils.doc_parser import is_supported_document, extract_text
+            if is_supported_document(target):
+                text = extract_text(target)
+                lines = text.splitlines(keepends=True)
+            else:
+                with open(target, "rb") as f:
+                    chunk = f.read(8192)
+                    if b"\x00" in chunk:
+                        return self._error_response("无法读取二进制文件", normalized_path)
+                with open(target, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+        except ValueError as exc:
+            return self._error_response(str(exc), normalized_path)
         except Exception as exc:
             return self._error_response(f"读取失败: {exc}", normalized_path)
         total_lines = len(lines)

@@ -18,11 +18,10 @@ if (-not (Test-Path "node_modules")) {
 } else {
     Write-Host "    node_modules exists, skip npm ci"
 }
-npm run build
+node node_modules/typescript/bin/tsc
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "    npm run build failed, retry with npx tsc"
-    npx tsc
-    if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
+    Write-Host "    tsc build failed"
+    Pop-Location; exit $LASTEXITCODE
 }
 npm prune --omit=dev 2>$null
 if ($LASTEXITCODE -ne 0) {

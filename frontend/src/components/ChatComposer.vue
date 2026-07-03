@@ -158,6 +158,17 @@
         >
           +
         </button>
+        <button
+          type="button"
+          class="icon-btn"
+          title="附加文档（PDF/Word/Excel）"
+          :disabled="isSending || !!activeSlashCommandProxy"
+          @click="openDocPicker"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block">
+            <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+          </svg>
+        </button>
         <div class="approval-picker">
           <button
             type="button"
@@ -623,6 +634,31 @@ function handleSend() {
     return
   }
   emit('send')
+}
+
+/** 附加文档（PDF/Word/Excel）：通过 Electron 原生对话框选择，插入 ##path## 引用。
+ *  不上传文件内容到后端，仅保留本地路径引用，AI 可通过 read_file 解析。 */
+async function openDocPicker() {
+  const api = (window as any).electronAPI
+  if (!api?.selectFile) return
+  try {
+    const result = await api.selectFile({
+      title: '选择文档',
+      multi: true,
+      filters: [
+        { name: '文档', extensions: ['pdf', 'docx', 'xlsx', 'xlsm', 'doc', 'xls'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    })
+    if (result.cancelled || !result.paths?.length) return
+    const refs = result.paths.map((p: string) => `##${p}##`)
+    const cleaned = (props.modelValue || '').trim()
+    const sep = cleaned && !cleaned.endsWith('\n') ? '\n' : ''
+    plainTextProxy.value = `${cleaned}${sep}${refs.join(' ')} `
+    nextTick(() => composerRef.value?.focus?.())
+  } catch (e) {
+    console.error('选择文档失败', e)
+  }
 }
 const mcpPanelOpen = ref(false)
 const skillsPanelOpen = ref(false)

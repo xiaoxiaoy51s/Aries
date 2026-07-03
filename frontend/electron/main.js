@@ -635,16 +635,18 @@ ipcMain.handle('dialog:select-directory', async (event, opts = {}) => {
 })
 
 ipcMain.handle('dialog:select-file', async (event, opts = {}) => {
+  const properties = ['openFile']
+  if (opts.multi) properties.push('multiSelections')
   const result = await dialog.showOpenDialog(mainWindow, {
     title: opts.title || '选择文件',
     defaultPath: opts.defaultPath || undefined,
     filters: opts.filters || undefined,
-    properties: ['openFile'],
+    properties,
   })
   if (result.canceled || result.filePaths.length === 0) {
-    return { path: null, cancelled: true }
+    return { path: null, paths: [], cancelled: true }
   }
-  return { path: result.filePaths[0], cancelled: false }
+  return { path: result.filePaths[0], paths: result.filePaths, cancelled: false }
 })
 
 // ---------- 自动更新 (electron-updater) ----------
