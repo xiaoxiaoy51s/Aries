@@ -656,6 +656,20 @@ if (app.isPackaged) {
   autoUpdater.autoInstallOnAppQuit = false
 }
 
+// 版本号比较：返回 1 表示 a>b，-1 表示 a<b，0 表示相等
+function compareVersions(a, b) {
+  const pa = String(a).split('.').map(Number)
+  const pb = String(b).split('.').map(Number)
+  const len = Math.max(pa.length, pb.length)
+  for (let i = 0; i < len; i++) {
+    const na = pa[i] || 0
+    const nb = pb[i] || 0
+    if (na > nb) return 1
+    if (na < nb) return -1
+  }
+  return 0
+}
+
 // 向所有窗口推送更新状态
 function sendUpdateStatus(channel, data) {
   for (const win of windows) {
@@ -696,10 +710,14 @@ ipcMain.handle('update:check', async () => {
   try {
     const result = await autoUpdater.checkForUpdates()
     const info = result?.updateInfo
+    const currentVersion = app.getVersion()
+    const latestVersion = info?.version || ''
+    // 正确比较版本号：仅当 latestVersion > currentVersion 才算有更新
+    const hasUpdate = !!info && compareVersions(latestVersion, currentVersion) > 0
     return {
       isDev: false,
-      available: !!info,
-      version: info?.version || null,
+      available: hasUpdate,
+      version: latestVersion || null,
       releaseName: info?.releaseName || null,
       releaseNotes: info?.releaseNotes || null,
       releaseDate: info?.releaseDate || null,

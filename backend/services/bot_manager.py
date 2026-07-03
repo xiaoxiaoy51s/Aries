@@ -1,6 +1,8 @@
 """QQ / 微信 / 飞书 Bot 生命周期管理。"""
 
+import json
 import logging
+import threading
 from pathlib import Path
 
 from services.feishu_bot import start_feishu_bot, stop_feishu_bot
@@ -24,6 +26,38 @@ def _load_bot_config() -> dict:
         return json.loads(_BOT_CONFIG_PATH.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+_config_lock = threading.Lock()
+
+
+def persist_recipient(platform: str, **fields) -> None:
+    """把收件人相关字段持久化到 bot_config.json（读-改-写，线程安全）。
+
+    供各平台 bot 在收到用户消息、记录收件人 ID 时调用，避免 bot 重启后
+    丢失目标用户标识而无法主动推送。仅当值非空且发生变化时才写盘。
+    """
+    cleaned = {k: str(v).strip() for k, v in fields.items() if v is not None}
+    if not cleaned:
+        return
+    with _config_lock:
+        config = _load_bot_config()
+        pconf = config.setdefault(platform, {})
+        changed = False
+        for k, v in cleaned.items():
+            if v and pconf.get(k) != v:
+                pconf[k] = v
+                changed = True
+        if not changed:
+            return
+        try:
+            _BOT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _BOT_CONFIG_PATH.write_text(
+                json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            _log.debug("[BotManager] 已持久化 %s 收件人字段: %s", platform, list(cleaned.keys()))
+        except Exception as e:
+            _log.warning("[BotManager] 持久化 %s 收件人字段失败: %s", platform, e)
 
 
 def is_platform_enabled(platform: str) -> bool:

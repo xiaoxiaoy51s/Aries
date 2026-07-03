@@ -202,38 +202,52 @@ async def push_qq_message(text: str) -> bool:
     if not qq.get("enabled"):
         return False
 
-    # 优先使用运行中的 bot 客户端
+    # 优先使用运行中的 bot 客户端（必须在 bot 自己的事件循环里发送，否则
+    # aiohttp 的 Timeout 上下文会报 "should be used inside a task"）
     try:
         from services.qq_bot import _runner
 
         if _runner and _runner._client:
+            loop = _runner._loop
+            if not loop or not loop.is_running():
+                _log.warning("[Push/QQ] bot 事件循环未运行")
+                return False
             chat_type = _runner._client.last_chat_type or "c2c"
             if chat_type == "group":
                 group_openid = _runner._client.last_group_openid
                 if not group_openid:
                     _log.warning("[Push/QQ] 缺少 last_group_openid")
                     return False
-                for seg in _split_text(text):
-                    msg_seq = int(time.time() * 1000) % 1000000 + random.randint(1, 1000)
-                    await _runner._client.api.post_group_message(
-                        group_openid=group_openid,
-                        msg_type=0,
-                        content=seg,
-                        msg_seq=msg_seq,
-                    )
             else:
                 user_openid = _runner._client.last_user_openid
                 if not user_openid:
                     _log.warning("[Push/QQ] 缺少 last_user_openid")
                     return False
-                for seg in _split_text(text):
-                    msg_seq = int(time.time() * 1000) % 1000000 + random.randint(1, 1000)
-                    await _runner._client.api.post_c2c_message(
-                        openid=user_openid,
-                        msg_type=0,
-                        content=seg,
-                        msg_seq=msg_seq,
-                    )
+
+            segments = _split_text(text)
+
+            async def _send_all() -> None:
+                if chat_type == "group":
+                    for seg in segments:
+                        msg_seq = int(time.time() * 1000) % 1000000 + random.randint(1, 1000)
+                        await _runner._client.api.post_group_message(
+                            group_openid=group_openid,
+                            msg_type=0,
+                            content=seg,
+                            msg_seq=msg_seq,
+                        )
+                else:
+                    for seg in segments:
+                        msg_seq = int(time.time() * 1000) % 1000000 + random.randint(1, 1000)
+                        await _runner._client.api.post_c2c_message(
+                            openid=user_openid,
+                            msg_type=0,
+                            content=seg,
+                            msg_seq=msg_seq,
+                        )
+
+            future = asyncio.run_coroutine_threadsafe(_send_all(), loop)
+            future.result(timeout=30)
             _log.info("[Push/QQ] 推送成功 type=%s", chat_type)
             return True
     except Exception as e:

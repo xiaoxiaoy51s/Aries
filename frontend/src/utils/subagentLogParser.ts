@@ -113,7 +113,7 @@ export function applySubagentJsonlEvent(
   blocks: SubagentInnerBlock[],
   event: Record<string, any>,
 ): { blocks: SubagentInnerBlock[]; finalMessage?: string } {
-  const out = blocks.map((b) => ({ ...b }))
+  const out = blocks.slice()
   let finalMessage: string | undefined
   const t = event?.type
 
@@ -152,7 +152,25 @@ export function applySubagentJsonlEvent(
       error: '',
     })
   } else if (t === 'tool_result') {
-    if (event.tool_name === REPORT_TOOL) return { blocks: out }
+    if (event.tool_name === REPORT_TOOL) {
+      const fromOutput = typeof event.output === 'string' ? event.output.trim() : ''
+      if (fromOutput) {
+        finalMessage = fromOutput
+      } else {
+        const raw = typeof event.result === 'string' ? event.result : ''
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw) as { message?: string }
+            if (typeof parsed?.message === 'string' && parsed.message.trim()) {
+              finalMessage = parsed.message.trim()
+            }
+          } catch {
+            // ignore malformed JSON
+          }
+        }
+      }
+      return { blocks: out, finalMessage }
+    }
     const tcId = String(event.tool_call_id || event.id || '')
     for (let i = out.length - 1; i >= 0; i--) {
       const b = out[i]

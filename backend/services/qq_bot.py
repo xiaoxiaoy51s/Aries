@@ -168,9 +168,20 @@ class NonoQQBot(botpy.Client if BOTPY_AVAILABLE else object):
         if group_openid:
             self.last_chat_type = "group"
             self.last_group_openid = str(group_openid)
+            to_persist = {"last_chat_type": "group", "last_group_openid": str(group_openid)}
         elif user_openid:
             self.last_chat_type = "c2c"
             self.last_user_openid = str(user_openid)
+            to_persist = {"last_chat_type": "c2c", "last_user_openid": str(user_openid)}
+        else:
+            to_persist = None
+        # 持久化收件人信息，避免 bot 重启后无法主动推送
+        if to_persist:
+            try:
+                from services.bot_manager import persist_recipient
+                persist_recipient("qq", **to_persist)
+            except Exception:
+                pass
 
         # 用 create_task 后台处理，不阻塞事件循环，让新消息能及时触发取消
         asyncio.create_task(self._process_message_task(message, content))

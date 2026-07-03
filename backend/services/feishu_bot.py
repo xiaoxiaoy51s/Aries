@@ -86,6 +86,12 @@ class _FeishuRunner:
             chat_id = (msg.chat_id or "").strip()
             if chat_id:
                 self.last_chat_id = chat_id
+                # 持久化收件人信息，避免 bot 重启后无法主动推送
+                try:
+                    from services.bot_manager import persist_recipient
+                    persist_recipient("feishu", last_chat_id=chat_id)
+                except Exception:
+                    pass
 
             # 用 create_task 后台处理，不阻塞事件循环，让新消息能及时触发取消
             asyncio.create_task(self._process_message_task(text, chat_id))

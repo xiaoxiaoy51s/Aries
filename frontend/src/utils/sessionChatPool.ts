@@ -1,6 +1,7 @@
 /** 多会话 WebSocket 连接池 + 切换 session 时的 UI 状态快照 */
 import { isSessionWorking, workingSessionIds, MAX_CONCURRENT_WORKING_SESSIONS } from './sessionWorkStore'
 import { streamDiag, wsReadyStateLabel } from './streamDebug'
+import { ingestSubagentWsPayload, isSubagentLogBatchBound } from './chatSubagentBatchBridge'
 
 export interface SessionChatSnapshot {
   messages: unknown[]
@@ -99,6 +100,7 @@ export function setSessionWsHandler(sessionId: string, handler: WsPayloadHandler
 function dispatchWsMessage(sessionId: string, raw: string): void {
   try {
     const data = JSON.parse(raw) as Record<string, unknown>
+    if (isSubagentLogBatchBound() && ingestSubagentWsPayload(data) === 'handled') return
     handlers.get(sessionId)?.(data)
   } catch {
     // ignore malformed

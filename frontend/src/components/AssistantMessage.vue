@@ -60,7 +60,7 @@
                   text-color="#94a3b8"
                   :font-size="Math.max(10, Math.round(fontSize * 0.8))"
                   :show-actions="false"
-                  :is-streaming="false"
+                  :is-streaming="isLoading"
                 />
               </div>
             </template>

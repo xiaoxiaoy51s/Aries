@@ -23,6 +23,23 @@ from utils.tool_cache import (
     is_cache_busting_tool,
 )
 
+# 子 Agent 内嵌细节（reasoning/tool 等）已由 JSONL → subagent_log_event 推送；勿再经 stream_event 转发
+_SUBAGENT_GRANULAR_EVENT_TYPES = frozenset({
+    "subagent_reasoning",
+    "subagent_content",
+    "subagent_tool_call",
+    "subagent_tool_result",
+})
+
+
+def _parallel_subagent_events_to_yield(ev: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for ev_type, ev_data in ev.items():
+        if ev_type in _SUBAGENT_GRANULAR_EVENT_TYPES:
+            continue
+        out.append({"type": ev_type, "data": ev_data})
+    return out
+
 # 工具错误级别
 TOOL_ERROR_RESPOND_TO_MODEL = "respond_to_model"  # 软错误：回传模型，继续对话
 TOOL_ERROR_FATAL = "fatal"                          # 硬错误：终止整轮
@@ -34,9 +51,83 @@ PARALLEL_SAFE_TOOLS: set[str] = {
 }
 
 
+def _format_subagent_result_for_main(sub_result: dict[str, Any]) -> str:
+    """将子 Agent 返回值格式化为便于主 Agent 理解的纯文本。"""
+    if sub_result.get("result"):
+        return str(sub_result["result"])
+    status = str(sub_result.get("status") or "failed")
+    error = str(sub_result.get("error") or "").strip()
+    partial = str(sub_result.get("partial_output") or "").strip()
+    log_path = str(sub_result.get("log_path") or "").strip()
+    lines: list[str] = []
+    if status == "cancelled":
+        lines.append("【子 Agent 已取消】任务被用户或系统中止。")
+    elif status == "timeout":
+        lines.append("【子 Agent 超时】任务未在时限内完成。")
+    else:
+        lines.append("【子 Agent 失败】任务未能成功完成。")
+    if error:
+        lines.append(f"原因：{error}")
+    if partial:
+        lines.append(f"部分输出：{partial[:800]}")
+    if log_path:
+        lines.append(f"详细日志：{log_path}")
+    lines.append("请根据以上信息向用户说明情况，并决定是否需要调整任务后重试或换用其他方案。")
+    return "\n".join(lines)
+
+
 def is_parallel_safe(tool_name: str) -> bool:
     """判断工具是否可安全并行执行（只读、无副作用）。"""
     return tool_name in PARALLEL_SAFE_TOOLS
+
+
+def _confirmation_command(tool_name: str, args: dict, result: dict) -> str:
+    """构造供确认弹窗展示的命令/操作描述。"""
+    command_str = str(result.get("command") or "").strip()
+    if command_str:
+        return command_str
+    file_path = str(result.get("file_path") or "").strip()
+    if file_path:
+        return file_path
+    if tool_name == "list_files":
+        subdir = args.get("subdir") or "."
+        pattern = args.get("pattern") or "*"
+        return f"list_files(subdir={subdir!r}, pattern={pattern!r})"
+    if tool_name == "search_file":
+        pattern = args.get("pattern") or args.get("query") or ""
+        path = args.get("path") or args.get("subdir") or "."
+        return f"search_file(path={path!r}, pattern={pattern!r})"
+    if tool_name in ("read_file", "write_file", "edit_file", "delete_file"):
+        target = args.get("file_path") or args.get("path") or ""
+        return f"{tool_name}({target!r})" if target else tool_name
+    return tool_name
+
+
+async def _notify_confirmation_required(
+    session_id: str,
+    confirm_event: dict,
+    logger,
+) -> None:
+    """在等待用户确认之前，将 confirmation_required 推送给前端。"""
+    payload = confirm_event.get("confirmation_required") or {}
+    if logger and hasattr(logger, "write_confirmation_required"):
+        try:
+            logger.write_confirmation_required(
+                str(payload.get("tool_call_id") or ""),
+                str(payload.get("tool_name") or ""),
+                command=str(payload.get("command") or ""),
+                danger_info=str(payload.get("danger_info") or ""),
+                danger_types=list(payload.get("danger_types") or []),
+                args=dict(payload.get("args") or {}),
+            )
+            return
+        except Exception:
+            pass
+    try:
+        from services.chat_ws import broadcast_stream_event
+        await broadcast_stream_event(session_id, confirm_event)
+    except Exception:
+        pass
 
 
 async def run_single_tool(
@@ -139,7 +230,7 @@ async def run_single_tool(
 
     # 危险命令确认流程
     if isinstance(result, dict) and result.get("requires_confirmation"):
-        command_str = result.get("command", "")
+        command_str = _confirmation_command(tool_name, args, result)
         # 审批缓存：当前会话已批准过相同命令，直接跳过确认
         if command_str and is_approved(session_id, command_str):
             result.pop("requires_confirmation", None)
@@ -163,7 +254,7 @@ async def run_single_tool(
                 }
             }
             register_confirmation_wait(tool_id)
-            yield_event_confirm = confirm_event
+            await _notify_confirmation_required(session_id, confirm_event, logger)
 
             confirmed = await wait_for_confirmation_with_cancel(
                 tool_id,
@@ -189,9 +280,7 @@ async def run_single_tool(
                     work_dir=work_dir, session_id=session_id,
                     invocation_id=invocation_id, cancel_event=cancel_event,
                 )
-        yield_event_confirm = confirm_event
-    else:
-        yield_event_confirm = {}
+    yield_event_confirm = {}
 
     # ===== PostToolUse hook =====
     if isinstance(result, dict):
@@ -359,9 +448,8 @@ async def run_delegate_items(
                 ev = parallel_event_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
-            # 转发实时事件到 SSE 流（格式：{"subagent_xxx": {...}} → {"type": "subagent_xxx", "data": {...}}）
-            for ev_type, ev_data in ev.items():
-                yield {"type": ev_type, "data": ev_data}
+            for item in _parallel_subagent_events_to_yield(ev):
+                yield item
 
     # drain 剩余事件
     while True:
@@ -369,8 +457,8 @@ async def run_delegate_items(
             ev = parallel_event_queue.get_nowait()
         except asyncio.QueueEmpty:
             break
-        for ev_type, ev_data in ev.items():
-            yield {"type": ev_type, "data": ev_data}
+        for item in _parallel_subagent_events_to_yield(ev):
+            yield item
 
     tool_results = []
     for task_obj, item in sub_futures.items():
@@ -388,25 +476,26 @@ async def run_delegate_items(
             sub_result = {"error": f"子 Agent 异常：{exc}", "status": "failed", "log_path": ""}
 
         final_status = "success" if "result" in sub_result else sub_result.get("status", "failed")
+        formatted_output = _format_subagent_result_for_main(sub_result)
         logger.write_subagent_block(
             tool_call_id=tool_id,
             subagent_name=sub_name,
             task=sub_desc or sub_task_text,
             status=final_status,
             log_path=str(sub_result.get("log_path") or ""),
-            final_output=str(sub_result.get("result") or ""),
+            final_output=str(sub_result.get("result") or formatted_output),
             error=str(sub_result.get("error") or ""),
         )
 
         tool_results.append({
             "tool_call_id": tool_id,
             "role": "tool",
-            "content": json.dumps(sub_result, ensure_ascii=False),
+            "content": formatted_output,
         })
         logger.write_tool_result(
             tool_id, tool_name,
             "completed" if final_status == "success" else "error",
-            result=json.dumps(sub_result, ensure_ascii=False),
+            result=formatted_output,
             error=str(sub_result.get("error") or ""),
         )
 

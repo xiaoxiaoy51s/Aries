@@ -93,7 +93,7 @@ class SubagentExecution:
         return int((end - self.started_at) * 1000)
 
     def to_event_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "task_id": self.task_id,
             "subagent": self.subagent_name,
             "task": self.task,
@@ -104,6 +104,11 @@ class SubagentExecution:
             "elapsed_ms": self.elapsed_ms(),
             "log_path": self.log_path,
         }
+        if self.error:
+            payload["error"] = self.error
+        if self.final_output:
+            payload["final_message"] = self.final_output
+        return payload
 
 
 def get_report_to_main_tool_definition() -> dict[str, Any]:
@@ -344,6 +349,35 @@ async def _emit(emitter: EventEmitter | None, execution: SubagentExecution) -> N
 def _update_event(execution: SubagentExecution, label: str) -> None:
     execution.last_event = label
     execution.last_event_at = time.time()
+
+
+async def _fail_subagent_loop(
+    execution: SubagentExecution,
+    *,
+    error: str,
+    status: str = "failed",
+    sub_logger: SessionLogger | None = None,
+    on_event: EventEmitter | None = None,
+    error_type: str = "subagent_failed",
+    partial_output: str = "",
+) -> dict[str, Any]:
+    """子 Agent 循环失败：写日志、推送状态、返回主 Agent 可读的失败结构。"""
+    execution.status = status
+    execution.error = error
+    if partial_output:
+        execution.final_output = partial_output[:1000]
+    if sub_logger is not None:
+        sub_logger.write_error_event(error_type, error)
+    _update_event(execution, error)
+    await _emit(on_event, execution)
+    result: dict[str, Any] = {
+        "error": error,
+        "status": status,
+        "log_path": execution.log_path,
+    }
+    if partial_output:
+        result["partial_output"] = partial_output[:1000]
+    return result
 
 
 async def _stalled_watchdog(execution: SubagentExecution, emitter: EventEmitter | None) -> None:
@@ -636,17 +670,28 @@ async def _run_subagent_loop(
     async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
         for round_no in range(1, SUBAGENT_MAX_ROUNDS + 1):
             if cancel_event and cancel_event.is_set():
-                execution.status = "cancelled"
-                execution.error = "用户取消了子 Agent 任务"
-                return {
-                    "error": execution.error,
-                    "status": "cancelled",
-                    "log_path": execution.log_path,
-                }
+                return await _fail_subagent_loop(
+                    execution,
+                    error="用户取消了子 Agent 任务",
+                    status="cancelled",
+                    sub_logger=sub_logger,
+                    on_event=on_event,
+                    error_type="cancelled",
+                )
 
             execution.rounds = round_no
             _update_event(execution, f"第 {round_no} 轮思考")
             await _emit(on_event, execution)
+
+            if round_no == SUBAGENT_MAX_ROUNDS - 1:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        f"【系统提醒】你已接近子 Agent 工具调用轮数上限（{SUBAGENT_MAX_ROUNDS} 轮）。"
+                        f"本轮必须调用 `{REPORT_TOOL_NAME}` 向主 Agent 汇报当前进度、已完成工作、遇到的阻碍；"
+                        "如无法完成也需说明原因（success=false）。不要再发起新的探索性工具调用。"
+                    ),
+                })
 
             payload: dict[str, Any] = {
                 "model": real_model,
@@ -673,22 +718,25 @@ async def _run_subagent_loop(
                         msg = text.decode(errors="ignore")
                         execution.status = "failed"
                         execution.error = f"模型 API 错误：{response.status_code} {msg[:200]}"
-                        sub_logger.write_error_event("api_error", execution.error)
-                        return {
-                            "error": execution.error,
-                            "status": "failed",
-                            "log_path": execution.log_path,
-                        }
+                        return await _fail_subagent_loop(
+                            execution,
+                            error=execution.error,
+                            status="failed",
+                            sub_logger=sub_logger,
+                            on_event=on_event,
+                            error_type="api_error",
+                        )
 
                     async for line in response.aiter_lines():
                         if cancel_event and cancel_event.is_set():
-                            execution.status = "cancelled"
-                            execution.error = "用户取消了子 Agent 任务"
-                            return {
-                                "error": execution.error,
-                                "status": "cancelled",
-                                "log_path": execution.log_path,
-                            }
+                            return await _fail_subagent_loop(
+                                execution,
+                                error="用户取消了子 Agent 任务",
+                                status="cancelled",
+                                sub_logger=sub_logger,
+                                on_event=on_event,
+                                error_type="cancelled",
+                            )
                         if not line.startswith("data: "):
                             continue
                         data = line[6:]
@@ -764,36 +812,39 @@ async def _run_subagent_loop(
             except httpx.TimeoutException:
                 execution.status = "failed"
                 execution.error = f"模型 API 读取超时（>{int(SUBAGENT_LLM_READ_TIMEOUT)}s）"
-                sub_logger.write_error_event("timeout", execution.error)
-                return {
-                    "error": execution.error,
-                    "status": "failed",
-                    "log_path": execution.log_path,
-                }
+                return await _fail_subagent_loop(
+                    execution,
+                    error=execution.error,
+                    status="failed",
+                    sub_logger=sub_logger,
+                    on_event=on_event,
+                    error_type="timeout",
+                )
             except httpx.HTTPError as exc:
                 execution.status = "failed"
                 execution.error = f"模型 API 请求失败：{exc}"
-                sub_logger.write_error_event("http_error", str(exc))
-                return {
-                    "error": execution.error,
-                    "status": "failed",
-                    "log_path": execution.log_path,
-                }
+                return await _fail_subagent_loop(
+                    execution,
+                    error=execution.error,
+                    status="failed",
+                    sub_logger=sub_logger,
+                    on_event=on_event,
+                    error_type="http_error",
+                )
 
             # 没有工具调用 → 但子 Agent 必须用 report_to_main 终止，否则视为失败
             if not tool_calls_buffer:
                 sub_logger.flush_assistant_round()
-                execution.status = "failed"
-                execution.error = (
-                    f"子 Agent 未通过 {REPORT_TOOL_NAME} 提交结果（直接输出了纯文本）"
+                err = f"子 Agent 未通过 {REPORT_TOOL_NAME} 提交结果（直接输出了纯文本）"
+                return await _fail_subagent_loop(
+                    execution,
+                    error=err,
+                    status="failed",
+                    sub_logger=sub_logger,
+                    on_event=on_event,
+                    error_type="no_report",
+                    partial_output=full_content[:1000],
                 )
-                sub_logger.write_error_event("no_report", execution.error)
-                return {
-                    "error": execution.error,
-                    "status": "failed",
-                    "log_path": execution.log_path,
-                    "partial_output": full_content[:1000],
-                }
 
             sub_logger.flush_assistant_round()
 
@@ -1017,15 +1068,18 @@ async def _run_subagent_loop(
                         if isinstance(tool_result, dict) else str(tool_result),
                 })
 
-        # 跑完 MAX_ROUNDS 仍未 report_to_main → 失败
-        execution.status = "failed"
-        execution.error = f"子 Agent 达到最大轮数 {SUBAGENT_MAX_ROUNDS} 仍未调用 {REPORT_TOOL_NAME}"
-        sub_logger.write_error_event("max_rounds", execution.error)
-        return {
-            "error": execution.error,
-            "status": "failed",
-            "log_path": execution.log_path,
-        }
+        # 跑完 MAX_ROUNDS 仍未 report_to_main → 失败并主动通知主 Agent
+        return await _fail_subagent_loop(
+            execution,
+            error=(
+                f"子 Agent 达到最大轮数 {SUBAGENT_MAX_ROUNDS} 仍未调用 {REPORT_TOOL_NAME}。"
+                "任务未完成，主 Agent 应将此情况告知用户并决定后续策略。"
+            ),
+            status="failed",
+            sub_logger=sub_logger,
+            on_event=on_event,
+            error_type="max_rounds",
+        )
 
 
 # ──────────────────────────────────────────────

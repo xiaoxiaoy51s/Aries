@@ -168,6 +168,14 @@ async def notify_log_event(
     })
 
 
+def _schedule_ws_coro(coro: "Any") -> None:
+    """从同步 on_event 回调调度异步 WS 广播（须在 running loop 的协程栈内调用）。"""
+    try:
+        asyncio.get_running_loop().create_task(coro)
+    except RuntimeError:
+        pass
+
+
 def schedule_log_event_broadcast(
     session_id: str,
     message_id: int | str,
@@ -179,17 +187,9 @@ def schedule_log_event_broadcast(
         logger = SessionLogger(sid, mid, on_event=schedule_log_event_broadcast(sid, mid, path))
     """
     def _on_event(event: dict[str, Any]) -> None:
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(
-                    notify_log_event(session_id, message_id, event, jsonl_path)
-                )
-            else:
-                # 退化路径：没有运行中的事件循环时直接丢队列
-                pass
-        except RuntimeError:
-            pass
+        _schedule_ws_coro(
+            notify_log_event(session_id, message_id, event, jsonl_path)
+        )
 
     return _on_event
 
@@ -283,15 +283,10 @@ def schedule_subagent_log_event_broadcast(
     """子 Agent SessionLogger.on_event 回调：每写一行 JSONL 即 WebSocket 推送。"""
 
     def _on_event(event: dict[str, Any]) -> None:
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(
-                    notify_subagent_log_event(
-                        session_id, task_id, jsonl_path, event, tool_call_id
-                    )
-                )
-        except RuntimeError:
-            pass
+        _schedule_ws_coro(
+            notify_subagent_log_event(
+                session_id, task_id, jsonl_path, event, tool_call_id
+            )
+        )
 
     return _on_event

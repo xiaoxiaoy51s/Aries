@@ -1,5 +1,19 @@
 import type { ChatMessage, MessageBlock } from '@/types/chatMessage'
-import { applySubagentJsonlEvent } from '@/utils/subagentLogParser'
+import { applySubagentJsonlEvent, type SubagentInnerBlock } from '@/utils/subagentLogParser'
+
+const TERMINAL_SUBAGENT_STATUSES = new Set([
+  'success',
+  'failed',
+  'timeout',
+  'cancelled',
+])
+
+/** 流式展示时内嵌块上限，避免 15+ 轮工具调用撑爆 DOM */
+const MAX_LIVE_INNER_BLOCKS = 48
+
+export function isTerminalSubagentStatus(status?: string): boolean {
+  return !!status && TERMINAL_SUBAGENT_STATUSES.has(status)
+}
 
 export function findSubagentDelegateLocation(
   msgs: ChatMessage[],
@@ -31,6 +45,15 @@ export function findSubagentDelegateLocation(
     }
   }
   return null
+}
+
+function trimInnerBlocksForLive(blocks: SubagentInnerBlock[]): SubagentInnerBlock[] {
+  if (blocks.length <= MAX_LIVE_INNER_BLOCKS) return blocks
+  const omitted = blocks.length - MAX_LIVE_INNER_BLOCKS
+  return [
+    { type: 'text', phase: 'work', text: `… 另有 ${omitted} 个较早步骤已折叠（可在日志文件中查看）` },
+    ...blocks.slice(-MAX_LIVE_INNER_BLOCKS),
+  ]
 }
 
 function applySubagentLogStarted(
@@ -79,15 +102,19 @@ function applySubagentLogEvent(
   const msg = { ...out[loc.msgIdx] }
   const blocks = (msg.blocks || []).slice()
   const block = { ...blocks[loc.blockIdx] }
-  const inner = (block.subagent?.inner_blocks || []).slice()
+  const currentStatus = block.subagent?.status
+  if (isTerminalSubagentStatus(currentStatus)) {
+    return msgs
+  }
+  const inner = (block.subagent?.inner_blocks || []) as SubagentInnerBlock[]
   const applied = applySubagentJsonlEvent(inner, payload.event)
   block.subagent = {
     ...(block.subagent || {}),
     task_id: payload.taskId || block.subagent?.task_id,
     log_path: payload.logPath || block.subagent?.log_path,
     subagent: payload.subagentName || block.subagent?.subagent,
-    status: 'running',
-    inner_blocks: applied.blocks,
+    status: block.subagent?.status || 'running',
+    inner_blocks: trimInnerBlocksForLive(applied.blocks) as MessageBlock[],
     final_message: applied.finalMessage || block.subagent?.final_message,
   }
   blocks[loc.blockIdx] = block
@@ -108,7 +135,7 @@ function applySubagentLogComplete(
   const block = { ...blocks[loc.blockIdx] }
   if (block.subagent) {
     const st = block.subagent.status
-    if (st === 'running' || st === 'pending' || st === 'stalled' || !st) {
+    if (!st || st === 'running' || st === 'pending' || st === 'stalled') {
       block.subagent = { ...block.subagent, status: 'success' }
     }
   }
@@ -131,20 +158,32 @@ export function handleSubagentLogWsPayload(
     return applySubagentLogStarted(targetMessages, { taskId, logPath, toolCallId, subagentName })
   }
   if (data.type === 'subagent_log_event') {
-    const evt = data.event as Record<string, unknown> | undefined
-    if (!evt) return targetMessages
+    const evt = data.event
+    if (!evt || typeof evt !== 'object' || Array.isArray(evt)) return targetMessages
     return applySubagentLogEvent(targetMessages, {
       taskId,
       logPath,
       toolCallId,
       subagentName,
-      event: evt,
+      event: evt as Record<string, unknown>,
     })
   }
   if (data.type === 'subagent_log_complete') {
     return applySubagentLogComplete(targetMessages, { taskId, logPath, toolCallId })
   }
   return targetMessages
+}
+
+/** 同一帧内合并多条子 Agent 日志，减少对同一 delegate 块的重复克隆 */
+export function handleSubagentLogWsPayloadBatch(
+  items: Array<{ data: Record<string, unknown> }>,
+  targetMessages: ChatMessage[],
+): ChatMessage[] {
+  let msgs = targetMessages
+  for (const { data } of items) {
+    msgs = handleSubagentLogWsPayload(data, msgs)
+  }
+  return msgs
 }
 
 /** 在 assistant blocks 中定位 delegate_to_subagent 工具块（legacy stream_event 用） */

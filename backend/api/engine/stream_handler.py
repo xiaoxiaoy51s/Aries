@@ -433,6 +433,9 @@ async def stream_agent_mode(
 
                 if stream_result.error_msg:
                     yield f"data: {json.dumps({'error': stream_result.error_msg}, ensure_ascii=False)}\n\n"
+                    if logger and not logger.is_finalized():
+                        logger.apply_api_usage_estimate()
+                        logger.finalize()
                     break
 
                 if stream_result.cancelled:
@@ -640,7 +643,7 @@ async def stream_agent_mode(
                     if "__final_results" in ev:
                         sub_tool_results = ev["__final_results"]
                     else:
-                        # subagent 事件通过 WebSocket 推送（不再走已废弃的 SSE）
+                        # 子 Agent 内嵌细节走 subagent_log_event；此处仅广播 subagent_event 等状态事件
                         try:
                             from services.chat_ws import broadcast_stream_event
                             await broadcast_stream_event(session_id, ev)
@@ -737,6 +740,17 @@ async def stream_agent_mode(
                 pass
 
         if assistant_message_id is not None and logger is not None:
+            # 先推送 run_metadata + log_complete，避免 DB 落盘阻塞前端结束态
+            if not logger.is_finalized():
+                cache_summary = summarize_cache_usage(
+                    (logger.get_run_metadata().get("token_usage") or {}).get("api_usage") or {}
+                )
+                if cache_summary:
+                    existing_pc = (logger.get_run_metadata().get("token_usage") or {}).get("prompt_cache") or {}
+                    logger.set_token_usage({"prompt_cache": {**existing_pc, **cache_summary}})
+                logger.apply_api_usage_estimate()
+                logger.finalize()
+
             if cancelled:
                 logger.write_info_event("stream_interrupted", "用户中断或连接断开，正在保存已有进度到数据库")
             reasoning_text, assistant_text = logger.flush_assistant_round()
@@ -766,12 +780,4 @@ async def stream_agent_mode(
                 message_snapshot_json=logger.jsonl_path_str(),
                 reasoning_content=logger.build_db_reasoning()
             )
-            cache_summary = summarize_cache_usage(
-                (logger.get_run_metadata().get("token_usage") or {}).get("api_usage") or {}
-            )
-            if cache_summary:
-                existing_pc = (logger.get_run_metadata().get("token_usage") or {}).get("prompt_cache") or {}
-                logger.set_token_usage({"prompt_cache": {**existing_pc, **cache_summary}})
-            logger.apply_api_usage_estimate()
             yield f"data: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
-            logger.finalize()

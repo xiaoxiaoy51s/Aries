@@ -36,6 +36,7 @@ export interface MessageBlock {
     log_path?: string
     inner_blocks?: MessageBlock[]
     final_message?: string
+    error?: string
   }
 }
 
@@ -84,5 +85,6 @@ export interface SubagentRecord {
   log_path?: string
   inner_blocks?: MessageBlock[]
   final_message?: string
+  error?: string
   message_id?: number
 }

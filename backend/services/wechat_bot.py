@@ -101,6 +101,17 @@ class WeChatBotClient:
             from_user = (msg.get("from_user_id") or "").strip()
             if from_user:
                 self.last_from_user_id = from_user
+        # 持久化收件人信息，避免 bot 重启后无法主动推送（仅在收到消息时）
+        if msgs and self.last_from_user_id:
+            try:
+                from services.bot_manager import persist_recipient
+                persist_recipient(
+                    "wechat",
+                    last_from_user_id=self.last_from_user_id,
+                    context_token=self.context_token,
+                )
+            except Exception:
+                pass
         return msgs
 
     def send_message(

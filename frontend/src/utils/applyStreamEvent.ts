@@ -1,6 +1,6 @@
 import type { StreamEvent } from '@/api/chat'
 import type { ChatMessage, MessageBlock, SubagentRecord } from '@/types/chatMessage'
-import { findDelegateBlockForStreamEvent } from '@/utils/chatSubagentWs'
+import { findDelegateBlockForStreamEvent, isTerminalSubagentStatus } from '@/utils/chatSubagentWs'
 import {
   clearPetStatus,
   flushPetStatusForComplete,
@@ -162,7 +162,11 @@ export function applyStreamEvent(
             status: isAutoConfirmed && isPendingConfirm ? 'running' : newStatus,
             result: evt.data.output || '',
             ended_at: '',
-            pending_confirmation: isAutoConfirmed ? false : (isPendingConfirm ? block.pending_confirmation : false),
+            pending_confirmation: isAutoConfirmed
+              ? false
+              : isPendingConfirm
+                ? true
+                : false,
             session_id: evt.data.session_id || block.session_id || '',
             auto_detached: Boolean(evt.data.auto_detached || block.auto_detached),
           }
@@ -195,22 +199,41 @@ export function applyStreamEvent(
     }
   } else if (evt.type === 'confirmation_required') {
     if (!assistantMsg.tools) assistantMsg.tools = []
+    const toolCallId = String(evt.data.tool_call_id || '').trim()
+    const toolName = evt.data.tool_name || ''
     const lastTool = assistantMsg.tools[assistantMsg.tools.length - 1]
-    if (lastTool && lastTool.name === evt.data.tool_name) {
+    if (lastTool && lastTool.name === toolName) {
       lastTool.status = 'pending_confirmation'
       lastTool.output = '等待确认…'
     }
     if (assistantMsg.blocks && assistantMsg.blocks.length > 0) {
       const blocks = assistantMsg.blocks.slice()
-      const lastToolBlock = blocks[blocks.length - 1]
-      if (lastToolBlock && lastToolBlock.type === 'tool') {
-        lastToolBlock.status = 'pending_confirmation'
-        lastToolBlock.pending_confirmation = true
-        lastToolBlock.danger_info = evt.data.danger_info || ''
-        lastToolBlock.danger_types = evt.data.danger_types || []
-        lastToolBlock.tool_call_id = evt.data.tool_call_id
-        if (evt.data.command && lastToolBlock.args) {
-          lastToolBlock.args = { ...lastToolBlock.args, command: evt.data.command }
+      let targetIdx = -1
+      if (toolCallId) {
+        targetIdx = blocks.findIndex(
+          (b) => b.type === 'tool' && b.tool_call_id === toolCallId,
+        )
+      }
+      if (targetIdx < 0) {
+        for (let i = blocks.length - 1; i >= 0; i -= 1) {
+          if (blocks[i].type === 'tool') {
+            targetIdx = i
+            break
+          }
+        }
+      }
+      const targetBlock = targetIdx >= 0 ? blocks[targetIdx] : null
+      if (targetBlock && targetBlock.type === 'tool') {
+        blocks[targetIdx] = {
+          ...targetBlock,
+          status: 'pending_confirmation',
+          pending_confirmation: true,
+          danger_info: evt.data.danger_info || '',
+          danger_types: evt.data.danger_types || [],
+          tool_call_id: toolCallId || targetBlock.tool_call_id,
+          args: evt.data.command && targetBlock.args
+            ? { ...targetBlock.args, command: evt.data.command }
+            : targetBlock.args,
         }
       }
       assistantMsg.blocks = blocks
@@ -232,7 +255,8 @@ export function applyStreamEvent(
         elapsed_ms: subData.elapsed_ms,
         log_path: subData.log_path,
         inner_blocks: target.subagent?.inner_blocks,
-        final_message: target.subagent?.final_message,
+        final_message: subData.final_message || target.subagent?.final_message,
+        error: subData.error || target.subagent?.error,
       }
     }
     if (taskId && deps) {
@@ -245,6 +269,8 @@ export function applyStreamEvent(
         last_event: subData.last_event,
         elapsed_ms: subData.elapsed_ms,
         log_path: subData.log_path,
+        error: subData.error,
+        final_message: subData.final_message,
       }
       if (opts?.subagents && deps.upsertSubagentInList) {
         deps.upsertSubagentInList(opts.subagents, record)
@@ -291,6 +317,7 @@ function applySubagentGranularEvent(
     if (!b.subagent?.task_id && d.subagent && b.args?.subagent_name === d.subagent) { target = b; break }
   }
   if (!target) return
+  if (isTerminalSubagentStatus(target.subagent?.status)) return
   if (!target.subagent) target.subagent = {}
   if (taskId && !target.subagent.task_id) target.subagent.task_id = taskId
   if (!target.subagent.inner_blocks) target.subagent.inner_blocks = []

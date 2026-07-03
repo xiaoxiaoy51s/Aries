@@ -80,6 +80,10 @@ class SessionLogger:
         self._model = ""
         self._token_usage: dict[str, Any] = {}
         self._metadata_written = False
+        self._finalized = False
+
+    def is_finalized(self) -> bool:
+        return self._finalized
 
     def _emit(self, event: dict[str, Any]) -> None:
         """触发事件回调（异常吞掉，避免推送失败影响主流程）。"""
@@ -171,6 +175,30 @@ class SessionLogger:
             event["session_id"] = session_id
         if file_change:
             event["file_change"] = file_change
+        _append_event(self.path, event)
+        self._emit(event)
+
+    def write_confirmation_required(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        *,
+        command: str = "",
+        danger_info: str = "",
+        danger_types: list[str] | None = None,
+        args: dict[str, Any] | None = None,
+    ) -> None:
+        """工具需用户确认：写入 JSONL 并实时推送给前端（在等待用户操作之前）。"""
+        event: dict[str, Any] = {
+            "type": "confirmation_required",
+            "tool_call_id": tool_call_id,
+            "tool_name": tool_name,
+            "command": command,
+            "danger_info": danger_info,
+            "danger_types": danger_types or [],
+            "args": args or {},
+            "timestamp": _utc_now(),
+        }
         _append_event(self.path, event)
         self._emit(event)
 
@@ -274,6 +302,7 @@ class SessionLogger:
             "duration_ms": self.duration_ms(),
             "token_usage": self._token_usage,
             "timestamp": _utc_now(),
+            "final": True,
         }
         _append_event(self.path, event)
         self._emit(event)
@@ -287,6 +316,9 @@ class SessionLogger:
         }
 
     def finalize(self) -> None:
+        if self._finalized:
+            return
+        self._finalized = True
         self.flush_reasoning_segment()
         self.apply_api_usage_estimate()
         # write_run_metadata 内部已 self._emit

@@ -251,8 +251,23 @@ import {
   sessionHasActiveWork,
 } from '@/utils/chatMessageHelpers'
 import { rebuildAssistantFromJsonl } from '@/utils/jsonlCatchUp'
+import {
+  enqueueLogEvent,
+  flushLogEventsNow,
+  setLogEventBatchHandler,
+  type LogEventBatchItem,
+} from '@/utils/logEventBatcher'
 import { streamDiag, setStreamDebugEnabled } from '@/utils/streamDebug'
 import { handleSubagentLogWsPayload } from '@/utils/chatSubagentWs'
+import { bindSubagentLogBatch, isSubagentLogBatchBound, unbindSubagentLogBatch } from '@/utils/chatSubagentBatchBridge'
+
+/** 子 Agent 内嵌细节由 JSONL batch 渲染；stream_event 仅保留 subagent_event 状态更新 */
+const SUBAGENT_GRANULAR_STREAM_TYPES = new Set([
+  'subagent_reasoning',
+  'subagent_content',
+  'subagent_tool_call',
+  'subagent_tool_result',
+])
 import {
   buildMessageFromSnapshotEvents,
   buildReasoningContentFallback,
@@ -521,45 +536,22 @@ function stashRunMetadata(messageId: number, raw: unknown) {
   applyMetaToMessage(messageId, merged)
 }
 
+/** 终态 run_metadata（写盘那条）视为任务结束信号；流中间的 snapshot 无 final 标记 */
+function isFinalRunMetadata(event: Record<string, unknown>): boolean {
+  return event.final === true
+}
+
 /**
- * 将后端 JSONL 事件应用到 UI（无需重新拉取 JSONL）
+ * 将 JSONL/WS 事件转为 StreamEvent（供批量/单条共用）
  */
-function applyLogEvent(event: Record<string, any>, messageId: number, jsonlPath: string) {
-  if (!currentSessionId.value) return
-  const evtType = event.type
-
-  if (evtType === 'run_metadata') {
-    stashRunMetadata(messageId, event)
-    return
-  }
-  if (evtType === 'log_complete') {
-    streamDiag('Event', 'applyLogEvent log_complete (nested)', streamStateSnapshot({ messageId }))
-    completeLogMessage(messageId)
-    return
-  }
-
-  let idx = messageId > 0 ? findAssistantMessageIndex(messageId) : activeAssistantIdx
-  if (idx == null || idx < 0) {
-    ensureLogPlaceholder(messageId, jsonlPath)
-    idx = activeAssistantIdx
-  } else {
-    activeAssistantIdx = idx
-    activeAssistantMessageId = messageId
-  }
-  if (idx == null) return
-  const msg = messages.value[idx]
-  if (!msg || msg.role !== 'assistant') return
-  let streamEvt: StreamEvent | null = null
-
-  switch (evtType) {
+function buildStreamEventFromLogRecord(event: Record<string, any>): StreamEvent | null {
+  switch (event.type) {
     case 'reasoning_text':
-      streamEvt = { type: 'reasoning', data: String(event.text || '') }
-      break
+      return { type: 'reasoning', data: String(event.text || '') }
     case 'assistant_text':
-      streamEvt = { type: 'content', data: String(event.text || '') }
-      break
+      return { type: 'content', data: String(event.text || '') }
     case 'tool_call':
-      streamEvt = {
+      return {
         type: 'tool_call',
         data: {
           tool_call_id: event.tool_call_id,
@@ -569,9 +561,8 @@ function applyLogEvent(event: Record<string, any>, messageId: number, jsonlPath:
           session_id: event.session_id || '',
         },
       }
-      break
     case 'tool_result':
-      streamEvt = {
+      return {
         type: 'tool_result',
         data: {
           tool_call_id: event.tool_call_id,
@@ -582,10 +573,20 @@ function applyLogEvent(event: Record<string, any>, messageId: number, jsonlPath:
           session_id: event.session_id || '',
         },
       }
-      break
+    case 'confirmation_required':
+      return {
+        type: 'confirmation_required',
+        data: {
+          tool_call_id: event.tool_call_id,
+          tool_name: event.tool_name,
+          command: event.command,
+          danger_info: event.danger_info,
+          danger_types: event.danger_types,
+          args: event.args,
+        },
+      }
     case 'sub_agent':
-      // 把 sub_agent 转换为 subagent_event 格式
-      streamEvt = {
+      return {
         type: 'subagent_event',
         data: {
           task_id: event.tool_call_id,
@@ -596,50 +597,115 @@ function applyLogEvent(event: Record<string, any>, messageId: number, jsonlPath:
           round: event.rounds,
           elapsed_ms: event.duration_ms,
           final_message: event.final_output,
+          error: event.error,
         },
       }
-      break
     case 'error_event':
-      streamEvt = { type: 'error', data: event.error_msg || event.error || '未知错误' }
-      break
+      return { type: 'error', data: event.error_msg || event.error || '未知错误' }
     case 'info_event':
-      streamEvt = { type: 'hint', data: event.info_msg || '' }
-      break
+      return { type: 'hint', data: event.info_msg || '' }
     default:
-      return
+      return null
   }
-  if (!streamEvt) return
-  pushStreamEvent(msg, streamEvt)
-  messages.value[idx] = { ...msg }
-  // 自动确认逻辑（与 runAssistantStream 一致）
-  if (streamEvt.type === 'confirmation_required' && streamEvt.data) {
-    const dangerTypes: string[] = streamEvt.data.danger_types || []
-    const command = String(streamEvt.data.command || '').trim()
-    const needsConfirm = privacyStore.needsConfirmation(dangerTypes, command)
-    if (!needsConfirm) {
-      const toolCallId = streamEvt.data.tool_call_id as string
-      if (msg.blocks) {
-        for (const block of msg.blocks) {
-          if (block.type === 'tool' && block.tool_call_id === toolCallId && block.pending_confirmation) {
-            block.pending_confirmation = false
-            block.status = 'running'
+}
+
+function resolveLogEventTarget(messageId: number, jsonlPath: string): number | null {
+  let idx = messageId > 0 ? findAssistantMessageIndex(messageId) : activeAssistantIdx
+  if (idx == null || idx < 0) {
+    ensureLogPlaceholder(messageId, jsonlPath)
+    idx = activeAssistantIdx
+  } else {
+    activeAssistantIdx = idx
+    activeAssistantMessageId = messageId
+  }
+  return idx
+}
+
+function commitPendingAssistantUpdates(pending: Map<number, ChatMessage>) {
+  for (const [idx, msg] of pending) {
+    messages.value[idx] = { ...msg }
+  }
+  pending.clear()
+}
+
+function applyLogEventBatch(items: LogEventBatchItem[]) {
+  if (!currentSessionId.value || !items.length) return
+  const pending = new Map<number, ChatMessage>()
+  let needsScroll = false
+
+  for (const { event, messageId, jsonlPath } of items) {
+    const evtType = event.type as string
+
+    if (evtType === 'run_metadata') {
+      stashRunMetadata(messageId, event)
+      if (isFinalRunMetadata(event as Record<string, unknown>)) {
+        commitPendingAssistantUpdates(pending)
+        streamDiag('Event', 'applyLogEvent run_metadata(final) → complete', streamStateSnapshot({ messageId }))
+        stoppedSessions.delete(currentSessionId.value || '')
+        completeLogMessage(messageId)
+      }
+      continue
+    }
+    if (evtType === 'error_event') {
+      const idx = resolveLogEventTarget(messageId, jsonlPath)
+      if (idx != null) {
+        let msg = pending.get(idx) ?? messages.value[idx]
+        if (msg?.role === 'assistant') {
+          const streamEvt = buildStreamEventFromLogRecord(event as Record<string, any>)
+          if (streamEvt) {
+            pushStreamEvent(msg, streamEvt)
+            pending.set(idx, msg)
           }
         }
       }
-      messages.value[idx] = { ...msg }
-      confirmTool(toolCallId, true).catch(() => {})
-      autoConfirmedToolIds.add(toolCallId)
+      commitPendingAssistantUpdates(pending)
+      stoppedSessions.delete(currentSessionId.value || '')
+      completeLogMessage(messageId)
+      syncSessionWorkingState()
+      nextTick(() => scheduleScrollToBottom())
+      continue
     }
+    if (evtType === 'log_complete') {
+      commitPendingAssistantUpdates(pending)
+      streamDiag('Event', 'applyLogEvent log_complete (nested)', streamStateSnapshot({ messageId }))
+      completeLogMessage(messageId)
+      continue
+    }
+
+    const idx = resolveLogEventTarget(messageId, jsonlPath)
+    if (idx == null) continue
+
+    let msg = pending.get(idx) ?? messages.value[idx]
+    if (!msg || msg.role !== 'assistant') continue
+
+    const streamEvt = buildStreamEventFromLogRecord(event as Record<string, any>)
+    if (!streamEvt) continue
+
+    pushStreamEvent(msg, streamEvt)
+    pending.set(idx, msg)
+    maybeAutoConfirmTool(streamEvt, msg, idx, false)
+
+    if (streamEvt.type === 'todo_update' && streamEvt.data?.todos) {
+      window.dispatchEvent(new CustomEvent('aries:todo-update', {
+        detail: {
+          sessionId: currentSessionId.value || '',
+          todos: streamEvt.data.todos,
+        },
+      }))
+    }
+    needsScroll = true
   }
-  if (streamEvt.type === 'todo_update' && streamEvt.data?.todos) {
-    window.dispatchEvent(new CustomEvent('aries:todo-update', {
-      detail: {
-        sessionId: currentSessionId.value || '',
-        todos: streamEvt.data.todos,
-      },
-    }))
-  }
-  nextTick(() => scheduleScrollToBottom())
+
+  commitPendingAssistantUpdates(pending)
+  syncSessionWorkingState()
+  if (needsScroll) nextTick(() => scheduleScrollToBottom())
+}
+
+/**
+ * 将后端 JSONL 事件应用到 UI（无需重新拉取 JSONL）
+ */
+function applyLogEvent(event: Record<string, any>, messageId: number, jsonlPath: string) {
+  applyLogEventBatch([{ event, messageId, jsonlPath }])
 }
 
 function findAssistantMessageIndex(messageId: number): number {
@@ -650,6 +716,7 @@ function findAssistantMessageIndex(messageId: number): number {
  * log_complete：标记当前 placeholder 完成，更新 isLoading / isSending
  */
 function completeLogMessage(messageId: number) {
+  flushLogEventsNow()
   streamDiag('State', 'completeLogMessage → UI idle', streamStateSnapshot({ messageId, source: 'log_complete' }))
   const idx = findAssistantMessageIndex(messageId)
   const pendingMeta = messageId ? pendingRunMetaByMessageId.get(messageId) : undefined
@@ -726,7 +793,32 @@ function handlePlatformStreamEvent(rawEvent: Record<string, unknown>) {
   // 复用已有的 applyStreamEvent 逻辑
   pushStreamEvent(assistantMsg, evt)
   messages.value[assistantIdx] = { ...assistantMsg }
+  maybeAutoConfirmTool(evt, assistantMsg, assistantIdx)
   nextTick(() => scheduleScrollToBottom())
+}
+
+function maybeAutoConfirmTool(
+  evt: StreamEvent,
+  msg: ChatMessage,
+  idx: number,
+  commit = true,
+) {
+  if (evt.type !== 'confirmation_required' || !evt.data) return
+  const dangerTypes: string[] = evt.data.danger_types || []
+  const command = String(evt.data.command || '').trim()
+  if (privacyStore.needsConfirmation(dangerTypes, command)) return
+  const toolCallId = evt.data.tool_call_id as string
+  if (msg.blocks) {
+    for (const block of msg.blocks) {
+      if (block.type === 'tool' && block.tool_call_id === toolCallId && block.pending_confirmation) {
+        block.pending_confirmation = false
+        block.status = 'running'
+      }
+    }
+  }
+  if (commit) messages.value[idx] = { ...msg }
+  confirmTool(toolCallId, true).catch(() => {})
+  autoConfirmedToolIds.add(toolCallId)
 }
 
 function ensurePlatformUserMessage(preview: string) {
@@ -739,7 +831,6 @@ function ensurePlatformUserMessage(preview: string) {
 
   messages.value.splice(insertAt, 0, {
     role: 'user',
-    content: text,
     ...enrichUserMessage(text),
     reasoning: [],
     tools: [],
@@ -845,13 +936,10 @@ function clearComposerCommand() {
 
 const messages = ref<ChatMessage[]>([])
 
-/** 仅当前查看的 session 在流式时，输入框才显示加载/停止按钮 */
-const composerIsSending = computed(() => {
-  const sid = currentSessionId.value
-  if (!sid || stoppedSessions.has(sid)) return false
-  if (isSessionWorking(sid)) return true
-  return sessionHasActiveWork(messages.value, isSending.value)
-})
+/** 仅看消息区 loading-dots（三个点）：还在就不算终止 */
+const composerIsSending = computed(() =>
+  messages.value.some((m) => m.role === 'assistant' && m.isLoading === true),
+)
 
 /** 诊断用：当前流式/UI 状态快照（安全，不抛错） */
 function streamStateSnapshot(extra?: Record<string, unknown>) {
@@ -1139,6 +1227,30 @@ function applyLogEventSnapshot(
       const msg = snapshot.messages[metaIdx] as ChatMessage
       snapshot.messages[metaIdx] = { ...msg, meta }
     }
+    if (event.final === true) {
+      completeLogMessageSnapshot(snapshot, sessionId, messageId)
+    }
+    return
+  }
+  if (event.type === 'error_event') {
+    let idx = messageId > 0
+      ? findAssistantMessageIndexInSnapshot(snapshot, messageId)
+      : snapshot.activeAssistantIdx
+    if (idx == null || idx < 0) {
+      ensureLogPlaceholderSnapshot(snapshot, sessionId, messageId, jsonlPath)
+      idx = snapshot.activeAssistantIdx
+    }
+    if (idx != null && idx >= 0) {
+      const msg = snapshot.messages[idx] as ChatMessage | undefined
+      if (msg?.role === 'assistant') {
+        const streamEvt = buildStreamEventFromLogEvent(event)
+        if (streamEvt && streamEvt !== 'complete') {
+          pushStreamEvent(msg, streamEvt, { silent: true, subagents: snapshot.sessionSubagents as SubagentRecord[] })
+          snapshot.messages[idx] = { ...msg }
+        }
+      }
+    }
+    completeLogMessageSnapshot(snapshot, sessionId, messageId)
     return
   }
   if (event.type === 'log_complete') {
@@ -1239,27 +1351,30 @@ async function processChatWsPayload(data: Record<string, unknown>) {
         ensureLogPlaceholder(evtMessageId, String(data.jsonl_path || ''))
       }
     }
-    applyLogEvent(evt, evtMessageId, String(data.jsonl_path || ''))
-    syncSessionWorkingState()
+    enqueueLogEvent({
+      event: evt,
+      messageId: evtMessageId,
+      jsonlPath: String(data.jsonl_path || ''),
+    })
   } else if (data.type === 'log_complete') {
+    flushLogEventsNow()
     streamDiag('Event', 'processChatWsPayload log_complete (top-level)', streamStateSnapshot({
       messageId: data.message_id,
     }))
     stoppedSessions.delete(currentSessionId.value || '')
     completeLogMessage(Number(data.message_id) || 0)
-  } else if (
-    data.type === 'subagent_log_started'
-    || data.type === 'subagent_log_event'
-    || data.type === 'subagent_log_complete'
-  ) {
+  } else if (data.type === 'subagent_log_complete') {
     messages.value = handleSubagentLogWsPayload(data, messages.value)
     syncSessionWorkingState()
     nextTick(() => scheduleScrollToBottom())
   } else if (data.type === 'stream_event') {
     const event = data.event as Record<string, unknown> | undefined
     if (!event) return
-    // subagent 事件：更新主聊天 tool block 状态（内嵌渲染在 delegate_to_subagent 工具块内）
+    // subagent 事件：subagent_event 更新状态；内嵌细节走 subagent_log_event batch
     if (typeof event.type === 'string' && event.type.startsWith('subagent_')) {
+      if (isSubagentLogBatchBound() && SUBAGENT_GRANULAR_STREAM_TYPES.has(event.type)) {
+        return
+      }
       const lastIdx = messages.value.length - 1
       const lastAssistant = messages.value[lastIdx]
       if (lastAssistant?.role === 'assistant') {
@@ -1475,7 +1590,9 @@ const pendingToolConfirmation = computed((): PendingToolConfirmation | null => {
     for (let j = msg.blocks.length - 1; j >= 0; j--) {
       const block = msg.blocks[j]
       if (block.type === 'tool' && block.pending_confirmation && block.tool_call_id) {
-        const command = String(block.args?.command || '').trim()
+        const command = String(
+          block.args?.command || block.args?.file_path || block.args?.subdir || '',
+        ).trim()
         const dangerInfo = String(block.danger_info || '').trim()
         const dangerTypes = block.danger_types || []
         return {
@@ -1720,16 +1837,18 @@ async function finishSessionSwitch(id: string, seq: number): Promise<void> {
 
 function scheduleSnapshotLoads(
   msgs: ChatMessage[],
-  rawMessages: Array<{ id?: number; reasoning_content?: string }>,
+  rawMessages: Array<{ id?: number; reasoning_content?: string }> = [],
   seq: number,
 ): void {
   const pending: Array<{ messageId: number; index: number; raw?: { reasoning_content?: string } }> = []
   for (let i = 0; i < msgs.length; i++) {
-    if (msgs[i].role !== 'assistant') continue
-    if (msgs[i].blocks && msgs[i].blocks.length > 0) continue
-    const messageId = rawMessages[i]?.id ?? msgs[i].messageId
+    const msg = msgs[i]
+    if (!msg || msg.role !== 'assistant') continue
+    if (msg.blocks && msg.blocks.length > 0) continue
+    const raw = rawMessages[i]
+    const messageId = raw?.id ?? msg.messageId
     if (!messageId) continue
-    pending.push({ messageId, index: i, raw: rawMessages[i] })
+    pending.push({ messageId, index: i, raw })
   }
   if (pending.length === 0) return
   void loadSessionSnapshotsParallel(pending, seq)
@@ -1858,7 +1977,7 @@ async function loadSessionById(id: string) {
         void ensureSessionWs(wsSid, wsBase)
       }
       pruneSessionWsKeep(buildWsKeepSet(id))
-      scheduleSnapshotLoads(cached.messages as ChatMessage[], cached.messages as ChatMessage[], seq)
+      scheduleSnapshotLoads(cached.messages as ChatMessage[], [], seq)
       await finishSessionSwitch(id, seq)
       return
     }
@@ -2107,6 +2226,11 @@ function onAddToChat(e: Event) {
 }
 
 onMounted(() => {
+  setLogEventBatchHandler(applyLogEventBatch)
+  bindSubagentLogBatch(messages, () => {
+    syncSessionWorkingState()
+    nextTick(() => scheduleScrollToBottom())
+  })
   ;(window as unknown as { ariesStreamDebug?: { on: () => void; off: () => void } }).ariesStreamDebug = {
     on: () => setStreamDebugEnabled(true),
     off: () => setStreamDebugEnabled(false),
@@ -2173,6 +2297,9 @@ watch(() => props.sessionIdToLoad, (id) => {
 })
 
 onUnmounted(() => {
+  flushLogEventsNow()
+  setLogEventBatchHandler(null)
+  unbindSubagentLogBatch()
   clearConfirmCountdownTimer()
   setOnReconnect(null)
   if (healthCheckTimer) {

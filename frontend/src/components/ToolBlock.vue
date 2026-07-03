@@ -217,6 +217,7 @@ import ToolActionBar from './ToolActionBar.vue'
 import AssistantMessage from './AssistantMessage.vue'
 import { buildFileEditPreview } from '@/utils/fileEditPreview'
 import { parseDelegateToolResult, finalizeSubagentDisplayBlocks } from '@/utils/subagentLogParser'
+import { isTerminalSubagentStatus } from '@/utils/chatSubagentWs'
 
 defineOptions({ name: 'ToolBlock' })
 
@@ -311,9 +312,21 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => props.subagent?.status,
+  (status) => {
+    if (isTerminalSubagentStatus(status)) {
+      isExpanded.value = false
+    }
+  },
+)
+
 // 子 Agent 内容由 chatPage 通过 subagent_log_event WebSocket 增量写入 inner_blocks
 const subagentBlocks = computed<InnerBlock[]>(() => {
-  const rawBlocks = (props.subagent?.inner_blocks || []).map((b) => ({ ...b }))
+  if (!isExpanded.value && isTerminalSubagentStatus(props.subagent?.status)) {
+    return []
+  }
+  const rawBlocks = props.subagent?.inner_blocks || []
   const finalText = props.subagent?.final_message
     || parseDelegateToolResult(props.result).final_message
     || ''

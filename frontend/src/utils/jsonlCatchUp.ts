@@ -34,6 +34,8 @@ export function applyJsonlEventsFromIndex(
     if (!raw || typeof raw !== 'object') continue
     if (raw.type === 'run_metadata') {
       applied = i + 1
+      // JSONL 文件里只会落盘终态 run_metadata（流中间 snapshot 不写盘）
+      onComplete?.(assistantMsg.messageId || 0)
       continue
     }
     if (raw.type === 'log_complete') {

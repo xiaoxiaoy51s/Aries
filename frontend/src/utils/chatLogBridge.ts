@@ -31,6 +31,18 @@ export function buildStreamEventFromLogEvent(
           session_id: event.session_id || '',
         },
       }
+    case 'confirmation_required':
+      return {
+        type: 'confirmation_required',
+        data: {
+          tool_call_id: event.tool_call_id,
+          tool_name: event.tool_name,
+          command: event.command,
+          danger_info: event.danger_info,
+          danger_types: event.danger_types,
+          args: event.args,
+        },
+      }
     case 'run_metadata':
       return { type: 'meta', data: event }
     case 'log_complete':

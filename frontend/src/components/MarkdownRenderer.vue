@@ -157,6 +157,21 @@ md.renderer.rules.fence = function (tokens, idx, options, env, self) {
   return defaultFence ? defaultFence(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options)
 }
 
+function escapeHtmlText(raw: string): string {
+  return raw
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+/** 流式阶段：跳过 markdown/highlight/KaTeX 全文重算（长任务 O(n²) 的主要来源） */
+function renderStreamingPlain(raw: string): string {
+  if (!raw) return ''
+  return DOMPurify.sanitize(
+    `<pre class="streaming-plain-text">${escapeHtmlText(raw)}</pre>`,
+  )
+}
+
 // ── 渲染管道 ──────────────────────────────────────────
 function renderMarkdownToHtml(raw: string): string {
   if (!raw) return ''
@@ -169,7 +184,55 @@ function renderMarkdownToHtml(raw: string): string {
   })
 }
 
-const sanitizedHtml = computed(() => renderMarkdownToHtml(props.content))
+// ── 流式节流渲染 ──────────────────────────────────────
+// 后端高速吐 token 时，若每个 token 都全文重解析 markdown（preprocessMath +
+// md.render + DOMPurify），主线程会被占满导致渲染积压、UI 明显滞后。
+// 流式期间用纯文本占位，结束后再一次性做完整 markdown 渲染。
+// 这里对内容变更做节流：最多每 RENDER_THROTTLE_MS 渲染一次，并保证最后一次
+// 变更（trailing）与流式结束时立即补齐完整内容。
+const RENDER_THROTTLE_MS = 100
+const displayContent = ref(props.content)
+let renderThrottleTimer: ReturnType<typeof setTimeout> | null = null
+let lastRenderAt = 0
+
+function flushDisplayContent() {
+  if (renderThrottleTimer) {
+    clearTimeout(renderThrottleTimer)
+    renderThrottleTimer = null
+  }
+  lastRenderAt = Date.now()
+  displayContent.value = props.content
+}
+
+watch(() => props.content, (val) => {
+  const now = Date.now()
+  const elapsed = now - lastRenderAt
+  if (elapsed >= RENDER_THROTTLE_MS) {
+    lastRenderAt = now
+    displayContent.value = val
+    if (renderThrottleTimer) {
+      clearTimeout(renderThrottleTimer)
+      renderThrottleTimer = null
+    }
+  } else if (!renderThrottleTimer) {
+    renderThrottleTimer = setTimeout(() => {
+      renderThrottleTimer = null
+      lastRenderAt = Date.now()
+      displayContent.value = props.content
+    }, RENDER_THROTTLE_MS - elapsed)
+  }
+})
+
+// 流式结束：立即补齐完整内容（避免停在节流中间态）
+watch(() => props.isStreaming, (streaming, prev) => {
+  if (prev && !streaming) flushDisplayContent()
+})
+
+const sanitizedHtml = computed(() =>
+  props.isStreaming
+    ? renderStreamingPlain(displayContent.value)
+    : renderMarkdownToHtml(displayContent.value),
+)
 
 // 代码块复制：用事件委托绑定，避免 inline onclick 被转义
 const markdownContainer = ref<HTMLElement | null>(null)
@@ -222,6 +285,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   markdownContainer.value?.removeEventListener('click', onCopyCodeClick)
   if (codeCopyResetTimer) clearTimeout(codeCopyResetTimer)
+  if (renderThrottleTimer) clearTimeout(renderThrottleTimer)
 })
 
 watch(sanitizedHtml, () => {
@@ -307,6 +371,19 @@ function copyAllContent() {
 
 .markdown-body :deep(.katex) {
   font-size: 1.05em;
+}
+
+.markdown-body :deep(.streaming-plain-text) {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
 }
 
 /* 代码块样式 */

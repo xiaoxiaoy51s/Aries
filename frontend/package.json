@@ -1,6 +1,6 @@
 {
   "name": "aries-desktop",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Aries — 本地 AI 编程助手桌面应用",
   "author": "xiaoxiaoy51s",
   "license": "MIT",
@@ -37,6 +37,7 @@
     "vue-router": "^4.2.0"
   },
   "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
     "@vitejs/plugin-vue": "^5.0.0",
     "concurrently": "^9.2.1",
     "electron": "^33.4.11",

@@ -64,7 +64,7 @@
       </p>
       <div v-if="updateInfo.release_notes" class="update-notes">
         <div class="update-notes-title">更新说明</div>
-        <pre class="update-notes-body">{{ updateInfo.release_notes.trim() }}</pre>
+        <div class="update-notes-body" v-html="sanitizedNotes"></div>
       </div>
 
       <!-- 下载中 -->
@@ -107,6 +107,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import DOMPurify from 'dompurify'
 import { useUpdateStore } from '@/stores/update'
 import { getAppVersion } from '@/api/update'
 import { openUrl } from '@/api/system'
@@ -122,6 +123,11 @@ const checkError = ref<string | null>(null)
 
 const checking = computed(() => updateStore.checking)
 const updateInfo = computed(() => updateStore.result)
+const sanitizedNotes = computed(() => {
+  const raw = updateInfo.value?.release_notes
+  if (!raw) return ''
+  return DOMPurify.sanitize(raw.trim(), { USE_PROFILES: { html: true } })
+})
 
 async function loadCurrentVersion() {
   try {
@@ -410,11 +416,44 @@ onMounted(async () => {
   border-radius: 8px;
   font-size: 12px;
   line-height: 1.6;
-  white-space: pre-wrap;
   word-break: break-word;
   max-height: 240px;
   overflow-y: auto;
   font-family: inherit;
+}
+
+.update-notes-body :deep(h1),
+.update-notes-body :deep(h2),
+.update-notes-body :deep(h3) {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 8px 0 4px;
+}
+
+.update-notes-body :deep(ul),
+.update-notes-body :deep(ol) {
+  padding-left: 20px;
+  margin: 4px 0;
+}
+
+.update-notes-body :deep(li) {
+  margin: 2px 0;
+}
+
+.update-notes-body :deep(p) {
+  margin: 4px 0;
+}
+
+.update-notes-body :deep(a) {
+  color: var(--accent, #4f8cff);
+  text-decoration: underline;
+}
+
+.update-notes-body :deep(code) {
+  font-family: ui-monospace, monospace;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 1px 4px;
+  border-radius: 3px;
 }
 
 .update-download-section {
