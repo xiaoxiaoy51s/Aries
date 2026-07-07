@@ -145,7 +145,7 @@ function applySubagentLogComplete(
   return out
 }
 
-export function handleSubagentLogWsPayload(
+export function handleSubagentLogPayload(
   data: Record<string, unknown>,
   targetMessages: ChatMessage[],
 ): ChatMessage[] {
@@ -175,13 +175,13 @@ export function handleSubagentLogWsPayload(
 }
 
 /** 同一帧内合并多条子 Agent 日志，减少对同一 delegate 块的重复克隆 */
-export function handleSubagentLogWsPayloadBatch(
+export function handleSubagentLogPayloadBatch(
   items: Array<{ data: Record<string, unknown> }>,
   targetMessages: ChatMessage[],
 ): ChatMessage[] {
   let msgs = targetMessages
   for (const { data } of items) {
-    msgs = handleSubagentLogWsPayload(data, msgs)
+    msgs = handleSubagentLogPayload(data, msgs)
   }
   return msgs
 }

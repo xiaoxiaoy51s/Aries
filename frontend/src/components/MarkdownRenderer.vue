@@ -157,21 +157,6 @@ md.renderer.rules.fence = function (tokens, idx, options, env, self) {
   return defaultFence ? defaultFence(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options)
 }
 
-function escapeHtmlText(raw: string): string {
-  return raw
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-}
-
-/** 流式阶段：跳过 markdown/highlight/KaTeX 全文重算（长任务 O(n²) 的主要来源） */
-function renderStreamingPlain(raw: string): string {
-  if (!raw) return ''
-  return DOMPurify.sanitize(
-    `<pre class="streaming-plain-text">${escapeHtmlText(raw)}</pre>`,
-  )
-}
-
 // ── 渲染管道 ──────────────────────────────────────────
 function renderMarkdownToHtml(raw: string): string {
   if (!raw) return ''
@@ -185,12 +170,9 @@ function renderMarkdownToHtml(raw: string): string {
 }
 
 // ── 流式节流渲染 ──────────────────────────────────────
-// 后端高速吐 token 时，若每个 token 都全文重解析 markdown（preprocessMath +
-// md.render + DOMPurify），主线程会被占满导致渲染积压、UI 明显滞后。
-// 流式期间用纯文本占位，结束后再一次性做完整 markdown 渲染。
-// 这里对内容变更做节流：最多每 RENDER_THROTTLE_MS 渲染一次，并保证最后一次
-// 变更（trailing）与流式结束时立即补齐完整内容。
-const RENDER_THROTTLE_MS = 100
+// 流式期间也做完整 markdown 渲染，但对内容变更做节流（最多每 RENDER_THROTTLE_MS
+// 渲染一次），避免高频 token 导致主线程被占满。
+const RENDER_THROTTLE_MS = 80
 const displayContent = ref(props.content)
 let renderThrottleTimer: ReturnType<typeof setTimeout> | null = null
 let lastRenderAt = 0
@@ -229,9 +211,7 @@ watch(() => props.isStreaming, (streaming, prev) => {
 })
 
 const sanitizedHtml = computed(() =>
-  props.isStreaming
-    ? renderStreamingPlain(displayContent.value)
-    : renderMarkdownToHtml(displayContent.value),
+  renderMarkdownToHtml(displayContent.value),
 )
 
 // 代码块复制：用事件委托绑定，避免 inline onclick 被转义
@@ -371,19 +351,6 @@ function copyAllContent() {
 
 .markdown-body :deep(.katex) {
   font-size: 1.05em;
-}
-
-.markdown-body :deep(.streaming-plain-text) {
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin: 0;
-  padding: 0;
-  border: none;
-  background: transparent;
-  font-family: inherit;
-  font-size: inherit;
-  line-height: inherit;
-  color: inherit;
 }
 
 /* 代码块样式 */

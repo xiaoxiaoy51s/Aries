@@ -123,11 +123,6 @@ async def _notify_confirmation_required(
             return
         except Exception:
             pass
-    try:
-        from services.chat_ws import broadcast_stream_event
-        await broadcast_stream_event(session_id, confirm_event)
-    except Exception:
-        pass
 
 
 async def run_single_tool(

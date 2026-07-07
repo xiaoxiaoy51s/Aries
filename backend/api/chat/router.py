@@ -22,8 +22,8 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.post("/completions")
-async def chat_completions_endpoint(request: ChatRequest):
-    return await chat_completions(request)
+async def chat_completions_endpoint(request: ChatRequest, http_request: Request):
+    return await chat_completions(request, http_request)
 
 
 @router.post("/stop")

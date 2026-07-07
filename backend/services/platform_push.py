@@ -61,60 +61,88 @@ def push_wechat_message(text: str) -> bool:
     )
     config_context_token = (wechat.get("context_token") or "").strip()
 
-    segments = _split_text(text)
-
-    # 优先使用运行中的 bot 客户端（其 last_from_user_id / context_token 为实时值）
+    # 从运行中的 bot 获取最新的 context_token（可能比配置文件中的更新）
+    runtime_token = ""
+    runtime_recipient = ""
     try:
         from services.wechat_bot import _runner
-
         if _runner and _runner.client:
-            recipient = (_runner.client.last_from_user_id or "").strip() or config_recipient
-            context_token = (_runner.client.context_token or "").strip() or config_context_token
-            if not recipient:
-                _log.warning("[Push/微信] 缺少收消息用户，请先用手机给 bot 发一条消息")
-                return False
-            _runner.client._running = True
-            try:
-                for seg in segments:
-                    result = _runner.client.send_message(
-                        seg,
-                        to_user_id=recipient,
-                        context_token=context_token,
-                    )
-                    _log.info("[Push/微信] 运行中 bot 返回: %s", result)
-                return True
-            except Exception as e:
-                _log.warning("[Push/微信] 运行中 bot 推送失败: %s", e)
-    except Exception as e:
-        _log.warning("[Push/微信] 运行中 bot 不可用: %s", e)
+            runtime_recipient = (_runner.client.last_from_user_id or "").strip()
+            runtime_token = (_runner.client.context_token or "").strip()
+    except Exception:
+        pass
 
-    # 回退到配置文件中的值
-    recipient = config_recipient
-    context_token = config_context_token
+    recipient = runtime_recipient or config_recipient
+    context_token = runtime_token or config_context_token
+
     if not recipient:
         _log.warning("[Push/微信] 缺少收消息用户，请先用手机给 bot 发一条消息")
         return False
 
-    try:
-        from services.wechat_bot import WeChatBotClient
+    segments = _split_text(text)
 
+    # 始终用独立客户端发送，避免和 get_updates 的 HTTP 客户端冲突
+    from services.wechat_bot import WeChatBotClient
+
+    def _try_send(tok: str) -> bool:
         client = WeChatBotClient(
             bot_token=bot_token,
             to_user_id=wechat.get("to_user_id", ""),
-            context_token=context_token,
+            context_token=tok,
             last_from_user_id=recipient,
         )
         client._running = True
         try:
             for seg in segments:
-                result = client.send_message(seg, to_user_id=recipient, context_token=context_token)
-                _log.info("[Push/微信] 独立客户端返回: %s", result)
+                result = client.send_message(seg, to_user_id=recipient, context_token=tok)
+                ret = result.get("ret", 0)
+                if ret != 0:
+                    _log.warning("[Push/微信] 发送失败 ret=%s result=%s", ret, result)
+                    return False
+            _log.info("[Push/微信] 推送成功 recipient=%s", recipient[:8])
             return True
         finally:
             client._close_client()
+
+    # 第一次尝试：用已有的 context_token
+    if context_token:
+        try:
+            if _try_send(context_token):
+                return True
+        except Exception as e:
+            _log.warning("[Push/微信] 首次发送失败: %s", e)
+
+    # 第二次尝试：通过 get_updates 刷新 context_token 后重试
+    _log.info("[Push/微信] 尝试刷新 context_token")
+    try:
+        refresh_client = WeChatBotClient(
+            bot_token=bot_token,
+            to_user_id=wechat.get("to_user_id", ""),
+            context_token=config_context_token,
+            get_updates_buf=wechat.get("get_updates_buf", ""),
+            last_from_user_id=recipient,
+        )
+        refresh_client._running = True
+        try:
+            msgs = refresh_client.get_updates()
+            new_token = refresh_client.context_token or ""
+            if new_token and new_token != context_token:
+                _log.info("[Push/微信] context_token 已刷新")
+                # 持久化新 token
+                try:
+                    from services.bot_manager import persist_recipient
+                    persist_recipient("wechat", context_token=new_token)
+                except Exception:
+                    pass
+                if _try_send(new_token):
+                    return True
+        finally:
+            refresh_client._close_client()
     except Exception as e:
-        _log.error("[Push/微信] 推送失败: %s", e)
-        return False
+        _log.warning("[Push/微信] 刷新 token 失败: %s", e)
+
+    _log.error("[Push/微信] 推送失败，可能 context_token 已过期，请先用手机给 bot 发一条消息")
+    return False
 
 
 async def push_feishu_message(text: str) -> bool:
@@ -212,14 +240,15 @@ async def push_qq_message(text: str) -> bool:
             if not loop or not loop.is_running():
                 _log.warning("[Push/QQ] bot 事件循环未运行")
                 return False
-            chat_type = _runner._client.last_chat_type or "c2c"
+            # 内存优先，配置文件回退（重启后内存为空但配置已持久化）
+            chat_type = _runner._client.last_chat_type or qq.get("last_chat_type") or "c2c"
             if chat_type == "group":
-                group_openid = _runner._client.last_group_openid
+                group_openid = _runner._client.last_group_openid or qq.get("last_group_openid", "")
                 if not group_openid:
                     _log.warning("[Push/QQ] 缺少 last_group_openid")
                     return False
             else:
-                user_openid = _runner._client.last_user_openid
+                user_openid = _runner._client.last_user_openid or qq.get("last_user_openid", "")
                 if not user_openid:
                     _log.warning("[Push/QQ] 缺少 last_user_openid")
                     return False

@@ -82,14 +82,15 @@ export function jsonToStreamEvent(json: Record<string, unknown>): StreamEvent | 
 }
 
 /**
- * 发送聊天消息（POST 后立即返回，不做流式接收）
- * 实时数据通过 WebSocket（/ws/chat?session_id=xxx）推送
+ * 发送聊天消息（POST 后返回 SSE Response）
+ * 实时数据通过 SSE 事件流推送
  */
 export async function startChat(
   messages: ChatMessage[],
   sessionId?: string,
-  workDir?: string
-): Promise<StartChatResponse> {
+  workDir?: string,
+  signal?: AbortSignal
+): Promise<Response> {
   const res = await fetch(`${getBaseUrl()}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -99,23 +100,73 @@ export async function startChat(
       work_dir: workDir || undefined,
       stream: true,
     }),
+    signal,
   })
-  if (!res.ok) {
-    const errText = await res.text()
-    throw new Error(errText || '请求失败')
-  }
-  return (await res.json()) as StartChatResponse
+  return res
 }
 
 /**
- * @deprecated 流式 API 已废弃。保留仅为兼容旧调用方，实际数据请通过 WebSocket 接收。
+ * 从 SSE Response 中解析事件流，yield 出 { event: string, data: any } 对象。
+ * 支持标准 SSE 格式（event: xxx\ndata: xxx\n\n）。
+ */
+export async function* parseSseEvents(res: Response): AsyncGenerator<{ event: string; data: any }> {
+  if (!res.ok) {
+    const errText = await res.text()
+    // 尝试解析 JSON 错误（如 {status:"error",error:"...",running:true}）
+    try {
+      const errJson = JSON.parse(errText) as Record<string, unknown>
+      yield { event: 'error', data: errJson }
+    } catch {
+      throw new Error(errText || '请求失败')
+    }
+    return
+  }
+
+  const reader = res.body?.getReader()
+  if (!reader) throw new Error('无法读取响应')
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let currentEvent = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    // 浏览器 fetch 被取消后 reader 可能继续返回空值，安全退出
+    if (!value) continue
+
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        currentEvent = line.slice(7).trim()
+      } else if (line.startsWith('data: ')) {
+        const data = line.slice(6)
+        if (data === '[DONE]') return
+        try {
+          const parsed = JSON.parse(data)
+          yield { event: currentEvent || 'message', data: parsed }
+        } catch {
+          // ignore invalid json
+        }
+        currentEvent = ''
+      }
+    }
+  }
+}
+
+/**
+ * @deprecated 流式 API 已废弃。保留仅为兼容旧调用方，实际数据请通过 SSE 接收。
  */
 export async function* streamChat(
   messages: ChatMessage[],
   sessionId?: string,
   workDir?: string
 ): AsyncGenerator<StreamEvent> {
-  // 改为非流式：调用 startChat 后立即返回，事件通过 WebSocket 推送
+  // 改为非流式：调用 startChat 后立即返回，事件通过 SSE 推送
   yield* _noopStream()
 }
 
@@ -142,7 +193,7 @@ export async function* streamVision(
     const errText = await res.text()
     throw new Error(errText || '请求失败')
   }
-  // 实时数据通过 WebSocket 推送
+  // 实时数据通过 SSE 推送
   yield* _noopStream()
 }
 
@@ -150,8 +201,9 @@ export async function startVision(
   messages: ChatMessage[],
   images: string[],
   sessionId?: string,
-  workDir?: string
-): Promise<StartChatResponse> {
+  workDir?: string,
+  signal?: AbortSignal
+): Promise<Response> {
   const lastUser = [...messages].reverse().find((m) => m.role === 'user')
   const text = lastUser?.content?.trim() || '请描述这张图片的内容'
   const res = await fetch(`${getBaseUrl()}/chat/vision`, {
@@ -164,12 +216,9 @@ export async function startVision(
       work_dir: workDir || undefined,
       stream: true,
     }),
+    signal,
   })
-  if (!res.ok) {
-    const errText = await res.text()
-    throw new Error(errText || '请求失败')
-  }
-  return (await res.json()) as StartChatResponse
+  return res
 }
 
 export function stopChat(sessionId: string, workDir?: string): Promise<void> {
@@ -200,7 +249,7 @@ export async function checkChatStatus(sessionId: string): Promise<boolean | null
 }
 
 /**
- * @deprecated 旧版 SSE resume 已被 WebSocket 替代。保留仅为兼容旧调用方。
+ * @deprecated 旧版 SSE resume 已被替代。保留仅为兼容旧调用方。
  */
 export async function* resumeChat(sessionId: string): AsyncGenerator<StreamEvent> {
   yield* _noopStream()
@@ -224,7 +273,7 @@ export async function* streamTempChat(
 }
 
 async function* _noopStream(): AsyncGenerator<StreamEvent> {
-  // 流式 API 已统一替换为 WebSocket + JSONL 推送；此处不再产生任何事件
+  // 流式 API 已统一替换为 SSE + JSONL 推送；此处不再产生任何事件
 }
 
 async function* parseSseResponse(res: Response): AsyncGenerator<StreamEvent> {

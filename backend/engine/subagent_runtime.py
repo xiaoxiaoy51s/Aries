@@ -479,27 +479,6 @@ async def run_subagent(
     sub_logger.set_model(real_model)
     execution.log_path = str(log_path)
 
-    # 与主 Agent 一致：JSONL 每写入一行即 WebSocket 推送给前端
-    if session_id:
-        from services.chat_ws import (
-            notify_subagent_log_started,
-            notify_subagent_log_complete,
-            schedule_subagent_log_event_broadcast,
-        )
-        sub_logger._on_event = schedule_subagent_log_event_broadcast(
-            session_id,
-            task_id,
-            str(log_path),
-            parent_tool_call_id or "",
-        )
-        await notify_subagent_log_started(
-            session_id,
-            task_id,
-            parent_tool_call_id or "",
-            str(log_path),
-            subagent_name,
-        )
-
     # 4. 构造工具集：核心 + skills + 过滤后的 MCP + report_to_main
     #    显式不暴露 delegate_to_subagent，防止递归
     core_tools = _build_core_tool_definitions()
@@ -624,14 +603,6 @@ async def run_subagent(
                 logger.warning("清理 worktree 失败: %s", exc)
 
         await _emit(on_event, execution)
-        if session_id:
-            from services.chat_ws import notify_subagent_log_complete
-            await notify_subagent_log_complete(
-                session_id,
-                task_id,
-                str(log_path),
-                parent_tool_call_id or "",
-            )
         # 注销取消事件（任务已结束）
         unregister_cancel_event(task_id)
 

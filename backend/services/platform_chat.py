@@ -19,7 +19,6 @@ from api.engine.agent_mode import (
 from db.chat import get_conversation_history, get_recent_messages, save_message
 from db.sessions import get_session
 from models.model_manager import resolve_active_model_config
-from services.chat_ws import broadcast_stream_event, notify_new_message, notify_session_update
 from services.platform_segment import PlatformStreamSink, push_final_reply
 from utils.url_utils import normalize_base_url
 
@@ -189,10 +188,6 @@ async def run_agent_in_session(
                 continue
             if "choices" in event_data:
                 continue
-            try:
-                await broadcast_stream_event(session_id, event_data)
-            except Exception:
-                pass
 
     recent = get_recent_messages(session_id, limit=1)
     for msg in reversed(recent):
@@ -242,9 +237,8 @@ async def process_inbound_message_async(
 
     reply = ""
     try:
-        # 先保存用户消息到 DB，再通知前端加载
+        # 保存用户消息到 DB
         save_message(sid, "user", text, mode="agent")
-        await notify_new_message(sid, "user", text)
 
         reply = await run_agent_in_session(
             sid,
@@ -254,8 +248,6 @@ async def process_inbound_message_async(
             skip_save_user=True,
             platform=platform,
         )
-        # 通知前端：AI 回复已完成
-        await notify_session_update(sid)
         if send_segment and reply.strip() and not reply.startswith("（Agent 未生成"):
             try:
                 if segment_sink is None or not segment_sink.pushed_any:
@@ -268,8 +260,6 @@ async def process_inbound_message_async(
                 _log.warning("[平台 %s] 最终回复推送失败: %s", platform, push_err)
     except asyncio.CancelledError:
         _log.info("[平台 %s] 对话已被新消息取消", platform)
-        # 被取消时也通知前端刷新（已有部分内容已保存到 DB）
-        await notify_session_update(sid)
         if send_segment:
             try:
                 await send_segment("（上一轮对话已取消，正在处理新消息）")
@@ -284,7 +274,6 @@ async def process_inbound_message_async(
                 await send_segment(reply)
             except Exception:
                 pass
-        await notify_session_update(sid)
     finally:
         # 清理任务注册（仅当当前任务仍注册时）
         if _platform_tasks.get(platform) is current_task:

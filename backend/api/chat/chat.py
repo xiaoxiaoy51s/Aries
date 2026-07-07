@@ -38,8 +38,12 @@ from .background import (
     register_chat_stream,
     stream_chat_with_background,
     _background_tasks,
+    register_bg_session,
+    mark_bg_done,
+    unregister_chat_stream,
+    cleanup_bg_session,
 )
-from services.chat_stream_manager import is_bg_running
+from services.chat_stream_manager import is_bg_running, set_bg_task
 
 
 def _resolve_chat_request(request: ChatRequest) -> ChatRequest:
@@ -75,9 +79,9 @@ def _resolve_and_persist_work_dir(session_id: str, request_work_dir: str | None)
 async def stream_chat(request: ChatRequest) -> dict:
     """流式聊天的 setup 阶段：保存用户消息、启动后台任务、返回 session 元信息。
 
-    实时数据通过 WebSocket + JSONL 推送：
+    实时数据通过 SSE + JSONL 推送：
       - 每个 token 写入 JSONL 后立即经 SessionLogger.on_event 广播
-      - 前端通过 /ws/chat?session_id=xxx 接收 log_event
+      - 前端通过 SSE /api/chat/sse 接收 log_event
       - assistant_message_id 在后台任务内创建（通过 log_started 事件回传）
     """
     request = _resolve_chat_request(request)
@@ -285,13 +289,216 @@ async def stream_chat(request: ChatRequest) -> dict:
     }
 
 
-async def chat_completions(request: ChatRequest):
+async def stream_chat_sse(request: ChatRequest, http_request: Request):
+    """SSE 流式聊天：保存用户消息，直接返回 StreamingResponse。
+
+    实时数据通过 SSE 推送（替代原来的 WebSocket）。
+    JSONL 日志仍写入磁盘供断线恢复。
+    """
+    request = _resolve_chat_request(request)
+
+    session_id = request.session_id or uuid4().hex
+    is_new_session = not get_session(session_id)
+
+    if is_bg_running(session_id):
+        return JSONResponse(
+            status_code=409,
+            content={
+                "status": "error",
+                "session_id": session_id,
+                "error": "当前会话仍在生成中，请等待完成或点击停止后再发送",
+                "running": True,
+            }
+        )
+
+    effective_work_dir = _resolve_and_persist_work_dir(session_id, request.work_dir)
+
+    # 提前保存用户消息
+    prepared = prepare_messages(request.messages)
+    user_message = prepared[-1] if prepared else {}
+    user_content = user_message.get("content", "") if isinstance(user_message, dict) else ""
+    raw_text_content, saved_paths = extract_and_save_images(user_content)
+    code_review_mode, cleaned_text = extract_code_review_marker(raw_text_content)
+    agent_mode_name = None
+    subagent_name = None
+    if not code_review_mode:
+        agent_mode_name, cleaned_text_agent = extract_agent_marker(raw_text_content)
+        if agent_mode_name:
+            cleaned_text = cleaned_text_agent
+        else:
+            subagent_name, cleaned_text_sub = extract_subagent_marker(raw_text_content)
+            if subagent_name:
+                cleaned_text = cleaned_text_sub
+    if code_review_mode or agent_mode_name or subagent_name:
+        _replace_text_content(user_message, cleaned_text or (
+            "请开始代码审查。" if code_review_mode
+            else f"请以{_get_agent_mode(agent_mode_name)['label']}模式开始。" if agent_mode_name
+            else ""
+        ))
+    images_json = json.dumps(saved_paths, ensure_ascii=False) if saved_paths else None
+    if raw_text_content or images_json or code_review_mode or agent_mode_name or subagent_name:
+        save_message(session_id, "user", raw_text_content or "", image_path=images_json, mode="agent")
+        if is_new_session:
+            if code_review_mode:
+                upsert_session(session_id=session_id, title="代码审查")
+            elif agent_mode_name:
+                upsert_session(session_id=session_id, title=_get_agent_mode(agent_mode_name)['label'])
+            elif subagent_name:
+                upsert_session(session_id=session_id, title=f"@{subagent_name}")
+            elif raw_text_content.strip():
+                raw = raw_text_content.strip().replace("\n", " ")[:18]
+                title = raw + ("…" if len(raw_text_content.strip()) > 18 else "")
+                upsert_session(session_id=session_id, title=title or "新对话")
+
+    # 注册 cancel_event（供 /chat/stop 触发）
+    cancel_event = register_chat_stream(session_id)
+
+    # @subagent:name 模式
+    if subagent_name:
+        cfg = build_subagent_direct_chat_config(
+            subagent_name, work_dir=effective_work_dir, session_id=session_id
+        )
+        if cfg.get("error"):
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "session_id": session_id, "error": cfg["error"]}
+            )
+
+        sub_model = cfg["override_model"] or request.model
+        sub_base_url = cfg["override_base_url"] or request.baseUrl
+        sub_api_key = cfg["override_api_key"] or request.apiKey
+        sub_request = request.model_copy(update={
+            "model": sub_model, "baseUrl": sub_base_url, "apiKey": sub_api_key,
+        })
+
+        history_messages, context_token_info = get_memory_aware_context_messages(
+            session_id=session_id, current_user_text=raw_text_content, model=sub_model,
+        )
+        current_user_msg = prepared[-1] if prepared else None
+        messages_sub: list[dict] = []
+        messages_sub.extend(history_messages)
+        if current_user_msg:
+            messages_sub.append(current_user_msg)
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {sub_api_key}",
+        }
+        payload_sub = {
+            "model": sub_model,
+            "messages": messages_sub,
+            "stream": True,
+        }
+        if request.temperature is not None:
+            payload_sub["temperature"] = request.temperature
+        if request.max_tokens is not None:
+            payload_sub["max_tokens"] = request.max_tokens
+
+        payload_sub["context_token_info"] = build_token_usage_info(messages_sub, model=sub_model)
+        payload_sub["context_token_info"].update({"memory_context": context_token_info})
+        payload_sub["context_breakdown_inputs"] = {
+            "summarized_messages": context_token_info.get("summarized_messages") or [],
+            "conversation_messages": context_token_info.get("conversation_messages") or [],
+            "recent_message_count": context_token_info.get("recent_message_count"),
+            "memory_count": context_token_info.get("memory_count"),
+            "reasoning_count": context_token_info.get("reasoning_count"),
+        }
+
+        async def _subagent_sse_gen():
+            register_bg_session(session_id)
+            try:
+                async for ev in stream_agent_mode(
+                    sub_request, messages_sub, headers, payload_sub,
+                    session_id, work_dir=effective_work_dir,
+                    cancel_event=cancel_event, disconnect_check=http_request.is_disconnected,
+                    override_model=sub_model or None,
+                    override_system_prompt=cfg["override_system_prompt"],
+                    override_tools=cfg["override_tools"] or None,
+                    override_agent_mode_label=f"subagent:{subagent_name}",
+                ):
+                    yield ev
+            finally:
+                mark_bg_done(session_id)
+                unregister_chat_stream(session_id)
+
+        return StreamingResponse(
+            _subagent_sse_gen(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+
+    # 正常流程：加载 memory-aware 上下文
+    history_messages, context_token_info = get_memory_aware_context_messages(
+        session_id=session_id, current_user_text=raw_text_content, model=request.model,
+    )
+    current_user_msg = prepared[-1] if prepared else None
+
+    skills_context, tool_definitions, mcp_context, subagents_context = get_agent_skills_and_tools()
+    if agent_mode_name:
+        tool_definitions = filter_tools_for_agent(tool_definitions, agent_mode_name)
+    system_prompt = build_agent_system_prompt(
+        skills_context, work_dir=effective_work_dir, session_id=session_id,
+        mcp_context=mcp_context, subagents_context=subagents_context,
+    )
+    if code_review_mode:
+        system_prompt += build_code_review_context(code_review_mode, effective_work_dir)
+    if agent_mode_name:
+        system_prompt += build_agent_mode_context(agent_mode_name)
+
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history_messages)
+    if current_user_msg:
+        messages.append(current_user_msg)
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {request.apiKey}",
+    }
+    payload = {
+        "model": request.model,
+        "messages": messages,
+        "stream": True,
+    }
+    if request.temperature is not None:
+        payload["temperature"] = request.temperature
+    if request.max_tokens is not None:
+        payload["max_tokens"] = request.max_tokens
+
+    payload["context_token_info"] = build_token_usage_info(messages, model=request.model)
+    payload["context_token_info"].update({"memory_context": context_token_info})
+    payload["context_breakdown_inputs"] = {
+        "summarized_messages": context_token_info.get("summarized_messages") or [],
+        "conversation_messages": context_token_info.get("conversation_messages") or [],
+        "recent_message_count": context_token_info.get("recent_message_count"),
+        "memory_count": context_token_info.get("memory_count"),
+        "reasoning_count": context_token_info.get("reasoning_count"),
+    }
+
+    async def _sse_gen():
+        register_bg_session(session_id)
+        try:
+            async for ev in stream_agent_mode(
+                request, messages, headers, payload, session_id,
+                work_dir=effective_work_dir, cancel_event=cancel_event,
+                disconnect_check=http_request.is_disconnected, agent_mode=agent_mode_name,
+            ):
+                yield ev
+        finally:
+            mark_bg_done(session_id)
+            unregister_chat_stream(session_id)
+
+    return StreamingResponse(
+        _sse_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+async def chat_completions(request: ChatRequest, http_request: Request):
     request = _resolve_chat_request(request)
 
     if request.stream:
-        # 流式模式：返回 JSON 响应，所有数据通过 WebSocket + JSONL 推送
-        result = await stream_chat(request)
-        return result
+        return await stream_chat_sse(request, http_request)
 
     session_id = request.session_id or uuid4().hex
     is_new_session = not get_session(session_id)
@@ -372,22 +579,10 @@ async def chat_completions(request: ChatRequest):
     assistant_message_id = save_message(
         session_id, "assistant", "", message_snapshot_json="", mode="agent"
     )
-    from services.chat_ws import schedule_log_event_broadcast, notify_log_started
-    on_event_cb = schedule_log_event_broadcast(
-        session_id=session_id,
-        message_id=assistant_message_id,
-        jsonl_path="",
-    )
+    on_event_cb = None
     logger = SessionLogger(session_id=session_id, message_id=assistant_message_id, on_event=on_event_cb)
     jsonl_path = logger.jsonl_path_str()
     update_message(assistant_message_id, message_snapshot_json=jsonl_path)
-    # 通知前端：assistant 回复已开始
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.ensure_future(notify_log_started(session_id, assistant_message_id, jsonl_path))
-    except RuntimeError:
-        pass
     logger.set_model(request.model)
     logger.set_token_usage({
         "context": build_token_usage_info(messages, model=request.model),

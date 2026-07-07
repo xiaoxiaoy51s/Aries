@@ -40,7 +40,7 @@ MAX_TOOL_RESULT_CHARS = 2_000
 MAX_MESSAGE_CHARS = 4_000
 MAX_SUMMARY_CHARS = 12_000
 DEFAULT_KEEP_TOKENS = 10_000
-DEFAULT_MAX_HISTORY_TOKENS = 60_000
+DEFAULT_MAX_HISTORY_TOKENS = 180_000
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -163,7 +163,7 @@ def split_messages_for_compaction(
 def should_compact(messages: list[dict[str, Any]], max_history_tokens: int = DEFAULT_MAX_HISTORY_TOKENS) -> bool:
     """判断历史是否需要压缩。"""
     total = sum(estimate_message_tokens(m) for m in messages)
-    return total > max_history_tokens or len(messages) > 40
+    return total > max_history_tokens or len(messages) > 80
 
 
 def make_memory_record(session_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -205,7 +205,7 @@ WARM_JITTER_MIN = 0.78       # 暖缓存下限
 WARM_JITTER_SPAN = 0.04      # 暖缓存范围宽度 → [0.78, 0.82)
 EMERGENCY_RATIO = 0.90       # 紧急阈值：即使冷缓存也要压缩
 APPLY_MIN_RATIO = 0.65       # 低于此比例不应用已完成的摘要
-MIN_MESSAGES_FOR_COMPACT = 12  # 消息数不足时不压缩
+MIN_MESSAGES_FOR_COMPACT = 20  # 消息数不足时不压缩
 
 
 @dataclass

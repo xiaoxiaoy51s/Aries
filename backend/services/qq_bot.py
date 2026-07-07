@@ -233,6 +233,21 @@ class _QQRunner:
                 intents.value |= 1 << 30
                 client = NonoQQBot(intents)
                 self._client = client
+
+                # 从配置文件恢复上次持久化的收件人信息（重启后内存为空）
+                try:
+                    from services.bot_manager import _load_bot_config
+                    saved = _load_bot_config().get("qq", {})
+                    if saved.get("last_user_openid"):
+                        client.last_user_openid = saved["last_user_openid"]
+                        _log.info("[QQ] 从配置恢复 last_user_openid")
+                    if saved.get("last_group_openid"):
+                        client.last_group_openid = saved["last_group_openid"]
+                    if saved.get("last_chat_type"):
+                        client.last_chat_type = saved["last_chat_type"]
+                except Exception:
+                    pass
+
                 client.run(appid=self.app_id, secret=self.app_secret)
             except RuntimeError:
                 pass  # stop() 正常退出路径

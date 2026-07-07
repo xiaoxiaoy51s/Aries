@@ -258,7 +258,7 @@ import {
   type LogEventBatchItem,
 } from '@/utils/logEventBatcher'
 import { streamDiag, setStreamDebugEnabled } from '@/utils/streamDebug'
-import { handleSubagentLogWsPayload } from '@/utils/chatSubagentWs'
+import { handleSubagentLogPayload } from '@/utils/chatSubagentWs'
 import { bindSubagentLogBatch, isSubagentLogBatchBound, unbindSubagentLogBatch } from '@/utils/chatSubagentBatchBridge'
 
 /** 子 Agent 内嵌细节由 JSONL batch 渲染；stream_event 仅保留 subagent_event 状态更新 */
@@ -291,19 +291,10 @@ import {
   isSessionWorking,
   workingSessionIds,
 } from '@/utils/sessionWorkStore'
+import { parseSseEvents } from '@/api/chat'
 import {
   saveSessionSnapshot,
   loadSessionSnapshot,
-  ensureSessionWs,
-  pruneSessionWsKeep,
-  closeSessionWs,
-  closeAllSessionWs,
-  setSessionWsHandler,
-  setOnReconnect,
-  buildWsKeepSet,
-  isSessionWsConnected,
-  reconnectSessionWs,
-  setKeepAliveSession,
   type SessionChatSnapshot,
 } from '@/utils/sessionChatPool'
 
@@ -372,6 +363,12 @@ const contextUsageBreakdown = ref<import('@/api/sessions').ContextUsageInfo | nu
 // 当前 assistant message_id（用于把 log_event 路由到正确的消息）
 let activeAssistantMessageId: number | null = null
 let activeAssistantIdx: number | null = null
+// 多 session SSE 流管理：每个 session 一条独立 HTTP 流，切换对话时后台继续跑
+interface StreamEntry {
+  abortCtrl: AbortController
+  bufferedEvents: Array<{ event: string; data: Record<string, unknown> }>
+}
+const activeStreams = new Map<string, StreamEntry>()
 /** 用户已请求停止的 session 集合：忽略后端延迟到达的内容消息，避免停止后仍在输出 */
 const stoppedSessions = new Set<string>()
 /** run_metadata 可能在 log_complete 之后到达，先缓存，完成时统一写入 */
@@ -951,7 +948,6 @@ function streamStateSnapshot(extra?: Record<string, unknown>) {
       sessionId: sid,
       isSending: isSending.value,
       isSessionWorking: sid ? isSessionWorking(sid) : false,
-      wsConnected: sid ? isSessionWsConnected(sid) : false,
       activeAssistantMessageId,
       activeAssistantIdx,
       loadingAssistantCount: messages.value.filter((m) => m?.role === 'assistant' && m.isLoading).length,
@@ -1165,56 +1161,6 @@ async function catchUpActiveAssistantFromJsonl(sessionId: string): Promise<boole
   }
 }
 
-async function restoreSessionAfterWsReconnect(sessionId: string) {
-  streamDiag('Resume', 'restoreSessionAfterWsReconnect start', {
-    ...streamStateSnapshot(),
-    targetSessionId: sessionId,
-  })
-  const snap = loadSessionSnapshot(sessionId)
-  const msgs = sessionId === currentSessionId.value
-    ? messages.value
-    : (snap?.messages as ChatMessage[] | undefined) ?? []
-  const sending = sessionId === currentSessionId.value
-    ? isSending.value
-    : !!snap?.isSending
-  const localActive = sessionHasActiveWork(msgs, sending)
-  const running = await checkChatStatus(sessionId)
-
-  const shouldBeWorking =
-    running === true ||
-    (localActive && running !== false)
-
-  streamDiag('Resume', 'restoreSessionAfterWsReconnect status', {
-    sessionId,
-    running,
-    localActive,
-    shouldBeWorking,
-    wsConnected: isSessionWsConnected(sessionId),
-  })
-
-  if (!shouldBeWorking) {
-    markSessionIdle(sessionId)
-    if (sessionId === currentSessionId.value) {
-      if (running === false) {
-        clearStaleSendingUi('restoreAfterWsReconnect: backend not running')
-      }
-      void loadNewMessages(true).catch(() => {})
-    }
-    return
-  }
-
-  markSessionWorking(sessionId)
-  if (sessionId === currentSessionId.value) {
-    if (running === true || localActive) {
-      await catchUpActiveAssistantFromJsonl(sessionId)
-      restoreRunningAssistantUi()
-    }
-    syncSessionWorkingState(sessionId)
-  } else if (snap) {
-    syncSnapshotWorkingState(sessionId, snap)
-  }
-}
-
 function applyLogEventSnapshot(
   snapshot: SessionChatSnapshot,
   sessionId: string,
@@ -1322,7 +1268,7 @@ function applyWsPayloadToSnapshot(sessionId: string, data: Record<string, unknow
     || data.type === 'subagent_log_event'
     || data.type === 'subagent_log_complete'
   ) {
-    snapshot.messages = handleSubagentLogWsPayload(
+    snapshot.messages = handleSubagentLogPayload(
       data,
       snapshot.messages as ChatMessage[],
     ) as SessionChatSnapshot['messages']
@@ -1332,7 +1278,7 @@ function applyWsPayloadToSnapshot(sessionId: string, data: Record<string, unknow
   syncSnapshotWorkingState(sessionId, snapshot)
 }
 
-async function processChatWsPayload(data: Record<string, unknown>) {
+async function processSsePayload(data: Record<string, unknown>) {
   if (data.type === 'log_started') {
     const newMsgId = Number(data.message_id) || 0
     if (newMsgId) {
@@ -1360,13 +1306,13 @@ async function processChatWsPayload(data: Record<string, unknown>) {
     })
   } else if (data.type === 'log_complete') {
     flushLogEventsNow()
-    streamDiag('Event', 'processChatWsPayload log_complete (top-level)', streamStateSnapshot({
+    streamDiag('Event', 'processSsePayload log_complete (top-level)', streamStateSnapshot({
       messageId: data.message_id,
     }))
     stoppedSessions.delete(currentSessionId.value || '')
     completeLogMessage(Number(data.message_id) || 0)
   } else if (data.type === 'subagent_log_complete') {
-    messages.value = handleSubagentLogWsPayload(data, messages.value)
+    messages.value = handleSubagentLogPayload(data, messages.value)
     syncSessionWorkingState()
     nextTick(() => scheduleScrollToBottom())
   } else if (data.type === 'stream_event') {
@@ -1422,128 +1368,149 @@ async function processChatWsPayload(data: Record<string, unknown>) {
   }
 }
 
-function handleChatWsForSession(sessionId: string, data: Record<string, unknown>) {
-  if (sessionId === currentSessionId.value) {
-    void processChatWsPayload(data).catch((e) => console.warn('[ChatWS] 处理失败', e))
+/**
+ * SSE 事件分发：将 SSE 事件映射到 processSsePayload 能处理的格式。
+ * 如果事件属于当前查看的 session → 直接渲染；否则写入 buffer 等切回时 replay。
+ */
+async function handleSseEvent(sessionId: string, sseEvent: string, data: Record<string, unknown>) {
+  // 非当前 session：写入 buffer
+  if (sessionId !== currentSessionId.value) {
+    const entry = activeStreams.get(sessionId)
+    if (entry) {
+      entry.bufferedEvents.push({ event: sseEvent, data })
+    }
     return
   }
-  applyWsPayloadToSnapshot(sessionId, data)
+
+  // 当前 session：直接渲染
+  if (sseEvent === 'log_started') {
+    await processSsePayload({
+      type: 'log_started',
+      session_id: sessionId,
+      message_id: data.message_id,
+      jsonl_path: data.jsonl_path || '',
+    })
+  } else if (sseEvent === 'log_event') {
+    await processSsePayload({
+      type: 'log_event',
+      session_id: sessionId,
+      event: data,
+      jsonl_path: data.jsonl_path || '',
+    })
+  } else if (sseEvent === 'stream_event') {
+    await processSsePayload({
+      type: 'stream_event',
+      session_id: sessionId,
+      event: data,
+    })
+  } else if (sseEvent === 'log_complete') {
+    await processSsePayload({
+      type: 'log_complete',
+      session_id: sessionId,
+      message_id: data.message_id,
+      jsonl_path: data.jsonl_path || '',
+    })
+  } else if (sseEvent === 'subagent_log_complete') {
+    await processSsePayload({
+      type: 'subagent_log_complete',
+      session_id: sessionId,
+      task_id: data.task_id,
+      jsonl_path: data.jsonl_path || '',
+      tool_call_id: data.tool_call_id || '',
+    })
+  } else if (sseEvent === 'error') {
+    const errMsg = String(data.error || data.detail || '请求失败')
+    throw Object.assign(new Error(errMsg), { running: !!data.running })
+  }
 }
 
-async function ensureChatWsReady() {
-  const sid = currentSessionId.value
-  if (!sid) return
-  // 当前查看的 session 始终保活 WS：即使 working 被误清，也会重连并用后端状态自愈
-  setKeepAliveSession(sid)
-  const wsBase = modelStore.getBaseUrl().replace(/^http/, 'ws')
-  setSessionWsHandler(sid, (data) => handleChatWsForSession(sid, data))
-  await ensureSessionWs(sid, wsBase)
-  pruneSessionWsKeep(buildWsKeepSet(sid))
+/**
+ * 切回某 session 时，把后台积攒的 buffer 事件一次性灌入。
+ * log_event 走同步 applyLogEventBatch，避免异步 batch 和后续操作冲突。
+ */
+async function replayBufferedEvents(sessionId: string) {
+  const entry = activeStreams.get(sessionId)
+  if (!entry || entry.bufferedEvents.length === 0) return
+  const events = entry.bufferedEvents.splice(0) // drain
+
+  // 先清空之前的异步 batch
+  flushLogEventsNow()
+
+  // 收集 log_event 批量同步 apply
+  const logEvents: LogEventBatchItem[] = []
+
+  for (const { event, data } of events) {
+    if (event === 'log_started') {
+      // 先 flush 已收集的 log_event
+      if (logEvents.length) { applyLogEventBatch(logEvents.splice(0)); flushLogEventsNow() }
+      await processSsePayload({
+        type: 'log_started',
+        session_id: sessionId,
+        message_id: data.message_id,
+        jsonl_path: data.jsonl_path || '',
+      })
+    } else if (event === 'log_event') {
+      const messageId = Number(data.message_id) || 0
+      if (messageId) {
+        logEvents.push({
+          event: data as Record<string, unknown>,
+          messageId,
+          jsonlPath: String(data.jsonl_path || ''),
+        })
+      }
+    } else if (event === 'stream_event') {
+      if (logEvents.length) { applyLogEventBatch(logEvents.splice(0)); flushLogEventsNow() }
+      await processSsePayload({
+        type: 'stream_event',
+        session_id: sessionId,
+        event: data,
+      })
+    } else if (event === 'log_complete') {
+      if (logEvents.length) { applyLogEventBatch(logEvents.splice(0)); flushLogEventsNow() }
+      await processSsePayload({
+        type: 'log_complete',
+        session_id: sessionId,
+        message_id: data.message_id,
+        jsonl_path: data.jsonl_path || '',
+      })
+    } else if (event === 'subagent_log_complete') {
+      if (logEvents.length) { applyLogEventBatch(logEvents.splice(0)); flushLogEventsNow() }
+      await processSsePayload({
+        type: 'subagent_log_complete',
+        session_id: sessionId,
+        task_id: data.task_id,
+        jsonl_path: data.jsonl_path || '',
+        tool_call_id: data.tool_call_id || '',
+      })
+    }
+  }
+
+  // apply 剩余的 log_event
+  if (logEvents.length) { applyLogEventBatch(logEvents.splice(0)) }
+  flushLogEventsNow()
 }
 
-function stopChatWs(clearRouting = true) {
+function stopChatSession(clearRouting = true) {
   const sid = currentSessionId.value
   if (sid) persistCurrentSessionSnapshot(sid)
   if (clearRouting) {
     activeAssistantMessageId = null
     activeAssistantIdx = null
   }
-  if (sid && !isSessionWorking(sid)) {
-    closeSessionWs(sid)
-    setSessionWsHandler(sid, null)
+  // 不 abort：切换对话时后台流继续跑，事件写入 buffer
+  // 只有 stopGeneration / onUnmounted 才真正 abort
+}
+
+/** 显式停止某 session 的后台 SSE 流（用户点击停止 / 组件卸载） */
+function abortSessionStream(sessionId: string) {
+  const entry = activeStreams.get(sessionId)
+  if (entry) {
+    entry.abortCtrl.abort()
+    activeStreams.delete(sessionId)
   }
 }
 
-/**
- * 需要后端连续确认结束的次数，避免单次抖动误清（后端 is_bg_running
- * 在任务结束后立刻 false，2 次 = 约 2×轮询间隔的确认窗口）。
- */
-const IDLE_CONFIRM_THRESHOLD = 2
-const sessionIdleFalseCount = new Map<string, number>()
-/** 防止轮询请求重叠（上一轮未完成时跳过） */
-let pollInFlight = false
-
-/**
- * 权威状态轮询：以后端 /chat/status 为唯一真相。
- *
- * 设计目标（回应「只要后端还在写该 session 的日志就不能断开」）：
- * - 后端 running=true → 强制保持 working + loading，并确保 WS 连接（断则重连补拉）
- * - 后端 running=false → 需连续多次确认才置为 idle（防抖动/防上一轮误清）
- * - 后端 running=null（网络错误）→ 保持现状，绝不主动断开
- *
- * 这样即使 WS 抖动或前端状态被误清，也会在一个轮询周期内自愈。
- */
-async function pollAuthoritativeStatus() {
-  if (pollInFlight) return
-  const sid = currentSessionId.value
-  const candidates = new Set<string>(workingSessionIds.value)
-  if (sid) candidates.add(sid)
-  if (candidates.size === 0) return
-
-  const wsBase = modelStore.getBaseUrl().replace(/^http/, 'ws')
-  pollInFlight = true
-  try {
-    await runAuthoritativeStatusPoll(candidates, wsBase)
-  } finally {
-    pollInFlight = false
-  }
-}
-
-async function runAuthoritativeStatusPoll(candidates: Set<string>, wsBase: string) {
-  for (const cand of candidates) {
-    // 用户主动停止的会话不再拉起
-    if (stoppedSessions.has(cand)) {
-      sessionIdleFalseCount.delete(cand)
-      continue
-    }
-
-    let running: boolean | null
-    try {
-      running = await checkChatStatus(cand)
-    } catch {
-      running = null
-    }
-    // 轮询期间可能已切走当前会话
-    const isCurrent = cand === currentSessionId.value
-
-    if (running === true) {
-      sessionIdleFalseCount.delete(cand)
-      markSessionWorking(cand)
-      // 保证 WS 在线：断了就带补拉重连
-      if (!isSessionWsConnected(cand)) {
-        streamDiag('Health', 'poll: backend running but WS down → reconnect', { cand, isCurrent })
-        setSessionWsHandler(cand, (data) => handleChatWsForSession(cand, data))
-        reconnectSessionWs(cand, wsBase)
-      }
-      if (isCurrent) {
-        const hasLoading = messages.value.some((m) => m.role === 'assistant' && m.isLoading)
-        if (!isSending.value || !hasLoading) {
-          streamDiag('State', 'poll: backend running → restore UI', streamStateSnapshot({ cand }))
-          restoreRunningAssistantUi('poll: backend running')
-        }
-        isSending.value = true
-      }
-    } else if (running === false) {
-      const count = (sessionIdleFalseCount.get(cand) || 0) + 1
-      sessionIdleFalseCount.set(cand, count)
-      if (count >= IDLE_CONFIRM_THRESHOLD) {
-        sessionIdleFalseCount.delete(cand)
-        if (isSessionWorking(cand)) {
-          streamDiag('State', 'poll: backend idle confirmed → mark idle', streamStateSnapshot({ cand }))
-          markSessionIdle(cand)
-          if (isCurrent) {
-            clearStaleSendingUi('poll: backend not running (confirmed)')
-          } else {
-            syncSessionWorkingState(cand)
-          }
-        }
-      }
-    } else {
-      // running === null：网络错误，保持现状，不清状态
-      streamDiag('Health', 'poll: status null (network?) → keep', { cand })
-    }
-  }
-}
+/** SSE 模式：不再需要轮询检测后端状态 */
 
 function upsertSubagent(record: SubagentRecord) {
   const idx = sessionSubagents.value.findIndex((s) => s.task_id === record.task_id)
@@ -1674,10 +1641,9 @@ function onNewChat(e?: Event) {
   if (currentSessionId.value) {
     clearSessionStreamDurations(currentSessionId.value)
     persistCurrentSessionSnapshot(currentSessionId.value)
-    stopChatWs(false)
+    stopChatSession(false)
   }
-  // 新对话：清除保活标记（旧 session 若仍 working 由 workingSessionIds 继续保活）
-  setKeepAliveSession(null)
+  // 新对话
   currentSessionId.value = undefined
   currentSessionTitle.value = ''
   bottomConsoleOpen.value = false
@@ -1828,8 +1794,9 @@ async function applySessionWorkDir(sessionId: string, seq: number): Promise<void
 async function finishSessionSwitch(id: string, seq: number): Promise<void> {
   if (isStaleSessionLoad(seq)) return
   void refreshCurrentSessionTitle(id)
-  // 非阻塞建立 WebSocket：连接失败不卡 UI，健康检查会在后台重试
-  void ensureChatWsReady()
+  if (isStaleSessionLoad(seq)) return
+  // 切回此 session 时，把后台积攒的 buffer 事件一次性灌入
+  await replayBufferedEvents(id)
   if (isStaleSessionLoad(seq)) return
   emit('sessionLoaded')
   // 非阻塞：切换会话不等待状态检查/补拉，避免切换卡顿
@@ -1957,7 +1924,7 @@ async function loadSessionById(id: string) {
     const prevId = currentSessionId.value
     if (prevId && prevId !== id) {
       persistCurrentSessionSnapshot(prevId)
-      stopChatWs(false)
+      stopChatSession(false)
     }
 
     currentSessionId.value = id
@@ -1973,12 +1940,6 @@ async function loadSessionById(id: string) {
       if (isStaleSessionLoad(seq)) return
       scheduleScrollToBottom(true)
       void applySessionWorkDir(id, seq)
-      const wsBase = modelStore.getBaseUrl().replace(/^http/, 'ws')
-      for (const wsSid of buildWsKeepSet(id)) {
-        setSessionWsHandler(wsSid, (data) => handleChatWsForSession(wsSid, data))
-        void ensureSessionWs(wsSid, wsBase)
-      }
-      pruneSessionWsKeep(buildWsKeepSet(id))
       scheduleSnapshotLoads(cached.messages as ChatMessage[], [], seq)
       await finishSessionSwitch(id, seq)
       return
@@ -2004,6 +1965,11 @@ async function loadSessionById(id: string) {
 async function tryResumeSession(sessionId: string) {
   streamDiag('Resume', 'tryResumeSession start', streamStateSnapshot({ targetSessionId: sessionId }))
   try {
+    // 有活跃的 SSE 流：数据已通过事件流到达，不需要从 JSONL 补拉
+    if (activeStreams.has(sessionId)) {
+      syncSessionWorkingState(sessionId)
+      return
+    }
     const running = await checkChatStatus(sessionId)
     streamDiag('Resume', 'tryResumeSession checkChatStatus', { sessionId, running })
     if (running === false) {
@@ -2249,14 +2215,6 @@ onMounted(() => {
   window.addEventListener('click', closeHeaderMenu)
   window.addEventListener('keydown', onHeaderMenuEsc)
   window.addEventListener('keydown', onGlobalEscKey, true)
-  // WebSocket 重连后：检查后端状态，恢复 working / loading UI（避免长时子 agent 导致误清）
-  setOnReconnect((sid) => {
-    void restoreSessionAfterWsReconnect(sid).catch(() => {
-      if (sid === currentSessionId.value) {
-        syncSessionWorkingState(sid)
-      }
-    })
-  })
   loadWorkDir()
   // 确保模型列表已加载（避免 MainLayout 加载未完成导致下拉框为空）
   void modelStore.loadModels()
@@ -2265,8 +2223,7 @@ onMounted(() => {
   }
   // 自动恢复桌面宠物
   restorePet()
-  // 权威状态轮询：以后端 /chat/status 为唯一真相，避免 WS 抖动/误清导致 UI 提前结束
-  healthCheckTimer = setInterval(() => { void pollAuthoritativeStatus() }, 4000)
+  // SSE 模式：不再需要健康检查轮询
 })
 
 // ---------- 宠物持久化恢复 ----------
@@ -2303,14 +2260,15 @@ onUnmounted(() => {
   setLogEventBatchHandler(null)
   unbindSubagentLogBatch()
   clearConfirmCountdownTimer()
-  setOnReconnect(null)
   if (healthCheckTimer) {
     clearInterval(healthCheckTimer)
     healthCheckTimer = null
   }
   if (currentSessionId.value) persistCurrentSessionSnapshot(currentSessionId.value)
-  setKeepAliveSession(null)
-  closeAllSessionWs()
+  // 组件卸载：abort 所有活跃的后台 SSE 流
+  for (const sid of activeStreams.keys()) {
+    abortSessionStream(sid)
+  }
   if (scrollIdleTimer) {
     clearTimeout(scrollIdleTimer)
     scrollIdleTimer = null
@@ -2458,6 +2416,7 @@ async function stopGeneration() {
   const wd = (workDir.value || resolveWorkDirForSend() || '').trim()
   if (sessionId) {
     stoppedSessions.add(sessionId)
+    abortSessionStream(sessionId)
     stopChat(sessionId, wd || undefined).catch(() => {})
     markSessionIdle(sessionId)
     syncSessionWorkingState(sessionId)
@@ -2560,40 +2519,37 @@ async function sendMessage() {
   await nextTick()
   scheduleScrollToBottom(true)
   if (isNewSession) {
-    await Promise.all([
-      ensureSessionTitle(
-        sessionIdAtSend,
-        message || (imagesToSend.length > 1 ? `[${imagesToSend.length} 张图片]` : '[图片]'),
-        workDirAtSend
-      ),
-      ensureChatWsReady(),
-    ])
+    await ensureSessionTitle(
+      sessionIdAtSend,
+      message || (imagesToSend.length > 1 ? `[${imagesToSend.length} 张图片]` : '[图片]'),
+      workDirAtSend
+    )
   } else {
     window.dispatchEvent(new CustomEvent('aries:refresh-sessions'))
-    void ensureChatWsReady()
   }
+
+  const abortCtrl = new AbortController()
+  activeStreams.set(sessionIdAtSend, { abortCtrl, bufferedEvents: [] })
 
   try {
     const chatMessages = messages.value
       .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
       .map((m) => ({ role: m.role, content: m.content }))
 
-    // POST /chat/completions 或 /chat/vision：返回 { status, session_id }
-    // 实时数据通过 WebSocket（log_started / log_event / log_complete）推送
-    if (imagesToSend.length > 0) {
-      const result = await startVision(chatMessages, imagesToSend, sessionIdAtSend, workDirAtSend)
-      if (result.status === 'error') {
-        throw Object.assign(new Error(result.error || '请求失败'), { running: result.running })
-      }
-    } else {
-      const result = await startChat(chatMessages, sessionIdAtSend, workDirAtSend)
-      if (result.status === 'error') {
-        throw Object.assign(new Error(result.error || '请求失败'), { running: result.running })
-      }
+    // POST /chat/completions 或 /chat/vision，返回 SSE Response
+    const res = imagesToSend.length > 0
+      ? await startVision(chatMessages, imagesToSend, sessionIdAtSend, workDirAtSend, abortCtrl.signal)
+      : await startChat(chatMessages, sessionIdAtSend, workDirAtSend, abortCtrl.signal)
+
+    // 读取 SSE 事件流：即使切换到其他 session，此循环仍在后台继续
+    for await (const { event, data } of parseSseEvents(res)) {
+      if (abortCtrl.signal.aborted) break
+      await handleSseEvent(sessionIdAtSend, event, data)
     }
     // 重要：不在这里设置 isSending=false / isLoading=false
     // 这些由 completeLogMessage() 在收到 log_complete 事件时设置
   } catch (e: any) {
+    // running 错误只在发送时发生（当前 session 一定是活跃的）
     if (e?.running) {
       messages.value.splice(assistantIdx - 1, 2)
       inputMessage.value = message
@@ -2604,7 +2560,8 @@ async function sendMessage() {
       showToast(e.message || '当前仍在生成中', 'warning')
       return
     }
-    if (e?.name !== 'AbortError') {
+    // 非 abort 错误：只在当前 session 显示错误，后台 session 静默处理
+    if (e?.name !== 'AbortError' && sessionIdAtSend === currentSessionId.value) {
       messages.value.push({
         role: 'assistant',
         content: `错误: ${e.message}`,
@@ -2612,14 +2569,22 @@ async function sendMessage() {
         tools: []
       })
     }
-    isSending.value = false
-    if (activeAssistantIdx != null) {
-      const m = messages.value[activeAssistantIdx]
-      if (m) m.isLoading = false
+    if (sessionIdAtSend === currentSessionId.value) {
+      isSending.value = false
+      if (activeAssistantIdx != null) {
+        const m = messages.value[activeAssistantIdx]
+        if (m) m.isLoading = false
+      }
+      await nextTick()
+      scheduleScrollToBottom()
+      window.dispatchEvent(new CustomEvent('aries:refresh-sessions'))
+    } else {
+      // 后台 session 出错：标记为 idle，保存快照
+      markSessionIdle(sessionIdAtSend)
+      persistCurrentSessionSnapshot(sessionIdAtSend)
     }
-    await nextTick()
-    scheduleScrollToBottom()
-    window.dispatchEvent(new CustomEvent('aries:refresh-sessions'))
+  } finally {
+    activeStreams.delete(sessionIdAtSend)
   }
 }
 

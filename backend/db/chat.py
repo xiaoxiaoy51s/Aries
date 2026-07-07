@@ -259,14 +259,68 @@ def compact_session_if_needed(session_id: str, force: bool = False) -> dict | No
     return memory
 
 
+def _apply_background_compaction(session_id: str, result) -> bool:
+    """应用后台压缩结果到 DB。返回是否成功应用。"""
+    from memory.compaction import CompactionResult
+
+    if not result or not getattr(result, "summary", ""):
+        return False
+
+    boundary = get_latest_memory_boundary(session_id)
+    db_messages = get_messages_after_id(session_id, after_id=boundary, limit=200)
+    llm_messages = []
+    for msg in db_messages:
+        role = msg.get("role")
+        content = msg.get("content") or ""
+        if role in ("user", "assistant") and content.strip():
+            llm_messages.append({"role": role, "content": content})
+
+    compact_until_count = result.source_messages
+    if compact_until_count == 0 or len(llm_messages) < compact_until_count:
+        return False
+
+    # 映射 compact_until_count → DB message id
+    compact_until_id = boundary
+    seen = 0
+    for msg in db_messages:
+        role = msg.get("role")
+        content = msg.get("content") or ""
+        if role in ("user", "assistant") and content.strip():
+            seen += 1
+            compact_until_id = int(msg.get("id") or compact_until_id)
+            if seen >= compact_until_count:
+                break
+
+    memory = {
+        "session_id": session_id,
+        "summary": result.summary,
+        "source_message_count": result.source_messages,
+        "source_token_estimate": result.source_tokens,
+        "summary_token_estimate": result.summary_tokens,
+        "source_until_message_id": compact_until_id,
+        "created_at": result.created_at,
+    }
+    save_session_memory(memory)
+    return True
+
+
 def get_memory_aware_context_messages(
     session_id: str,
     current_user_text: str = "",
     model: str = "",
 ) -> tuple[list[dict], dict]:
     from memory.context_loader import build_context_messages
+    from memory.compaction import get_compactor
 
-    compact_session_if_needed(session_id)
+    # 1. 优先消费后台压缩结果（异步生成，不阻塞请求）
+    compactor = get_compactor()
+    pending = compactor.consume_result(session_id)
+    if pending and getattr(pending, "summary", ""):
+        _apply_background_compaction(session_id, pending)
+    else:
+        # 2. fallback：没有后台结果时才同步压缩
+        compact_session_if_needed(session_id)
+
     boundary = get_latest_memory_boundary(session_id)
     db_messages = get_messages_after_id(session_id, after_id=boundary, limit=120)
     memories = get_session_memories(session_id, limit=3)

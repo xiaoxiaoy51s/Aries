@@ -95,8 +95,8 @@ async def _handle_llm_stream(
     cancel_event,
     disconnect_check,
     result: _LLMStreamResult,
-) -> AsyncGenerator[str, None]:
-    """向 LLM 发起流式请求，yield SSE 事件，结果写入 result 容器。"""
+) -> AsyncGenerator[bool, None]:
+    """向 LLM 发起流式请求，每个 chunk 后 yield True 让调用方 drain SSE 队列。"""
 
     try:
         async with client.stream("POST", f"{base_url}/chat/completions", headers=headers, json=payload) as response:
@@ -145,19 +145,19 @@ async def _handle_llm_stream(
                                         tc["function"]["name"] = func_delta["name"]
                                     if "arguments" in func_delta and func_delta["arguments"]:
                                         tc["function"]["arguments"] += func_delta["arguments"]
-                            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                            yield True
                             continue
 
                         if "reasoning_content" in delta and delta["reasoning_content"]:
                             logger.append_reasoning_delta(delta["reasoning_content"])
-                            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                            yield True
                             continue
 
                         if "content" in delta and delta["content"]:
                             content = delta["content"]
                             result.full_content += content
                             logger.record_assistant_content(content)
-                            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                            yield True
 
                         if finish_reason in ("tool_calls", "stop"):
                             break
@@ -208,34 +208,44 @@ async def stream_agent_mode(
     _esc_listener_started = False  # ESC 监听（Agent 流式期间全局紧急停止）
     is_subagent_mode = bool(override_system_prompt)
 
+    # SSE 事件队列：替代 WebSocket，收集 SessionLogger 的事件并通过 SSE 推送
+    _sse_queue: asyncio.Queue[dict] = asyncio.Queue()
+
+    def _on_logger_event(event: dict) -> None:
+        """SessionLogger 同步回调，将事件推入异步队列供 SSE 消费。"""
+        try:
+            _sse_queue.put_nowait(event)
+        except Exception:
+            pass
+
+    async def _drain_sse_queue():
+        """取出队列中所有事件，yield 为 SSE log_event 格式（跳过 log_complete，由外部显式发送）。"""
+        events = []
+        while not _sse_queue.empty():
+            try:
+                ev = _sse_queue.get_nowait()
+                if ev.get("type") == "log_complete":
+                    continue
+                events.append(ev)
+            except asyncio.QueueEmpty:
+                break
+        for ev in events:
+            yield f"event: log_event\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
     try:
         assistant_message_id = save_message(session_id, "assistant", "", message_snapshot_json="", mode="agent")
-        # 注入 WebSocket 广播回调：每个事件写入 JSONL 后实时推送给前端
-        from services.chat_ws import schedule_log_event_broadcast, notify_log_started
-        on_event_cb = schedule_log_event_broadcast(
-            session_id=session_id,
-            message_id=assistant_message_id,
-            jsonl_path="",  # 路径在 logger 初始化后确定，下面更新
-        )
         logger = SessionLogger(
             session_id=session_id,
             message_id=assistant_message_id,
-            on_event=on_event_cb,
+            on_event=_on_logger_event,
         )
         effective_model = override_model or getattr(request, "model", "") or ""
         logger.set_model(effective_model)
         jsonl_path = logger.jsonl_path_str()
         # 立即将 JSONL 路径写入 DB，确保用户切回页面时能找到日志
         update_message(assistant_message_id, message_snapshot_json=jsonl_path)
-        # 通知前端：assistant 回复已开始（前端据此创建/定位 placeholder 消息）
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(
-                    notify_log_started(session_id, assistant_message_id, jsonl_path)
-                )
-        except RuntimeError:
-            pass
+        # SSE 通知前端：assistant 回复已开始
+        yield f"event: log_started\ndata: {json.dumps({'session_id': session_id, 'message_id': assistant_message_id, 'jsonl_path': jsonl_path}, ensure_ascii=False)}\n\n"
         breakdown_inputs = base_payload.pop("context_breakdown_inputs", None) or {}
         base_payload.pop("context_token_info", None)
         snapshot = create_assistant_snapshot(session_id, logger)
@@ -296,7 +306,9 @@ async def stream_agent_mode(
                 "fingerprint": prompt_fingerprint,
             },
         })
-        yield f"data: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
+        yield f"event: stream_event\ndata: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
+        async for ev in _drain_sse_queue():
+            yield ev
 
         extra_system_suffix = agent_ctx if not is_subagent_mode else ""
         intent_label = override_agent_mode_label or (f"agent:{agent_mode}" if agent_mode else "subagent")
@@ -328,11 +340,15 @@ async def stream_agent_mode(
                 intent_prompt = get_prompt_for_intent(intent)
                 if intent_prompt:
                     extra_system_suffix += "\n\n" + intent_prompt
-                yield f"data: {json.dumps({'intent': intent}, ensure_ascii=False)}\n\n"
+                yield f"event: stream_event\ndata: {json.dumps({'intent': intent}, ensure_ascii=False)}\n\n"
+                async for ev in _drain_sse_queue():
+                    yield ev
             except Exception:
                 pass
         else:
-            yield f"data: {json.dumps({'intent': intent_label}, ensure_ascii=False)}\n\n"
+            yield f"event: stream_event\ndata: {json.dumps({'intent': intent_label}, ensure_ascii=False)}\n\n"
+            async for ev in _drain_sse_queue():
+                yield ev
 
         if is_subagent_mode:
             messages = [m for m in messages if m.get("role") != "system"]
@@ -403,7 +419,7 @@ async def stream_agent_mode(
                             "用精炼的语言向用户汇报进度，并告知用户如需要继续可发送「继续」。"
                         )
                     })
-                    yield f"data: {json.dumps({'hint': '工具调用即将达到上限，正在整理执行进度…'}, ensure_ascii=False)}\n\n"
+                    yield f"event: stream_event\ndata: {json.dumps({'hint': '工具调用即将达到上限，正在整理执行进度…'}, ensure_ascii=False)}\n\n"
 
                 payload = prepare_llm_payload(
                     model=effective_model,
@@ -414,25 +430,30 @@ async def stream_agent_mode(
                     max_tokens=request.max_tokens,
                 )
 
-                # LLM 流式请求
+                # LLM 流式请求：每个 chunk 后 drain SSE 队列，确保实时推送
                 stream_result = _LLMStreamResult()
-                async for event in _handle_llm_stream(
+                async for _ in _handle_llm_stream(
                     client, base_url, headers, payload, logger, segment_sink,
                     cancel_event, disconnect_check, stream_result,
                 ):
-                    yield event
+                    async for ev in _drain_sse_queue():
+                        yield ev
+                async for ev in _drain_sse_queue():
+                    yield ev
 
                 if logger:
                     api = (logger.get_run_metadata().get("token_usage") or {}).get("api_usage") or {}
                     if api.get("prompt_tokens") or api.get("completion_tokens"):
                         logger.emit_run_metadata_snapshot()
-                        yield f"data: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
+                        yield f"event: stream_event\ndata: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
+                        async for ev in _drain_sse_queue():
+                            yield ev
 
                 full_content = stream_result.full_content
                 tool_calls_buffer = stream_result.tool_calls_buffer
 
                 if stream_result.error_msg:
-                    yield f"data: {json.dumps({'error': stream_result.error_msg}, ensure_ascii=False)}\n\n"
+                    yield f"event: stream_event\ndata: {json.dumps({'error': stream_result.error_msg}, ensure_ascii=False)}\n\n"
                     if logger and not logger.is_finalized():
                         logger.apply_api_usage_estimate()
                         logger.finalize()
@@ -493,7 +514,7 @@ async def stream_agent_mode(
                             "sub_isolation": str(args.get("isolation") or "").strip(),
                             "round": round_no,
                         })
-                        yield f"data: {json.dumps({'tool_call': {'tool_call_id': tool_id, 'tool_name': tool_name, 'status': 'running', 'args': args, 'round': round_no}}, ensure_ascii=False)}\n\n"
+                        yield f"event: stream_event\ndata: {json.dumps({'tool_call': {'tool_call_id': tool_id, 'tool_name': tool_name, 'status': 'running', 'args': args, 'round': round_no}}, ensure_ascii=False)}\n\n"
                         logger.write_tool_call(tool_id, tool_name, args)
                         logger.write_subagent_block(
                             tool_call_id=tool_id,
@@ -512,7 +533,7 @@ async def stream_agent_mode(
                 # 1. 并行安全的只读工具：先发 running 事件，再 asyncio.gather 并发执行
                 if parallel_tasks:
                     for item in parallel_tasks:
-                        yield f"data: {json.dumps({'tool_call': {'tool_call_id': item['tool_id'], 'tool_name': item['tool_name'], 'status': 'running', 'args': item['args'], 'round': round_no}}, ensure_ascii=False)}\n\n"
+                        yield f"event: stream_event\ndata: {json.dumps({'tool_call': {'tool_call_id': item['tool_id'], 'tool_name': item['tool_name'], 'status': 'running', 'args': item['args'], 'round': round_no}}, ensure_ascii=False)}\n\n"
                         logger.write_tool_call(item['tool_id'], item['tool_name'], item['args'])
 
                     async def _run_one(item: dict) -> dict:
@@ -534,8 +555,8 @@ async def stream_agent_mode(
                         stream_stopped = pr["stream_stopped"]
 
                         if confirm_event:
-                            yield f"data: {json.dumps(confirm_event, ensure_ascii=False)}\n\n"
-                            yield f"data: {json.dumps({'tool_result': {'tool_name': item['tool_name'], 'status': 'pending_confirmation', 'output': '等待用户确认危险命令…', 'round': round_no}}, ensure_ascii=False)}\n\n"
+                            yield f"event: stream_event\ndata: {json.dumps(confirm_event, ensure_ascii=False)}\n\n"
+                            yield f"event: stream_event\ndata: {json.dumps({'tool_result': {'tool_name': item['tool_name'], 'status': 'pending_confirmation', 'output': '等待用户确认危险命令…', 'round': round_no}}, ensure_ascii=False)}\n\n"
 
                         tool_results.append({
                             "tool_call_id": item['tool_id'],
@@ -562,13 +583,11 @@ async def stream_agent_mode(
                         result_event = build_tool_result_event(
                             item['tool_name'], item['tool_id'], status, log_payload.get("output", output), round_no, result, cached=is_cached,
                         )
-                        yield f"data: {json.dumps({'tool_result': result_event}, ensure_ascii=False)}\n\n"
+                        yield f"event: stream_event\ndata: {json.dumps({'tool_result': result_event}, ensure_ascii=False)}\n\n"
 
-                        try:
-                            from services.chat_ws import broadcast_stream_event
-                            await broadcast_stream_event(session_id, {"meta": logger.get_run_metadata()})
-                        except Exception:
-                            pass
+                        yield f"event: stream_event\ndata: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
+                        async for ev in _drain_sse_queue():
+                            yield ev
 
                         if stream_stopped:
                             cancelled = True
@@ -584,7 +603,7 @@ async def stream_agent_mode(
                     args = item['args']
                     tool_id = item['tool_id']
 
-                    yield f"data: {json.dumps({'tool_call': {'tool_call_id': tool_id, 'tool_name': tool_name, 'status': 'running', 'args': args, 'round': round_no}}, ensure_ascii=False)}\n\n"
+                    yield f"event: stream_event\ndata: {json.dumps({'tool_call': {'tool_call_id': tool_id, 'tool_name': tool_name, 'status': 'running', 'args': args, 'round': round_no}}, ensure_ascii=False)}\n\n"
                     result, confirm_event, stream_stopped = await run_single_tool(
                         tool_name, args, tool_id, session_id, work_dir, round_no,
                         logger, cancel_event, segment_sink, assistant_message_id,
@@ -619,13 +638,11 @@ async def stream_agent_mode(
                     result_event = build_tool_result_event(
                         tool_name, tool_id, status, log_payload.get("output", output), round_no, result, cached=is_cached,
                     )
-                    yield f"data: {json.dumps({'tool_result': result_event}, ensure_ascii=False)}\n\n"
+                    yield f"event: stream_event\ndata: {json.dumps({'tool_result': result_event}, ensure_ascii=False)}\n\n"
 
-                    try:
-                        from services.chat_ws import broadcast_stream_event
-                        await broadcast_stream_event(session_id, {"meta": logger.get_run_metadata()})
-                    except Exception:
-                        pass
+                    yield f"event: stream_event\ndata: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
+                    async for ev in _drain_sse_queue():
+                        yield ev
 
                     if stream_stopped:
                         cancelled = True
@@ -643,14 +660,10 @@ async def stream_agent_mode(
                     if "__final_results" in ev:
                         sub_tool_results = ev["__final_results"]
                     else:
-                        # 子 Agent 内嵌细节走 subagent_log_event；此处仅广播 subagent_event 等状态事件
-                        try:
-                            from services.chat_ws import broadcast_stream_event
-                            await broadcast_stream_event(session_id, ev)
-                        except Exception:
-                            pass
+                        # 子 Agent 事件通过 SSE 直接推送
+                        yield f"event: stream_event\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
                 for sr in sub_tool_results:
-                    yield f"data: {json.dumps({'tool_result': {'tool_name': 'delegate_to_subagent', 'tool_call_id': sr['tool_call_id'], 'status': 'completed', 'output': '', 'round': round_no}}, ensure_ascii=False)}\n\n"
+                    yield f"event: stream_event\ndata: {json.dumps({'tool_result': {'tool_name': 'delegate_to_subagent', 'tool_call_id': sr['tool_call_id'], 'status': 'completed', 'output': '', 'round': round_no}}, ensure_ascii=False)}\n\n"
                 tool_results.extend(sub_tool_results)
 
                 # 连续相同工具检测
@@ -723,7 +736,7 @@ async def stream_agent_mode(
                                 logger.write_info_event("context_compacted",
                                     f"工具循环中压缩上下文：{old_count} → {len(current_messages)} 条消息，约 {old_tokens} → {new_tokens} tokens",
                                     details=json.dumps({"old_count": old_count, "new_count": len(current_messages), "old_tokens": old_tokens, "new_tokens": new_tokens}, ensure_ascii=False))
-                            yield f"data: {json.dumps({'hint': '上下文已自动压缩，继续执行…'}, ensure_ascii=False)}\n\n"
+                            yield f"event: stream_event\ndata: {json.dumps({'hint': '上下文已自动压缩，继续执行…'}, ensure_ascii=False)}\n\n"
                 except Exception:
                     pass
             else:
@@ -780,4 +793,8 @@ async def stream_agent_mode(
                 message_snapshot_json=logger.jsonl_path_str(),
                 reasoning_content=logger.build_db_reasoning()
             )
-            yield f"data: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
+            yield f"event: stream_event\ndata: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
+            async for ev in _drain_sse_queue():
+                yield ev
+            # SSE 通知前端：assistant 回复结束
+            yield f"event: log_complete\ndata: {json.dumps({'session_id': session_id, 'message_id': assistant_message_id, 'jsonl_path': jsonl_path}, ensure_ascii=False)}\n\n"

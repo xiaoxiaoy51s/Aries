@@ -208,14 +208,20 @@ function closeTab(id: string) {
 function normalizeUrl(raw: string): string {
   let url = raw.trim()
   if (!url) return ''
-  if (!/^https?:\/\//.test(url)) {
-    if (/^[\d.]+(:\d+)?$/.test(url) || /^localhost(:\d+)?$/.test(url)) {
-      url = 'http://' + url
-    } else {
-      url = 'https://' + url
-    }
+  // 已经有协议头的直接放行（http/https/file 等）
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) {
+    return url
   }
-  return url
+  // 本地文件路径
+  if (/^[A-Za-z]:[\\/]/.test(url) || url.startsWith('/') || url.startsWith('\\')) {
+    return 'file:///' + url.replace(/\\/g, '/').replace(/^\/+/, '')
+  }
+  // IP 或 localhost → http
+  if (/^[\d.]+(:\d+)?$/.test(url) || /^localhost(:\d+)?$/.test(url)) {
+    return 'http://' + url
+  }
+  // 其他 → https
+  return 'https://' + url
 }
 
 function navigate(tab: BrowserTab | null = activeTab.value, override?: string) {

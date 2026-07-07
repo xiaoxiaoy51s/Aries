@@ -242,6 +242,22 @@ async def send_file_to_qq(file_path: str) -> bool:
     chat_type = client.last_chat_type or "c2c"
     is_group = chat_type == "group"
     chat_id = (client.last_group_openid if is_group else client.last_user_openid or "").strip()
+    # 配置文件回退（重启后内存为空但配置已持久化）
+    if not chat_id:
+        try:
+            from services.bot_manager import _load_bot_config
+            saved = _load_bot_config().get("qq", {})
+            if is_group:
+                chat_id = saved.get("last_group_openid", "")
+            else:
+                chat_id = saved.get("last_user_openid", "")
+            if not chat_type or chat_type == "c2c":
+                if saved.get("last_chat_type"):
+                    chat_type = saved["last_chat_type"]
+                    is_group = chat_type == "group"
+                    chat_id = (saved.get("last_group_openid", "") if is_group else saved.get("last_user_openid", "")).strip()
+        except Exception:
+            pass
     if not chat_id:
         _log.warning("[Push/QQ文件] 缺少 %s", "group_openid" if is_group else "user_openid")
         return False

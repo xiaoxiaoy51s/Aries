@@ -27,7 +27,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-from api import config_router, chat_router, upload_router, skills_router, plugins_router, subagents_router, sessions_router, work_dirs_router, debug_router, scheduled_tasks_router, platforms_router, system_router, path_permissions_router, terminal_router, git_router, files_router, chat_ws_router, memory_router, pets_router, network_router, main_agent_router, plugins_builtin_router, dev_env_router, tools_router
+from api import config_router, chat_router, upload_router, skills_router, plugins_router, subagents_router, sessions_router, work_dirs_router, debug_router, scheduled_tasks_router, platforms_router, system_router, path_permissions_router, terminal_router, git_router, files_router, memory_router, pets_router, network_router, main_agent_router, plugins_builtin_router, dev_env_router, tools_router
 from db.database import init_database
 from utils.scheduler import run_scheduler
 
@@ -217,7 +217,6 @@ app.include_router(path_permissions_router)
 app.include_router(terminal_router)
 app.include_router(git_router)
 app.include_router(files_router)
-app.include_router(chat_ws_router)
 app.include_router(memory_router)
 app.include_router(pets_router)
 app.include_router(network_router)

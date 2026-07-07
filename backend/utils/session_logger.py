@@ -11,7 +11,7 @@ SessionLogger: 将 agent 每轮工作过程以 JSONL 格式写入文件（一条
 
 设计要点：
   - 每个 token 通过 record_assistant_content 立即写入 JSONL，无缓冲
-  - 写入后通过 on_event 回调广播给前端（WebSocket）
+  - 写入后通过 on_event 回调广播给前端（SSE）
   - JSONL 文件是唯一数据源：前端通过重读文件恢复内容
 """
 from __future__ import annotations
@@ -66,7 +66,7 @@ class SessionLogger:
             session_id: 会话 ID
             message_id: 消息 ID
             on_event: 每次写入事件后的回调（参数为事件 dict），
-                      用于通过 WebSocket 实时推送给前端。
+                      用于通过 SSE 实时推送给前端。
         """
         self.path = _get_jsonl_path(session_id, message_id)
         self._session_id = session_id

@@ -49,6 +49,8 @@ class CLIExecutor:
     DEFAULT_TIMEOUT_SECONDS = 300
     MAX_TIMEOUT_SECONDS = 86400
     DIRECT_VISIBLE_COMMAND_MAX_LENGTH = 4000
+    # async 模式下等待初始输出信号的超时（秒）
+    ASYNC_INITIAL_TIMEOUT_SECONDS = 15
 
     # invocation_id -> asyncio.Event，用于外部信号通知
     _detach_events: dict[str, asyncio.Event] = {}
@@ -67,6 +69,20 @@ class CLIExecutor:
     def user_home_dir(self) -> Path:
         return Path.home().resolve()
 
+    def _resolve_mode_and_session(self, command: str, mode: str, session_id: str) -> tuple[str, str, int]:
+        """解析 mode/session_id/timeout。返回 (session_id, effective_mode, effective_timeout)。"""
+        mode = (mode or "sync").lower()
+        if mode == "async":
+            # async 模式：自动生成 session_id，使用短超时等待初始输出
+            if not session_id:
+                session_id = f"ai-{uuid.uuid4().hex[:8]}"
+            return session_id, "async", self.ASYNC_INITIAL_TIMEOUT_SECONDS
+        else:
+            # sync 模式：持久命令自动检测
+            if not session_id and _is_persistent_command(command):
+                session_id = f"ai-{uuid.uuid4().hex[:8]}"
+            return session_id, "sync", 0
+
     def execute(
         self,
         command: str,
@@ -76,6 +92,7 @@ class CLIExecutor:
         invocation_id: str | None = None,
         terminal_session_id: str | None = None,
         session_id: str = "",
+        mode: str = "sync",
         **extra,
     ) -> dict[str, Any]:
         """通过 HTTP 委托给 Node.js CLI Server 执行命令"""
@@ -98,9 +115,14 @@ class CLIExecutor:
                 "requires_confirmation": False,
             }
 
-        # 自动检测长运行命令，未指定 session_id 时自动生成（避免覆盖正在运行的命令）
-        if not session_id and _is_persistent_command(command):
-            session_id = f"ai-{uuid.uuid4().hex[:8]}"
+        # 解析 mode：async 模式自动生成 session_id 并使用短超时
+        session_id, effective_mode, async_timeout = self._resolve_mode_and_session(
+            command, mode, session_id
+        )
+
+        # async 模式使用短超时等待初始输出
+        if effective_mode == "async":
+            timeout = async_timeout
 
         try:
             payload = {
@@ -119,7 +141,15 @@ class CLIExecutor:
             )
 
             result = resp.json()
-            return self._normalize_cli_result(result)
+            result = self._normalize_cli_result(result)
+
+            # async 模式：无论是否超时，只要有 session_id 就标记为后台运行
+            if effective_mode == "async" and session_id:
+                result["is_background"] = True
+                result["session_id"] = session_id
+                result["output"] = result.get("output", "") + f"\n\n[后台运行中] session_id: {session_id}\n后续可用 check_command_status 查看输出，stop_command 停止。"
+
+            return result
 
         except httpx.ConnectError:
             return {
@@ -130,6 +160,17 @@ class CLIExecutor:
                 "requires_confirmation": False,
             }
         except httpx.TimeoutException:
+            # async 模式超时是正常的：命令在后台继续运行
+            if effective_mode == "async" and session_id:
+                return {
+                    "success": True,
+                    "return_code": 0,
+                    "output": f"命令已在后台启动\n命令: {command}\nsession_id: {session_id}\n\n后续可用 check_command_status 查看输出，stop_command 停止。",
+                    "command": command,
+                    "is_background": True,
+                    "session_id": session_id,
+                    "requires_confirmation": False,
+                }
             return {
                 "success": False,
                 "error": f"Request timed out after {timeout + 10}s",
@@ -205,6 +246,7 @@ class CLIExecutor:
         invocation_id: str | None = None,
         terminal_session_id: str | None = None,
         session_id: str = "",
+        mode: str = "sync",
         cancel_event: asyncio.Event | None = None,
         **extra,
     ) -> dict[str, Any]:
@@ -233,9 +275,14 @@ class CLIExecutor:
                 "requires_confirmation": False,
             }
 
-        # 自动检测长运行命令，未指定 session_id 时自动生成
-        if not session_id and _is_persistent_command(command):
-            session_id = f"ai-{uuid.uuid4().hex[:8]}"
+        # 解析 mode：async 模式自动生成 session_id 并使用短超时
+        session_id, effective_mode, async_timeout = self._resolve_mode_and_session(
+            command, mode, session_id
+        )
+
+        # async 模式使用短超时等待初始输出
+        if effective_mode == "async":
+            timeout = async_timeout
 
         # 按域名规则注入代理环境变量（npm install / git clone 等）
         original_command = command.strip()
@@ -354,7 +401,15 @@ class CLIExecutor:
             # /execute 先完成
             resp = await request_task
             result = resp.json()
-            return self._normalize_cli_result(result)
+            result = self._normalize_cli_result(result)
+
+            # async 模式：标记为后台运行
+            if effective_mode == "async" and session_id:
+                result["is_background"] = True
+                result["session_id"] = session_id
+                result["output"] = result.get("output", "") + f"\n\n[后台运行中] session_id: {session_id}\n后续可用 check_command_status 查看输出，stop_command 停止。"
+
+            return result
 
         except httpx.ConnectError:
             return {
@@ -365,6 +420,18 @@ class CLIExecutor:
                 "requires_confirmation": False,
             }
         except httpx.TimeoutException:
+            # async 模式超时是正常的：命令在后台继续运行
+            if effective_mode == "async" and session_id:
+                return {
+                    "success": True,
+                    "return_code": 0,
+                    "output": f"命令已在后台启动\n命令: {command}\nsession_id: {session_id}\n\n后续可用 check_command_status 查看输出，stop_command 停止。",
+                    "command": command,
+                    "is_background": True,
+                    "session_id": session_id,
+                    "requires_confirmation": False,
+                }
+            # sync 模式超时才是错误
             return {
                 "success": False,
                 "error": f"Request timed out after {timeout + 10}s",

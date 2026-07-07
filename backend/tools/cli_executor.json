@@ -2,13 +2,23 @@
   "type": "function",
   "function": {
     "name": "cli_executor",
-    "description": "执行本地 CLI 命令。仅用于文件操作、运行脚本、读取目录信息、安装依赖等任务。如果命令包含删除、重命名、系统级变更等危险操作，会返回需要用户确认。\n\n【重要提示】\n1. 当返回 'file is locked' 或 'Internal error' 但 exit_code=0 时，说明命令实际已成功执行，无需重试。\n2. 对于 pip install 等网络操作，建议设置 timeout 为 90 秒或更长。\n3. 执行 Python 脚本时，如果脚本路径包含空格，请使用引号包裹。\n4. 对于 npm run dev、pnpm dev、yarn dev、vite、next dev、python main.py、uvicorn 等开发服务器，系统会自动使用新终端运行，不会中断已有命令。timeout 建议 20-40 秒；服务启动成功后系统会自动转入后台。返回结果中的 session_id 可用于后续 check_command_status 查看输出或 stop_command 停止。\n5. 对于其他需要长时间运行的命令（如 deno serve、rails server），请设置 session_id 参数指定一个独立终端（如 'dev-server'），后续可用该 ID 查看/停止。",
+    "description": "执行本地 CLI 命令。仅用于文件操作、运行脚本、读取目录信息、安装依赖等任务。如果命令包含删除、重命名、系统级变更等危险操作，会返回需要用户确认。\n\n【执行模式】\n- mode='sync'（默认）：等待命令完成后内联返回完整输出。适用于所有一次性命令（构建、测试、安装、编译、脚本等）。通常不需要设置 timeout，工具会自动在命令完成后返回。\n- mode='async'：等待初始输出信号后返回 session_id 和输出快照，进程继续在后台运行。仅用于必须持续运行的进程（开发服务器、watcher、守护进程等）。后续可用 check_command_status 查看输出、stop_command 停止。\n\n【重要提示】\n1. 当返回 'file is locked' 或 'Internal error' 但 exit_code=0 时，说明命令实际已成功执行，无需重试。\n2. 对于 pip install 等网络操作，建议设置 timeout 为 90 秒或更长。\n3. 执行 Python 脚本时，如果脚本路径包含空格，请使用引号包裹。\n4. sync 模式的输出是最终结果：命令完成后会内联返回完整输出，不需要再调用 check_command_status。只有在工具结果明确指示命令已转入后台（is_background=true）时才需要用 check_command_status 查看后续输出。\n5. async 模式返回后，命令仍在后台运行。你会在下一轮对话中收到命令完成或需要输入的通知。不要轮询或 sleep 等待完成。",
     "parameters": {
       "type": "object",
       "properties": {
         "command": {
           "type": "string",
           "description": "要执行的命令，不要使用&&，powershell不支持这种命令。"
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["sync", "async"],
+          "enumDescriptions": [
+            "等待命令完成并内联返回完整输出。适用于所有一次性命令（构建、测试、安装、编译、脚本等）。",
+            "等待初始输出信号后返回 session_id 和输出快照，进程继续在后台运行。仅用于必须持续运行的进程（开发服务器、watcher、守护进程等）。"
+          ],
+          "description": "执行模式。绝大多数命令使用 sync（默认）。仅当命令是必须持续运行的服务进程时才使用 async。",
+          "default": "sync"
         },
         "working_dir": {
           "type": "string",
@@ -17,12 +27,12 @@
         },
         "timeout": {
           "type": "integer",
-          "description": "超时时间（秒）。简单命令建议 30s；pip install 等网络操作可用 120s+；默认 300。",
+          "description": "超时时间（秒）。sync 模式通常不需要设置，工具会自动在命令完成后返回。仅当怀疑命令可能挂起时才设置 timeout 作为安全网。async 模式下 timeout 限制等待初始输出信号的时间，超时后命令继续在后台运行并返回 session_id。使用 0 表示无超时。默认 300。",
           "default": 300
         },
         "session_id": {
           "type": "string",
-          "description": "自定义终端会话 ID。传入后会创建/复用该 ID 的终端，后续可通过此 ID 用 check_command_status 查看输出或 stop_command 停止。不传时默认复用当前工作目录的终端。运行开发服务器等长命令时建议传入一个有意义的 ID（如 'dev-server'）。",
+          "description": "自定义终端会话 ID。传入后会创建/复用该 ID 的终端，后续可通过此 ID 用 check_command_status 查看输出或 stop_command 停止。async 模式下如不传会自动生成。不传时默认复用当前工作目录的终端。",
           "default": ""
         }
       },
