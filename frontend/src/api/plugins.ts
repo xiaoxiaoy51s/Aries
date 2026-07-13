@@ -57,6 +57,12 @@ export async function importPlugins(configJson: string): Promise<string[]> {
   return data.added || []
 }
 
+export interface PluginTool {
+  name: string
+  exposed_name: string
+  description: string
+}
+
 export interface PluginDetail {
   id: string
   name: string
@@ -67,6 +73,7 @@ export interface PluginDetail {
   status?: string
   tool_count?: number
   last_error?: string
+  tools?: PluginTool[]
 }
 
 export async function getPluginDetail(id: string): Promise<PluginDetail> {

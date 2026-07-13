@@ -89,6 +89,8 @@ interface MessageBlock {
   preview?: string
   result?: string
   error?: string
+  screenshot_preview?: string
+  screenshot_path?: string
   started_at?: string
   ended_at?: string
   tool_call_id?: string
@@ -206,6 +208,12 @@ function applyStreamEvent(assistantMsg: SideMessage, evt: StreamEvent) {
       if (block.type === 'tool' && block.tool_call_id === toolCallId) {
         block.status = evt.data.status || 'completed'
         block.result = evt.data.output || ''
+        if (typeof evt.data.screenshot_preview === 'string') {
+          block.screenshot_preview = evt.data.screenshot_preview
+        }
+        if (typeof evt.data.screenshot_path === 'string') {
+          block.screenshot_path = evt.data.screenshot_path
+        }
         block.ended_at = new Date().toISOString()
         break
       }

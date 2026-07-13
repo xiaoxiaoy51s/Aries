@@ -1,6 +1,6 @@
 ---
 name: playwright-cli
-description: "通过 playwright-cli 控制浏览器：网页抓取、截图/PDF、DOM 快照、JS 执行、元素点击。复用会话 aries + profile ~/.Aries/browser_profile 保持登录态。适用于网页自动化、登录态操作、表单交互、在线答题等场景。当用户需要浏览器操作、网页截图、页面内容提取、自动化点击时使用此技能。"
+description: "通过 playwright-cli 控制浏览器：网页抓取、截图/PDF、DOM 快照、JS 执行、元素点击。复用会话 aries + browser profile 保持登录态。适用于网页自动化、登录态操作、表单交互、在线答题等场景。当用户需要浏览器操作、网页截图、页面内容提取、自动化点击时使用此技能。"
 ---
 
 # Playwright 浏览器自动化
@@ -26,8 +26,8 @@ python scripts/playwright.py status
 ## 核心概念
 
 - **会话（Session）**：默认 `aries`，通过 `--session` 参数自定义
-- **Profile**：`~/.Aries/browser_profile/`，保存登录态和 Cookie，自动复用
-- **Temp 目录**：`~/.Aries/tmp/`，命令行生成的快照文件等临时数据存放在此
+- **Profile**：由 `scripts/playwright.py` 自动管理，保存登录态和 Cookie，自动复用
+- **Temp 目录**：命令行生成的快照等临时数据由脚本自动写入 Aries tmp 目录
 - **headless / headed**：默认 headed（显示窗口）；需登录时必须 headed
 
 ## 脚本用法速查
@@ -51,7 +51,7 @@ python scripts/playwright.py status
 
 1. **同页多步：只有 `open` 带 URL**，后续 `snapshot`/`click`/`eval` 不带 URL
 2. **`click` 前必须先 `snapshot`**，获取 ref（如 `e26`），ref 随页面变化会失效
-3. **登录态自动复用**：profile 目录 `~/.Aries/browser_profile/`，首次需 headed 手动登录
+3. **登录态自动复用**：profile 由脚本自动管理，首次需 headed 手动登录
 4. **eval 表达式**：`document.title` ✅；`var x=1` ❌（会自动包 IIFE）
 5. **遇 modal state 错误**：先 `dismiss-dialog`，再重试
 
@@ -160,7 +160,7 @@ python scripts/batch_fill.py e120:这是富文本内容
 
 ```bash
 playwright-cli list
-playwright-cli -s=aries open --headed --persistent --profile ~/.Aries/browser_profile <url>
+playwright-cli -s=aries open --headed --persistent <url>
 playwright-cli -s=aries goto <url>
 playwright-cli -s=aries snapshot
 playwright-cli -s=aries click e26

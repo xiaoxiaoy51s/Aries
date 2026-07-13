@@ -70,6 +70,38 @@ def _read_file(session_id: str) -> list[dict]:
     return []
 
 
+def _normalize_todo_item(raw: Any) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    content = str(raw.get("content") or "").strip()
+    if not content:
+        return None
+    todo_id = str(raw.get("id") or content).strip()
+    if not todo_id:
+        return None
+    status = str(raw.get("status") or "pending")
+    if status not in {"pending", "in_progress", "completed"}:
+        status = "pending"
+    priority = str(raw.get("priority") or "medium")
+    if priority not in {"high", "medium", "low"}:
+        priority = "medium"
+    return {
+        "id": todo_id,
+        "content": content,
+        "status": status,
+        "priority": priority,
+    }
+
+
+def _normalize_todo_list(todos: list[Any]) -> list[dict]:
+    normalized: list[dict] = []
+    for item in todos or []:
+        todo = _normalize_todo_item(item)
+        if todo:
+            normalized.append(todo)
+    return normalized
+
+
 def get_todos(session_id: str) -> list[dict]:
     """获取指定 session 的 todo 清单（带内存缓存）。"""
     sid = str(session_id or "").strip()
@@ -77,7 +109,7 @@ def get_todos(session_id: str) -> list[dict]:
         return []
     with _lock:
         if sid not in _cache:
-            _cache[sid] = _read_file(sid)
+            _cache[sid] = _normalize_todo_list(_read_file(sid))
         return list(_cache[sid])
 
 
@@ -86,14 +118,15 @@ def update_todos(session_id: str, todos: list[dict], merge: bool = False) -> lis
     sid = str(session_id or "").strip()
     if not sid:
         return []
+    incoming = _normalize_todo_list(todos)
     with _lock:
         if merge:
-            existing = {t["id"]: t for t in get_todos(sid)}
-            for t in todos:
+            existing = {t["id"]: t for t in get_todos(sid) if isinstance(t, dict) and t.get("id")}
+            for t in incoming:
                 existing[t["id"]] = t
             new_list = list(existing.values())
         else:
-            new_list = todos
+            new_list = incoming
         _cache[sid] = new_list
         _atomic_write(sid, new_list)
         return list(new_list)

@@ -56,7 +56,10 @@ def _load_image_base64_from_path(path: str) -> str:
     if not p.is_file():
         return ""
     try:
-        from plugins.skills.computer_use import win_backend as wb
+        from utils.computer_use_lifecycle import _ensure_computer_use_import_paths
+        if not _ensure_computer_use_import_paths():
+            raise ImportError("computer_use skill 未找到")
+        import win_backend as wb
 
         return wb._image_to_base64(str(p)) or ""
     except Exception:
@@ -82,6 +85,40 @@ def _screenshot_path_from_dict(data: dict[str, Any]) -> str:
         if isinstance(val, str) and val.strip():
             return val.strip()
     return ""
+
+
+def _extract_base64_from_data_url(url: str) -> str:
+    if not isinstance(url, str) or "base64," not in url:
+        return ""
+    return url.split("base64,", 1)[1].strip()
+
+
+def _strip_screenshot_urls(data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Extract screenshot base64 and remove data URLs from tool result dict."""
+    merged = dict(data)
+    image_b64 = str(merged.pop("image_base64", "") or "")
+
+    shots = merged.get("screenshots")
+    if isinstance(shots, list):
+        clean_shots: list[dict[str, Any]] = []
+        for shot in shots:
+            if not isinstance(shot, dict):
+                continue
+            url = shot.get("url", "")
+            if not image_b64:
+                image_b64 = _extract_base64_from_data_url(url)
+            clean = {k: v for k, v in shot.items() if k != "url"}
+            if url:
+                clean["has_image"] = True
+            clean_shots.append(clean)
+        merged["screenshots"] = clean_shots
+
+    state = merged.get("state")
+    if isinstance(state, dict):
+        _, state = _strip_screenshot_urls(state)
+        merged["state"] = state
+
+    return image_b64, merged
 
 
 def prepare_screenshot_tool_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -128,11 +165,29 @@ def prepare_screenshot_tool_result(result: dict[str, Any]) -> dict[str, Any]:
             merged["output"] = "截图已完成，画面已通过视觉通道注入。"
 
     merged.pop("_script_output", None)
+
+    # 剥离 screenshots/state 中的 data URL，避免 base64 进入模型上下文
+    extracted, merged = _strip_screenshot_urls(merged)
+    final_b64 = image_b64 or extracted
+    if final_b64:
+        merged["image_base64"] = final_b64
+        shots = merged.get("screenshots") or []
+        if shots and isinstance(shots[0], dict):
+            s0 = shots[0]
+            out = merged.get("output")
+            if not isinstance(out, str) or len(out) > 500 or "base64" in out:
+                merged["output"] = (
+                    f"窗口截图已捕获 ({s0.get('width', '?')}x{s0.get('height', '?')})，"
+                    f"id={s0.get('id', '?')}。画面已通过视觉通道注入。"
+                )
+        elif not merged.get("output"):
+            merged["output"] = "截图已完成，画面已通过视觉通道注入。"
+
     return merged
 
 
 def split_tool_result_image(content: str) -> tuple[str, str]:
-    """剥离 tool 消息 JSON 中的 image_base64，返回 (瘦身后 content, base64)。"""
+    """剥离 tool 消息 JSON 中的 image_base64 / screenshots.url，返回 (瘦身后 content, base64)。"""
     if not content or not isinstance(content, str):
         return content, ""
     try:
@@ -157,12 +212,14 @@ def format_tool_result_for_model(result: dict) -> str:
 
 
 def tool_result_for_logging(result: dict) -> dict:
-    """写入 JSONL / 前端展示用的工具结果（不含 image_base64）。"""
+    """写入 JSONL / 前端展示用的工具结果（不含 image_base64 / data URL）。"""
     prepared = prepare_screenshot_tool_result(result) if isinstance(result, dict) else {}
     if not isinstance(prepared, dict):
         return {"output": str(result)}
     log = dict(prepared)
-    log.pop("image_base64", None)
+    preview_b64 = str(log.pop("image_base64", "") or "")
+    if preview_b64:
+        log["screenshot_preview"] = f"data:image/jpeg;base64,{preview_b64}"
     out = log.get("output")
     if isinstance(out, str) and len(out) > 2000:
         if "image_base64" in out or re.search(r'"[A-Za-z0-9+/]{500,}"', out):

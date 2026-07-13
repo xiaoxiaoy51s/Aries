@@ -407,7 +407,9 @@ def build_plugins_context() -> str:
         names = [e.display_name for e in items]
         lines.append(f"- {label}: {', '.join(names)}")
 
-    lines.append("如需了解某个插件的具体用法，可调用 read_file 读取其定义文件。")
+    lines.append(
+        "如需了解某个插件的具体用法，请用 read_file(skill_name=\"<插件目录名>\", file_path=\"SKILL.md\")，不要拼接绝对路径。"
+    )
     return "\n".join(lines)
 
 

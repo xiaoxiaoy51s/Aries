@@ -338,6 +338,14 @@ class TerminalManager:
         with cls._lock:
             return cls._invocation_sessions.get(inv_id)
 
+    @classmethod
+    def unregister_invocation_session(cls, inv_id: str) -> None:
+        """清理已完成的 invocation_id 映射，防止内存泄漏。"""
+        if not inv_id:
+            return
+        with cls._lock:
+            cls._invocation_sessions.pop(inv_id, None)
+
 
 # 占位对象，保持引用兼容
 class _SessionWrapper:

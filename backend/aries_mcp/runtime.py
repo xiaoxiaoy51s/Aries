@@ -7,6 +7,7 @@ import re
 import sys
 import tempfile
 import threading
+import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -152,9 +153,62 @@ def _load_cached_tool_schemas(server_id: str) -> list[dict[str, Any]]:
     return schemas
 
 
+def _normalize_json_schema_node(node: Any) -> Any:
+    """将 MCP JSON Schema 规整为多数 OpenAI 兼容网关可接受的子集。"""
+    unsupported_keys = {
+        "$schema", "$id", "$defs", "definitions", "default", "examples",
+        "const", "if", "then", "else", "allOf", "anyOf", "oneOf", "not",
+    }
+    if isinstance(node, list):
+        return [_normalize_json_schema_node(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key in unsupported_keys:
+            continue
+        if key == "type" and isinstance(value, list):
+            if "string" in value:
+                out[key] = "string"
+            elif "integer" in value:
+                out[key] = "integer"
+            elif "number" in value:
+                out[key] = "number"
+            elif "boolean" in value:
+                out[key] = "boolean"
+            elif "object" in value:
+                out[key] = "object"
+            elif "array" in value:
+                out[key] = "array"
+            elif value:
+                out[key] = str(value[0])
+            else:
+                out[key] = "string"
+            continue
+        if key == "properties" and isinstance(value, dict):
+            out[key] = {
+                prop_name: _normalize_json_schema_node(prop_schema)
+                for prop_name, prop_schema in value.items()
+                if isinstance(prop_schema, dict)
+            }
+            continue
+        if key == "items":
+            out[key] = _normalize_json_schema_node(value)
+            continue
+        if isinstance(value, (dict, list)):
+            out[key] = _normalize_json_schema_node(value)
+        else:
+            out[key] = value
+    return out
+
+
 def _schema_to_openai(exposed_name: str, schema: dict[str, Any], server_id: str) -> dict[str, Any]:
     description = schema.get("description") or f"MCP 工具（{server_id}）"
-    input_schema = schema.get("arguments") or {}
+    input_schema = schema.get("arguments") or schema.get("inputSchema") or {}
+    if not isinstance(input_schema, dict):
+        input_schema = {}
+    input_schema = _normalize_json_schema_node(input_schema)
     if not isinstance(input_schema, dict):
         input_schema = {}
     properties = input_schema.get("properties")
@@ -163,6 +217,7 @@ def _schema_to_openai(exposed_name: str, schema: dict[str, Any], server_id: str)
     required = input_schema.get("required")
     if not isinstance(required, list):
         required = []
+    required = [str(item) for item in required if isinstance(item, str)]
     return {
         "type": "function",
         "function": {
@@ -179,24 +234,47 @@ def _schema_to_openai(exposed_name: str, schema: dict[str, Any], server_id: str)
 
 
 def _extract_tool_result(result: Any) -> str:
+    """Extract text and image content from MCP CallToolResult.
+
+    Returns a JSON string. If image blocks are present, the result contains
+    an ``image_base64`` field (pure base64, no data-URL prefix) so the
+    downstream ``prepare_screenshot_tool_result`` / ``split_tool_result_image``
+    pipeline can inject it into the vision channel.
+    """
     content = getattr(result, "content", None)
     if not content:
         return ""
-    chunks: list[str] = []
+    text_chunks: list[str] = []
+    image_b64_list: list[str] = []
     for block in content:
+        # Pydantic model objects (TextContent / ImageContent)
+        btype = getattr(block, "type", None)
         text = getattr(block, "text", None)
         if isinstance(text, str) and text.strip():
-            chunks.append(text)
+            text_chunks.append(text)
+            continue
+        if btype == "image" or (not text and isinstance(block, dict) and block.get("type") == "image"):
+            # ImageContent has `data` (base64) and `mimeType`
+            data = getattr(block, "data", None) or (block.get("data") if isinstance(block, dict) else None)
+            if isinstance(data, str) and data.strip():
+                image_b64_list.append(data)
             continue
         if isinstance(block, dict):
             block_text = block.get("text")
             if isinstance(block_text, str) and block_text.strip():
-                chunks.append(block_text)
-    if chunks:
-        return "\n".join(chunks)
-    if hasattr(result, "model_dump"):
-        return json.dumps(result.model_dump(), ensure_ascii=False, indent=2)
-    return str(result)
+                text_chunks.append(block_text)
+
+    if not text_chunks and not image_b64_list:
+        if hasattr(result, "model_dump"):
+            return json.dumps(result.model_dump(), ensure_ascii=False, indent=2)
+        return str(result)
+
+    payload: dict[str, Any] = {}
+    if text_chunks:
+        payload["output"] = "\n".join(text_chunks)
+    if image_b64_list:
+        payload["image_base64"] = image_b64_list[0]
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _server_transport(server: dict[str, Any]) -> str:
@@ -514,13 +592,41 @@ class McpConnectionPool:
             return
         try:
             await conn.stack.aclose()
+        except RuntimeError:
+            # stdio_client 内部 anyio cancel scope 在跨 task 关闭时可能抛出
+            # "Attempted to exit cancel scope in a different task than it was entered in";
+            # 连接已终止，忽略即可。
+            pass
         except Exception:
             pass
 
-    async def _rebuild_async(self) -> None:
-        for conn in list(self._connections.values()):
-            await self._disconnect_server(conn)
+    def _release_stale_stdio_processes(self) -> None:
+        terminate_mcp_stdio_processes()
 
+    def _abandon(self) -> None:
+        """放弃当前连接池（不 graceful aclose），供 reset 时丢弃旧实例。"""
+        self._connections.clear()
+        self._routes.clear()
+        self._definitions.clear()
+        self._diagnostics.clear()
+        loop = self._loop
+        self._loop = None
+        self._thread = None
+        self._started = False
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except Exception:
+                pass
+
+    def _stop_event_loop(self) -> None:
+        """停止 MCP 专用事件循环。不在此处 aclose stdio（跨 task 会触发 anyio 异常）。"""
+        thread = self._thread
+        self._abandon()
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2)
+
+    async def _connect_all_sequential(self) -> None:
         self._connections.clear()
         self._routes.clear()
         self._definitions.clear()
@@ -531,58 +637,53 @@ class McpConnectionPool:
             self._rebuild_registry()
             return
 
-        sem = asyncio.Semaphore(5)
-
-        async def _connect_one(server_id: str, server: dict[str, Any]) -> None:
-            async with sem:
-                try:
-                    conn = await self._connect_server(server_id, server)
-                    self._connections[server_id] = conn
-                    self._diagnostics.append(
-                        McpServerDiagnostic(
-                            id=server_id,
-                            transport=_server_transport(server),
-                            status="connected",
-                            tool_count=len(conn.tools),
-                            last_connected_at=conn.last_connected_at,
-                            catalog_fingerprint=conn.catalog_fingerprint,
-                        )
+        for server_id, server in all_servers.items():
+            try:
+                conn = await self._connect_server(server_id, server)
+                self._connections[server_id] = conn
+                self._diagnostics.append(
+                    McpServerDiagnostic(
+                        id=server_id,
+                        transport=_server_transport(server),
+                        status="connected",
+                        tool_count=len(conn.tools),
+                        last_connected_at=conn.last_connected_at,
+                        catalog_fingerprint=conn.catalog_fingerprint,
                     )
-                    print(f"[mcp] 已连接 {server_id}，{len(conn.tools)} 个工具")
-                except Exception as exc:
-                    exc_type = type(exc).__name__
-                    message = str(exc) or exc_type
-                    if exc_type in ("TimeoutError", "TimeoutCancellationError"):
-                        message = "连接超时（可能需要网络代理或服务未启动）"
-                    cached = _load_cached_tool_schemas(server_id)
-                    self._diagnostics.append(
-                        McpServerDiagnostic(
-                            id=server_id,
-                            transport=_server_transport(server),
-                            status="error",
-                            tool_count=len(cached),
-                            last_error=message,
-                        )
+                )
+                print(f"[mcp] 已连接 {server_id}，{len(conn.tools)} 个工具")
+            except Exception as exc:
+                exc_type = type(exc).__name__
+                message = str(exc) or exc_type
+                if exc_type in ("TimeoutError", "TimeoutCancellationError"):
+                    message = "连接超时（可能需要网络代理或服务未启动）"
+                cached = _load_cached_tool_schemas(server_id)
+                self._diagnostics.append(
+                    McpServerDiagnostic(
+                        id=server_id,
+                        transport=_server_transport(server),
+                        status="error",
+                        tool_count=len(cached),
+                        last_error=message,
                     )
-                    if cached:
-                        fallback = _ServerConnection(
-                            server_id=server_id,
-                            server=server,
-                            stack=AsyncExitStack(),
-                            session=None,
-                            tools=cached,
-                            status="error",
-                            last_error=message,
-                        )
-                        self._connections[server_id] = fallback
-                    print(f"[mcp] 连接服务 {server_id} 失败: {message}")
-
-        await asyncio.gather(*(
-            _connect_one(server_id, server)
-            for server_id, server in all_servers.items()
-        ))
+                )
+                if cached:
+                    fallback = _ServerConnection(
+                        server_id=server_id,
+                        server=server,
+                        stack=AsyncExitStack(),
+                        session=None,
+                        tools=cached,
+                        status="error",
+                        last_error=message,
+                    )
+                    self._connections[server_id] = fallback
+                print(f"[mcp] 连接服务 {server_id} 失败: {message}")
 
         self._rebuild_registry()
+
+    async def _rebuild_async(self) -> None:
+        await self._connect_all_sequential()
 
     def _rebuild_registry(self) -> None:
         self._routes.clear()
@@ -607,8 +708,7 @@ class McpConnectionPool:
 
     def rebuild(self, *, force: bool = False) -> None:
         del force  # 保留参数以兼容旧调用
-        with self._lock:
-            self._run(self._rebuild_async())
+        reset_mcp_pool()
 
     async def _call_tool_async(
         self,
@@ -626,7 +726,10 @@ class McpConnectionPool:
             return _extract_tool_result(result)
         except Exception as exc:
             conn.last_error = str(exc)
-            await self._disconnect_server(conn)
+            # 不在此 task 里 aclose 旧 stack（stdio anyio scope 必须同 task 退出）
+            self._connections.pop(route.server_id, None)
+            if route.server_id == "computer-use":
+                self._release_stale_stdio_processes()
             server = get_all_servers().get(route.server_id)
             if server is None:
                 raise
@@ -638,18 +741,8 @@ class McpConnectionPool:
 
     def shutdown(self) -> None:
         with self._lock:
-            if not self._started or self._loop is None:
-                return
-            try:
-                self._run(self._shutdown_async(), timeout=30)
-            except Exception as exc:
-                print(f"[mcp] 关闭连接池异常: {exc}")
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            if self._thread:
-                self._thread.join(timeout=5)
-            self._loop = None
-            self._thread = None
-            self._started = False
+            self._release_stale_stdio_processes()
+            self._stop_event_loop()
 
     async def _shutdown_async(self) -> None:
         for conn in list(self._connections.values()):
@@ -717,17 +810,105 @@ class McpConnectionPool:
 
 
 _pool: McpConnectionPool | None = None
+_pool_lock = threading.RLock()
+
+
+def terminate_mcp_stdio_processes() -> None:
+    """结束 MCP stdio 子进程（node index.mjs、codex-computer-use.exe 等）。"""
+    try:
+        from utils.computer_use_lifecycle import release_computer_use_client
+        release_computer_use_client()
+    except Exception:
+        pass
+
+    killed_any = False
+    try:
+        import os
+        import psutil
+
+        root = psutil.Process(os.getpid())
+        keywords = (
+            "index.mjs",
+            "computer-use",
+            "computer_use",
+            "mcp-server",
+            "codex-computer-use",
+            "@modelcontextprotocol",
+        )
+        children = root.children(recursive=True)
+        for child in children:
+            try:
+                name = (child.name() or "").lower()
+                cmdline = " ".join(child.cmdline()).lower()
+                if name == "codex-computer-use.exe" or any(token in cmdline for token in keywords):
+                    child.terminate()
+                    killed_any = True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        _gone, alive = psutil.wait_procs(children, timeout=2)
+        for proc in alive:
+            try:
+                name = (proc.name() or "").lower()
+                cmdline = " ".join(proc.cmdline()).lower()
+                if name == "codex-computer-use.exe" or any(token in cmdline for token in keywords):
+                    proc.kill()
+                    killed_any = True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except ImportError:
+        if sys.platform == "win32":
+            import subprocess
+            for image in ("codex-computer-use.exe",):
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/IM", image],
+                        capture_output=True,
+                        timeout=5,
+                        check=False,
+                    )
+                    killed_any = True
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    if killed_any:
+        time.sleep(0.4)
+
+
+def reset_mcp_pool() -> None:
+    """完全重置 MCP 连接池（等效于重启应用内的 MCP 子系统）。"""
+    global _pool
+    with _pool_lock:
+        try:
+            from utils.bundled_mcp import ensure_bundled_mcp_installed
+            ensure_bundled_mcp_installed()
+        except Exception:
+            pass
+
+        terminate_mcp_stdio_processes()
+        old = _pool
+        old_thread = old._thread if old is not None else None
+        _pool = McpConnectionPool()
+        if old is not None:
+            old._abandon()
+        if old_thread is not None and old_thread.is_alive():
+            old_thread.join(timeout=5)
+        _pool.start()
+        with _pool._lock:
+            _pool._run(_pool._rebuild_async())
 
 
 def get_mcp_pool() -> McpConnectionPool:
     global _pool
-    if _pool is None:
-        _pool = McpConnectionPool()
-    return _pool
+    with _pool_lock:
+        if _pool is None:
+            _pool = McpConnectionPool()
+        return _pool
 
 
 def refresh_mcp_tool_registry(*, force_refresh: bool = False) -> None:
-    get_mcp_pool().rebuild(force=force_refresh)
+    reset_mcp_pool()
 
 
 def get_mcp_tool_definitions(
@@ -739,28 +920,29 @@ def get_mcp_tool_definitions(
 
     Args:
         force_refresh: 是否强制刷新连接池。
-        allowed_mcp_ids: 主 Agent 允许的 MCP ID 列表。None = 不过滤（子 Agent 用）；空列表 = 不加载任何。
+        allowed_mcp_ids: 主 Agent 允许的 MCP ID 列表。
+            None = 不过滤（子 Agent 自行过滤）；
+            空列表 = 不限制，加载全部（与 is_mcp_allowed_for_main_agent 一致）。
     """
     pool = get_mcp_pool()
     if force_refresh:
         pool.rebuild(force=True)
     all_defs = pool.get_tool_definitions()
 
-    # 按 allowed_mcp_ids 过滤
-    # None = 不过滤（子 Agent 用 _filter_mcp_tools 自行过滤）；空列表 = 不加载任何 MCP
     if allowed_mcp_ids is None:
         return all_defs
     if not allowed_mcp_ids:
-        return []
+        return all_defs
 
-    allowed_set = set(allowed_mcp_ids)
+    allowed_slugs = {_slug(m) for m in allowed_mcp_ids}
     result: list[dict[str, Any]] = []
     for tool_def in all_defs:
-        # MCP 工具名的格式通常是 "mcp__{server_id}__{tool_name}"
         tool_name = tool_def.get("function", {}).get("name", "")
-        # 检查工具名中是否包含允许的 server_id
-        for mcp_id in allowed_set:
-            if mcp_id in tool_name:
+        if not tool_name.startswith("mcp_"):
+            continue
+        rest = tool_name[len("mcp_"):]
+        for slug in sorted(allowed_slugs, key=len, reverse=True):
+            if rest == slug or rest.startswith(f"{slug}_"):
                 result.append(tool_def)
                 break
     return result
@@ -785,37 +967,66 @@ def execute_mcp_tool(tool_name: str, arguments: dict[str, Any] | None = None) ->
     return get_mcp_pool().execute_tool(tool_name, arguments)
 
 
-def build_mcp_prompt_context() -> str:
+def build_mcp_prompt_context(*, allowed_mcp_ids: list[str] | None = None) -> str:
     pool = get_mcp_pool()
     plugins = discover_plugins()
 
     if not plugins:
         return ""
 
+    if allowed_mcp_ids is not None and len(allowed_mcp_ids) == 0:
+        allowed_mcp_ids = None
+
     lines = [
         "【MCP 插件】",
-        "以下 MCP 服务已启用。调用时请使用带 mcp_ 前缀的工具名（格式：mcp_{服务名}_{工具名}）：",
+        "以下 MCP 服务已授权给主 Agent。调用时使用 tools 列表中的完整工具名（mcp_{服务slug}_{工具名}），参数 schema 以 tools 定义为准：",
     ]
 
     routes_by_server: dict[str, list[str]] = {}
     for exposed_name, route in pool._routes.items():
         routes_by_server.setdefault(route.server_id, []).append(exposed_name)
 
-    for plugin in plugins:
-        tool_names = routes_by_server.get(plugin.id, [])
+    desc_by_name: dict[str, str] = {}
+    for tool_def in pool.get_tool_definitions():
+        func = tool_def.get("function", {})
+        name = str(func.get("name") or "")
+        desc = str(func.get("description") or "").strip()
+        if name and desc:
+            desc_by_name[name] = desc
+
+    visible_plugins = plugins
+    if allowed_mcp_ids:
+        allowed_set = set(allowed_mcp_ids)
+        visible_plugins = [p for p in plugins if p.id in allowed_set]
+
+    for plugin in visible_plugins:
+        tool_names = sorted(routes_by_server.get(plugin.id, []))
         if tool_names:
-            lines.append(f"- {plugin.id}: {', '.join(tool_names)}")
+            lines.append(f"- {plugin.id}:")
+            for tool_name in tool_names:
+                desc = desc_by_name.get(tool_name, "")
+                if desc:
+                    lines.append(f"  · {tool_name}: {desc[:160]}")
+                else:
+                    lines.append(f"  · {tool_name}")
             continue
         err = pool.get_load_errors().get(plugin.id)
         if err:
             lines.append(f"- {plugin.id}: 连接失败（{err}）")
         else:
-            lines.append(f"- {plugin.id}: 已启用，工具待加载")
+            lines.append(f"- {plugin.id}: 已配置，工具待加载")
 
     errors = pool.get_load_errors()
-    if errors:
+    if errors and allowed_mcp_ids:
+        relevant_errors = {k: v for k, v in errors.items() if k in set(allowed_mcp_ids)}
+    else:
+        relevant_errors = errors
+    if relevant_errors:
         lines.append("连接异常：")
-        for server_id, message in errors.items():
+        for server_id, message in relevant_errors.items():
             lines.append(f"- {server_id}: {message}")
+
+    if allowed_mcp_ids and not any(routes_by_server.get(p.id) for p in visible_plugins):
+        lines.append("（当前主 Agent 未加载任何 MCP 工具，请检查 main_agent.json 的 allowed_mcps 是否与 mcp.json 中的服务 ID 一致。）")
 
     return "\n".join(lines)

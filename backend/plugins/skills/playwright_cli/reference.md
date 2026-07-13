@@ -5,7 +5,7 @@
 | 项 | 值 |
 |----|-----|
 | 会话名 | `aries`（环境变量 `ARIES_PLAYWRIGHT_SESSION` 可改） |
-| Profile | `~/.Aries/browser_profile/` |
+| Profile | 由 `scripts/playwright.py` 自动管理 |
 | 行为 | 首次 `open --persistent --profile`；之后同会话内 `goto` 或跳过导航 |
 
 ### 页面被刷新的原因（已修复）

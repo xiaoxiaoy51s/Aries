@@ -72,6 +72,12 @@ def emergency_stop_session_sync(
             result["subagents"].append(task_id)
 
     result["terminal_interrupted"] = interrupt_agent_terminal_sync(work_dir)
+
+    # 立即停止 codex-computer-use 屏幕控制层，不必等 stream finally
+    from utils.computer_use_lifecycle import release_computer_use_client, stop_computer_use_esc_listener
+    stop_computer_use_esc_listener()
+    result["computer_use_released"] = release_computer_use_client()
+
     return result
 
 

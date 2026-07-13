@@ -26,6 +26,23 @@ logger = logging.getLogger(__name__)
 _ripgrep_available: bool | None = None
 
 
+def _parse_skill_path_from_file_path(file_path: str) -> tuple[str, str] | None:
+    """若 file_path 指向技能目录内文件，解析为 (skill_name, relative_path)。"""
+    normalized = str(file_path or "").strip()
+    if not normalized:
+        return None
+    expanded = str(Path(normalized).expanduser()).replace("\\", "/")
+    for prefix in ("/.Aries/plugins/skills/", "/.Aries/skills/"):
+        idx = expanded.find(prefix)
+        if idx == -1:
+            continue
+        rest = expanded[idx + len(prefix):]
+        parts = rest.split("/", 1)
+        if len(parts) == 2 and parts[0] and parts[1]:
+            return parts[0], parts[1]
+    return None
+
+
 def _check_ripgrep_available() -> bool:
     """检查 ripgrep 是否可用"""
     global _ripgrep_available
@@ -91,6 +108,10 @@ class FileManagerTool:
             return self._error_response("缺少 file_path 参数", "")
 
         # 技能文件模式：通过 skill_name 定位技能目录
+        if not skill_name:
+            parsed = _parse_skill_path_from_file_path(normalized_path)
+            if parsed:
+                skill_name, normalized_path = parsed
         if skill_name:
             return self._read_skill_file(skill_name, normalized_path, offset, limit, max_chars)
 

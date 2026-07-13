@@ -1,5 +1,12 @@
 <template>
-  <div v-if="showTerminal || showTodo || showStop || showBackground" :class="['tool-action-bar', plain && 'tool-action-bar--plain']">
+  <div
+    v-if="showTerminal || showTodo || showStop || showBackground"
+    :class="[
+      'tool-action-bar',
+      plain && 'tool-action-bar--plain',
+      expanded && 'tool-action-bar--expanded',
+    ]"
+  >
     <button
       v-if="showTerminal"
       type="button"
@@ -68,6 +75,7 @@ defineProps<{
   showBackground?: boolean
   autoDetached?: boolean
   plain?: boolean
+  expanded?: boolean
 }>()
 
 defineEmits<{
@@ -88,6 +96,20 @@ defineEmits<{
 
 .tool-action-bar--plain {
   gap: 12px;
+}
+
+.tool-action-bar--expanded {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.tool-action-bar--expanded.tool-action-bar--plain {
+  gap: 16px;
+}
+
+.tool-action-bar--expanded.tool-action-bar--plain .action-chip {
+  font-size: 12px;
+  color: #4b5563;
 }
 
 .action-chip {

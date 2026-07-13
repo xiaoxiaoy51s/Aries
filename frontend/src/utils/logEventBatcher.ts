@@ -33,6 +33,7 @@ export function enqueueLogEvent(item: LogEventBatchItem) {
   const evtType = typeof evt.type === 'string' ? evt.type : ''
   if (
     evtType === 'error_event'
+    || evtType === 'confirmation_required'
     || (evtType === 'run_metadata' && evt.final === true)
     || evtType === 'log_complete'
   ) {

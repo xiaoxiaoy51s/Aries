@@ -271,10 +271,10 @@ function onMenuSelect(menuKey: string, item: { id?: string; divider?: boolean })
   --sidebar-width: 260px;
   --shadow-panel: 0 1px 2px rgba(80, 120, 180, 0.04), 0 4px 16px rgba(80, 120, 180, 0.03);
   /* 侧边栏 / 标题栏：极浅蓝玻璃 */
-  --glass-surface: rgba(227, 238, 248, 0.82);
-  --glass-surface-soft: rgba(210, 215, 220, 0.72);
-  --glass-border: rgba(232, 237, 245, 0.95);
-  --glass-highlight: rgba(255, 255, 255, 0.95);
+  --glass-surface: rgba(205, 222, 223, 0);
+  --glass-surface-soft: rgba(192, 231, 198, 0.72);
+  --glass-border: rgba(248, 248, 248, 0.95);
+  --glass-highlight: rgba(255, 255, 255, 0);
   --glass-blur: blur(24px) saturate(1.12);
   --glass-blur-light: blur(12px) saturate(1.08);
   --glass-shadow:

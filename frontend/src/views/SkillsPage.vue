@@ -315,6 +315,15 @@
               <MarkdownRenderer :content="detailContent" :show-actions="false" :font-size="14" />
             </div>
             <pre v-else class="detail-json">{{ detailContent }}</pre>
+            <div v-if="detailTools.length && detailKind === 'plugins'" class="detail-tools">
+              <h4 class="detail-tools-title">工具列表</h4>
+              <ul class="detail-tools-list">
+                <li v-for="tool in detailTools" :key="tool.exposed_name" class="detail-tool-item">
+                  <code class="detail-tool-name">{{ tool.name }}</code>
+                  <span class="detail-tool-desc">{{ tool.description }}</span>
+                </li>
+              </ul>
+            </div>
           </template>
         </div>
 
@@ -439,6 +448,7 @@ const detailPathHint = ref('')
 const detailMeta = ref('')
 const detailIcon = ref('⚡')
 const detailIsBuiltin = ref(false)
+const detailTools = ref<{ name: string; description: string }[]>([])
 const showDeleteConfirm = ref(false)
 const deleteBusy = ref(false)
 
@@ -609,6 +619,7 @@ async function openDetail(item: ListItem) {
   detailOpenPath.value = ''
   detailPathHint.value = ''
   detailMeta.value = ''
+  detailTools.value = []
   detailLoading.value = true
   detailError.value = ''
 
@@ -632,6 +643,7 @@ async function openDetail(item: ListItem) {
       if (data.status) parts.push(`状态：${data.status}`)
       if (data.last_error) parts.push(`异常：${data.last_error}`)
       detailMeta.value = parts.join(' · ')
+      detailTools.value = data.tools || []
     }
   } catch (e: unknown) {
     detailError.value = e instanceof Error ? e.message : '加载详情失败'
@@ -1389,7 +1401,7 @@ onMounted(fetchAll)
 .detail-body {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 20px;
+  padding: 20px 24px;
   min-height: 200px;
   max-height: min(520px, calc(100vh - 220px));
 }
@@ -1398,6 +1410,64 @@ onMounted(fetchAll)
   font-size: 12px;
   color: var(--text-secondary);
   margin-bottom: 12px;
+}
+
+.detail-tools {
+  margin: 16px 0;
+  padding: 16px;
+  border-radius: 12px;
+  background: #f8f8f6;
+}
+
+.detail-tools-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+
+.detail-tools-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.detail-tool-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #ebebe9;
+}
+
+.detail-tool-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: #f0f0ee;
+  padding: 3px 8px;
+  border-radius: 5px;
+  flex-shrink: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+
+.detail-tool-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .detail-markdown {

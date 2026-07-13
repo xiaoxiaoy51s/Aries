@@ -17,6 +17,8 @@ export interface MessageBlock {
   preview?: string
   result?: string
   error?: string
+  screenshot_preview?: string
+  screenshot_path?: string
   started_at?: string
   ended_at?: string
   tool_call_id?: string

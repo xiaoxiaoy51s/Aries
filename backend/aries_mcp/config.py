@@ -371,10 +371,45 @@ def get_mcp_config_path() -> str:
 
 
 def delete_plugin(plugin_id: str) -> None:
-    """从 mcp.json 中删除指定插件。"""
+    """从 mcp.json 中删除指定插件，并清理其释放到 ~/.Aries/plugins/mcps/ 的目录。"""
+    import shutil
+
     config = load_mcp_config()
     servers = config.get("mcpServers", {})
     if not isinstance(servers, dict) or plugin_id not in servers:
         raise FileNotFoundError(f"插件 {plugin_id} 不存在")
+
+    server = servers[plugin_id]
+    args = server.get("args", []) if isinstance(server, dict) else []
+
+    # 删除该插件释放/缓存的目录
+    # 1. ~/.Aries/plugins/mcps/<plugin_id>/  — 内置 computer-use 不删，避免再次导入时 index.mjs 丢失
+    # 2. ~/.Aries/mcps/<plugin_id>/         — 工具 schema 缓存，可安全删除
+    released_dir = ARIES_ROOT / "plugins" / "mcps" / plugin_id
+    cache_dir = MCP_CACHE_ROOT / plugin_id
+    is_bundled_computer_use = plugin_id in ("computer-use", "computer_use")
+    if not is_bundled_computer_use:
+        for arg in args:
+            if not isinstance(arg, str):
+                continue
+            try:
+                arg_path = Path(arg).resolve()
+            except Exception:
+                continue
+            if arg_path.is_relative_to(released_dir.resolve()):
+                if released_dir.exists():
+                    shutil.rmtree(released_dir)
+                break
+
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir)
+
     del servers[plugin_id]
     save_mcp_config(config)
+
+    if is_bundled_computer_use:
+        try:
+            from utils.bundled_mcp import ensure_bundled_mcp_installed
+            ensure_bundled_mcp_installed()
+        except Exception:
+            pass

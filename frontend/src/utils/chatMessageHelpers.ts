@@ -90,6 +90,13 @@ export function findAssistantMessageIndex(
       (m) => m.role === 'assistant' && m.messageId === messageId,
     )
     if (byId >= 0) return byId
+    // log_event SSE 不带 message_id 时，占位消息可能尚未写入 messageId
+    if (activeAssistantIdx != null && messages[activeAssistantIdx]?.role === 'assistant') {
+      return activeAssistantIdx
+    }
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant' && messages[i].isLoading) return i
+    }
     return -1
   }
   if (activeAssistantIdx != null && messages[activeAssistantIdx]?.role === 'assistant') {

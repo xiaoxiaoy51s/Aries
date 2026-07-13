@@ -121,6 +121,8 @@ export function buildMessageFromSnapshotEvents(
           if (b.type === 'tool' && (b.tool_name === event.toolName || b.tool_name === event.toolCallId)) {
             b.status = event.status || 'completed'
             b.result = event.content
+            b.screenshot_preview = event.screenshotPreview
+            b.screenshot_path = event.screenshotPath
             b.ended_at = event.timestamp || ''
             if (event.sessionId) b.session_id = event.sessionId
             break
@@ -140,14 +142,18 @@ export function buildMessageFromSnapshotEvents(
         }
         break
 
-      case 'error':
-        blocks.push({
-          type: 'text',
-          text: event.content,
-          phase: 'answer',
-          error: event.content,
-        })
+      case 'error': {
+        const dup = blocks.some((b) => b.type === 'text' && b.error && b.text === event.content)
+        if (!dup) {
+          blocks.push({
+            type: 'text',
+            text: event.content,
+            phase: 'answer',
+            error: event.content,
+          })
+        }
         break
+      }
 
       case 'run_metadata':
         if (event.meta) snapshotMeta = normalizeRunMetadata(event.meta)

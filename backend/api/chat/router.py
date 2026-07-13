@@ -42,8 +42,8 @@ async def chat_status(session_id: str):
 
 
 @router.post("/vision")
-async def chat_vision_endpoint(request: VisionRequest):
-    return await chat_vision(request)
+async def chat_vision_endpoint(request: VisionRequest, http_request: Request):
+    return await chat_vision(request, http_request)
 
 
 @router.get("/sessions/recent")

@@ -2,7 +2,7 @@
 """
 Playwright 浏览器自动化脚本 — 独立可运行，不依赖 MIMOClaw。
 
-自动管理会话 aries + profile ~/.Aries/browser_profile，复用登录态。
+自动管理会话 aries + browser profile，复用登录态。
 
 用法:
   python playwright.py open "https://example.com" --headed

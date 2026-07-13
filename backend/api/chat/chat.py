@@ -420,6 +420,7 @@ async def stream_chat_sse(request: ChatRequest, http_request: Request):
             finally:
                 mark_bg_done(session_id)
                 unregister_chat_stream(session_id)
+                cleanup_bg_session(session_id)
 
         return StreamingResponse(
             _subagent_sse_gen(),
@@ -486,6 +487,7 @@ async def stream_chat_sse(request: ChatRequest, http_request: Request):
         finally:
             mark_bg_done(session_id)
             unregister_chat_stream(session_id)
+            cleanup_bg_session(session_id)
 
     return StreamingResponse(
         _sse_gen(),

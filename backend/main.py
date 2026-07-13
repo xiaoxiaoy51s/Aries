@@ -96,6 +96,13 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"[Plugins] 同步失败: {exc}")
 
+    # 释放内置 computer-use MCP server + exe 到 ~/.Aries/plugins/mcps/computer-use/
+    try:
+        from utils.bundled_mcp import ensure_bundled_mcp_installed
+        ensure_bundled_mcp_installed()
+    except Exception as exc:
+        print(f"[MCP] 释放内置 computer-use 失败: {exc}")
+
     # 内置 Node 已在进程启动最早阶段释放并写入 env.json（init_runtime_env）
     try:
         from utils.bundled_node import get_default_node_install_dir, get_default_node_exe
@@ -123,6 +130,10 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_init_mcp, daemon=True, name="McpInit").start()
 
     scheduler_task = asyncio.create_task(run_scheduler())
+
+    # 运行时诊断：每 60s 打印一行资源快照，用于定位"用久了变卡"的资源泄漏
+    from utils.runtime_diagnostics import start_periodic_diagnostics
+    diagnostics_task = start_periodic_diagnostics(60)
 
     from services.bot_manager import start_all_bots
 
@@ -173,6 +184,12 @@ async def lifespan(app: FastAPI):
     scheduler_task.cancel()
     try:
         await scheduler_task
+    except asyncio.CancelledError:
+        pass
+
+    diagnostics_task.cancel()
+    try:
+        await diagnostics_task
     except asyncio.CancelledError:
         pass
 

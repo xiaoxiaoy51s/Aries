@@ -2,6 +2,8 @@
  * 解析消息快照 JSONL 事件，转换为前端可渲染的格式
  */
 
+import { parseToolResultForDisplay } from '@/utils/toolResultDisplay'
+
 export interface SnapshotEvent {
   type: 'reasoning' | 'tool_call' | 'tool_result' | 'assistant_text' | 'error' | 'run_metadata' | 'sub_agent'
   content: string
@@ -31,6 +33,8 @@ export interface SnapshotEvent {
     previous_content: string
     new_content: string
   }
+  screenshotPreview?: string
+  screenshotPath?: string
 }
 
 /**
@@ -84,15 +88,18 @@ function convertEvent(json: any): SnapshotEvent | null {
       // 1. JSONL 文件: { type: "tool_result", result: "<json-string>" }，result 字符串里包含 { output, success }
       // 2. SSE 流: { type: "tool_result", output: "..." }
       let resultContent = ''
+      let screenshotPreview = ''
+      let screenshotPath = ''
       if (typeof json.result === 'string') {
-        try {
-          const parsed = JSON.parse(json.result)
-          resultContent = parsed.output || parsed.result || json.result
-        } catch {
-          resultContent = json.result
-        }
+        const parsed = parseToolResultForDisplay(json.result, json.tool_name)
+        resultContent = parsed.displayText
+        screenshotPreview = parsed.screenshotPreview || ''
+        screenshotPath = parsed.screenshotPath || ''
       } else if (json.result && typeof json.result === 'object') {
-        resultContent = json.result.output || ''
+        const parsed = parseToolResultForDisplay(JSON.stringify(json.result), json.tool_name)
+        resultContent = parsed.displayText || (json.result as { output?: string }).output || ''
+        screenshotPreview = parsed.screenshotPreview || ''
+        screenshotPath = parsed.screenshotPath || ''
       } else if (json.output) {
         resultContent = json.output
       }
@@ -105,6 +112,8 @@ function convertEvent(json: any): SnapshotEvent | null {
         status: json.status,
         timestamp: json.ended_at,
         fileChange: json.file_change || undefined,
+        screenshotPreview: screenshotPreview || undefined,
+        screenshotPath: screenshotPath || undefined,
       }
 
     case 'assistant_text':

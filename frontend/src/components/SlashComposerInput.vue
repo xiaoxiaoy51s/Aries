@@ -2,10 +2,11 @@
   <div class="slash-composer-input" :class="{ 'has-images': imagePreviews.length > 0 }">
     <div v-if="imagePreviews.length" class="image-previews">
       <div v-for="(img, i) in imagePreviews" :key="i" class="image-preview">
-        <img :src="img" alt="" />
+        <img :src="img" alt="" @click="openLightbox(img)" />
         <button type="button" class="image-remove" @click="removeImage(i)">×</button>
       </div>
     </div>
+    <ImageLightbox v-model:open="lightboxOpen" :src="lightboxSrc" />
 
     <div
       ref="editorRef"
@@ -23,6 +24,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
 import { getIconForFile, DEFAULT_FILE } from 'vscode-icons-js'
+import ImageLightbox from '@/components/ImageLightbox.vue'
+import { useImageLightbox } from '@/composables/useImageLightbox'
 
 const FILE_ICON_CDN = './file-icons'
 
@@ -85,6 +88,7 @@ const emit = defineEmits<{
 
 const editorRef = ref<HTMLDivElement>()
 let isUpdatingFromInput = false
+const { lightboxOpen, lightboxSrc, openLightbox } = useImageLightbox()
 
 const imagePreviews = computed(() => {
   return (props.attachedImages || []).map((img) => img.data)
@@ -1108,6 +1112,7 @@ defineExpose({ openFilePicker, clearImages, focus })
   width: 100%;
   height: 100%;
   object-fit: cover;
+  cursor: zoom-in;
 }
 
 .image-remove {

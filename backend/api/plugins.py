@@ -19,8 +19,8 @@ class PluginImport(BaseModel):
 
 
 def _reload_mcp_pool() -> None:
-    from aries_mcp.runtime import get_mcp_pool
-    get_mcp_pool().rebuild(force=True)
+    from aries_mcp.runtime import reset_mcp_pool
+    reset_mcp_pool()
 
 
 @router.get("")
@@ -50,7 +50,7 @@ async def list_plugins():
 
 @router.get("/{plugin_id}")
 async def get_plugin_detail(plugin_id: str):
-    from aries_mcp.runtime import get_mcp_diagnostics
+    from aries_mcp.runtime import get_mcp_diagnostics, get_mcp_tool_definitions
 
     server = get_mcp_server_config(plugin_id)
     if server is None:
@@ -59,6 +59,28 @@ async def get_plugin_detail(plugin_id: str):
     wrapped = {"mcpServers": {plugin_id: server}}
     diagnostics = {item["id"]: item for item in get_mcp_diagnostics()}
     diag = diagnostics.get(plugin_id, {})
+
+    # 收集该 MCP 服务的工具列表
+    tools: list[dict] = []
+    from aries_mcp.runtime import _slug
+    slug = _slug(plugin_id)
+    for tool_def in get_mcp_tool_definitions():
+        fn = tool_def.get("function", {})
+        name = fn.get("name", "")
+        # 工具名格式: mcp_{slug}_{original_name}
+        prefix = f"mcp_{slug}_"
+        if name.startswith(prefix):
+            tools.append({
+                "name": name[len(prefix):],
+                "exposed_name": name,
+                "description": fn.get("description", ""),
+            })
+        elif name == f"mcp_{slug}":
+            tools.append({
+                "name": "",
+                "exposed_name": name,
+                "description": fn.get("description", ""),
+            })
 
     return {
         "id": plugin_id,
@@ -70,6 +92,7 @@ async def get_plugin_detail(plugin_id: str):
         "status": diag.get("status"),
         "tool_count": diag.get("tool_count", 0),
         "last_error": diag.get("last_error"),
+        "tools": tools,
     }
 
 
@@ -77,8 +100,7 @@ async def get_plugin_detail(plugin_id: str):
 async def import_plugins(body: PluginImport):
     try:
         added = import_mcp_json(body.config_json)
-        if added:
-            _reload_mcp_pool()
+        _reload_mcp_pool()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"added": added, "count": len(added)}

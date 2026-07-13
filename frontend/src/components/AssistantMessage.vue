@@ -44,6 +44,8 @@
                 :preview="block.preview"
                 :result="block.result || ''"
                 :error="block.error || ''"
+                :screenshot-preview="block.screenshot_preview || ''"
+                :screenshot-path="block.screenshot_path || ''"
                 :started-at="block.started_at || ''"
                 :ended-at="block.ended_at || ''"
                 :compact="false"
@@ -80,8 +82,8 @@
             >
               <MarkdownRenderer
                 :content="block.text || ''"
-                :text-color="textColor"
-                :font-size="fontSize"
+                :text-color="block.error && block.errorType !== 'step_limit_exceeded' ? '#b91c1c' : textColor"
+                :font-size="block.error && block.errorType !== 'step_limit_exceeded' ? Math.max(12, fontSize - 2) : fontSize"
                 :show-actions="false"
                 :is-streaming="isLoading"
               />
@@ -896,21 +898,33 @@ function onMessageClick(e: MouseEvent) {
 .error-block {
   display: inline-flex;
   align-items: flex-start;
-  gap: 8px;
-  background: #fffbeb;
-  border: 1px solid #fde68a;
-  border-radius: 8px;
-  padding: 8px 12px;
-  margin: 6px 0;
-  color: #92400e;
-  max-width: 80%;
+  gap: 4px;
+  background: #fee2e2;
+  border: 1px solid #fca5a5;
+  border-radius: 6px;
+  padding: 3px 8px;
+  margin: 2px 0;
+  color: #b91c1c;
+  width: fit-content;
+  max-width: min(420px, 55%);
+  line-height: 1.3;
+}
+
+.error-block :deep(.markdown-body) {
+  margin: 0;
+  padding: 0;
+  line-height: 1.3;
+}
+
+.error-block :deep(.markdown-body p) {
+  margin: 0;
 }
 
 .error-block .error-header {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  color: #b45309;
+  color: #dc2626;
 }
 
 /* step_limit_exceeded 专用：不显示为错误，而是温和的暂停提示 */

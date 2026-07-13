@@ -40,7 +40,7 @@ _SUBAGENT_USAGE_RULES = (
     "\n"
     "# Subagent 使用规范\n"
     "下方「Available Subagents」列出了系统中可委派的子 Agent。每个 Subagent 拥有独立上下文与能力组合，适合复杂、多步、可被打包成角色的任务。\n"
-    "- 你也可以基于检索结果生成新的 Subagent 配置文件（写到 ~/.Aries/agent/<name>.json）。\n"
+    "- 你也可以基于检索结果生成新的 Subagent 配置文件（写到 agent 配置目录下的 <name>.json）。\n"
     "\n"
     "# Subagent 调用约束\n"
     "- 通过 `delegate_to_subagent` 工具委派任务。委派时 task 必须详尽，子 Agent 看不到当前对话历史。\n"
@@ -99,7 +99,9 @@ def build_agent_system_prompt_parts(
         "- 所有工具失败时：2次尝试内停止，告知障碍，禁止伪造结果\n"
         "\n"
         "# Skill 使用规范\n"
-        "在使用skill前，必须阅读SKILL.md文件，了解技能的用途和使用方法。不要直接上来就调用工具，有些工具虽然可以通过描述知道对应的使用方法，但是md文件中会有更加详细的使用说明。\n"
+        "在使用 skill 前，必须阅读 SKILL.md，了解技能的用途和使用方法。不要直接上来就调用工具，md 文件中有更详细的使用说明。\n"
+        "读取技能文档：调用 read_file，传 skill_name（技能目录名）+ file_path（如 \"SKILL.md\"）。\n"
+        "禁止自行拼接技能绝对路径，禁止使用 ~ 开头的路径。\n"
         "\n"
         + CODING_BEHAVIOR_RULES
         + "\n\n"
@@ -184,7 +186,7 @@ def build_agent_system_prompt(
 def get_agent_skills_and_tools():
     from aries_mcp.runtime import build_mcp_prompt_context
     from engine.subagent_manager import build_subagent_router_section
-    from utils.main_agent_config import get_main_agent_allowed_skills
+    from utils.main_agent_config import get_main_agent_allowed_skills, get_main_agent_allowed_mcps
 
     allowed_skills = get_main_agent_allowed_skills()
     all_skills = discover_skills()
@@ -195,7 +197,9 @@ def get_agent_skills_and_tools():
         enabled_skills = []
     skills_context = build_skills_context_from_entries(enabled_skills)
     tool_definitions = get_all_tool_definitions()
-    mcp_context = build_mcp_prompt_context()
+    mcp_context = build_mcp_prompt_context(
+        allowed_mcp_ids=get_main_agent_allowed_mcps() or None,
+    )
     subagents_context = build_subagent_router_section()
 
     # 虚拟工具分组（#7）：工具数过多时自动分组，减少 prompt token 占用

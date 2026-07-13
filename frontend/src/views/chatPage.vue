@@ -234,6 +234,7 @@ import UserMessageContent from '@/components/UserMessageContent.vue'
 import RightPanel from '@/components/workspace/RightPanel.vue'
 import ConsolePanel from '@/components/workspace/ConsolePanel.vue'
 import type { ChatMessage, SubagentRecord } from '@/types/chatMessage'
+import { parseToolResultForDisplay } from '@/utils/toolResultDisplay'
 import {
   applyStreamEvent,
   clearPetStatus,
@@ -253,6 +254,7 @@ import {
 import { rebuildAssistantFromJsonl } from '@/utils/jsonlCatchUp'
 import {
   enqueueLogEvent,
+  enqueueSubagentLogEvent,
   flushLogEventsNow,
   setLogEventBatchHandler,
   type LogEventBatchItem,
@@ -369,6 +371,8 @@ interface StreamEntry {
   bufferedEvents: Array<{ event: string; data: Record<string, unknown> }>
 }
 const activeStreams = new Map<string, StreamEntry>()
+/** 后台 SSE 流上限：超过此数量时自动 abort 最早的非当前会话流，避免 HTTP 连接耗尽 */
+const MAX_BACKGROUND_STREAMS = 2
 /** 用户已请求停止的 session 集合：忽略后端延迟到达的内容消息，避免停止后仍在输出 */
 const stoppedSessions = new Set<string>()
 /** run_metadata 可能在 log_complete 之后到达，先缓存，完成时统一写入 */
@@ -458,7 +462,7 @@ function onRefreshSessions() {
   void refreshCurrentSessionTitle()
 }
 
-// WebSocket 由 sessionChatPool 管理（支持多 session 并行，见下方 ensureChatWsReady）
+// 实时数据通过 SSE 推送，后台 session 事件写入快照
 
 /**
  * 为 log_started 事件创建/定位 assistant placeholder
@@ -558,18 +562,32 @@ function buildStreamEventFromLogRecord(event: Record<string, any>): StreamEvent 
           session_id: event.session_id || '',
         },
       }
-    case 'tool_result':
+    case 'tool_result': {
+      let output = ''
+      let screenshotPreview = ''
+      let screenshotPath = ''
+      if (typeof event.result === 'string') {
+        const parsed = parseToolResultForDisplay(event.result, event.tool_name)
+        output = parsed.displayText
+        screenshotPreview = parsed.screenshotPreview || ''
+        screenshotPath = parsed.screenshotPath || ''
+      } else {
+        output = event.result?.output || event.output || ''
+      }
       return {
         type: 'tool_result',
         data: {
           tool_call_id: event.tool_call_id,
           tool_name: event.tool_name,
           status: event.status,
-          output: typeof event.result === 'string' ? event.result : (event.result?.output || ''),
+          output,
+          screenshot_preview: screenshotPreview || undefined,
+          screenshot_path: screenshotPath || undefined,
           file_change: event.file_change,
           session_id: event.session_id || '',
         },
       }
+    }
     case 'confirmation_required':
       return {
         type: 'confirmation_required',
@@ -715,21 +733,32 @@ function findAssistantMessageIndex(messageId: number): number {
 function completeLogMessage(messageId: number) {
   flushLogEventsNow()
   streamDiag('State', 'completeLogMessage → UI idle', streamStateSnapshot({ messageId, source: 'log_complete' }))
-  const idx = findAssistantMessageIndex(messageId)
+  let idx = findAssistantMessageIndex(messageId)
+  if (idx < 0) {
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      if (messages.value[i].role === 'assistant' && messages.value[i].isLoading) {
+        idx = i
+        break
+      }
+    }
+  }
   const pendingMeta = messageId ? pendingRunMetaByMessageId.get(messageId) : undefined
   if (idx >= 0) {
     const m = messages.value[idx]
     if (m) {
+      const resolvedMessageId = messageId || m.messageId
       messages.value[idx] = {
         ...m,
         isLoading: false,
+        messageId: resolvedMessageId || m.messageId,
         meta: pendingMeta || m.meta,
       }
     }
   }
   if (messageId) pendingRunMetaByMessageId.delete(messageId)
   if (currentSessionId.value) {
-    stopStreamDuration(currentSessionId.value, messageId)
+    const stopId = messageId || (idx >= 0 ? messages.value[idx]?.messageId : undefined)
+    stopStreamDuration(currentSessionId.value, stopId || '__pending__')
   }
 
   if (!messageId || activeAssistantMessageId === messageId) {
@@ -903,7 +932,7 @@ async function loadNewMessages(force: boolean = false) {
       if (allMsgs[i].role !== 'assistant') continue
       const messageId = allMsgs[i].id
       if (!messageId) continue
-      // 跳过已加载 blocks 的消息，避免 WebSocket 事件反复触发 jsonl 请求
+      // 跳过已加载 blocks 的消息，避免 SSE 事件反复触发 jsonl 请求
       const existing = messages.value[i]
       if (existing?.blocks && existing.blocks.length > 0) continue
       await loadMessageSnapshot(messageId, i, allMsgs[i])
@@ -980,12 +1009,12 @@ const sessionSubagents = ref<SubagentRecord[]>([])
 
 function captureSessionSnapshot(): SessionChatSnapshot {
   return {
-    messages: JSON.parse(JSON.stringify(messages.value)),
+    messages: messages.value.slice(),
     isSending: isSending.value,
     hasActiveChat: hasActiveChat.value,
     activeAssistantMessageId,
     activeAssistantIdx,
-    sessionSubagents: JSON.parse(JSON.stringify(sessionSubagents.value)),
+    sessionSubagents: sessionSubagents.value.slice(),
     platformStreaming,
   }
 }
@@ -1006,21 +1035,31 @@ function persistCurrentSessionSnapshot(sessionId?: string) {
   saveSessionSnapshot(sid, captureSessionSnapshot())
 }
 
+// debounce 快照持久化：SSE 事件高频到达时避免每个事件都做快照
+let _persistTimer: ReturnType<typeof setTimeout> | null = null
+function persistCurrentSessionSnapshotDebounced(sessionId?: string) {
+  const sid = sessionId || currentSessionId.value
+  if (!sid) return
+  if (_persistTimer) clearTimeout(_persistTimer)
+  _persistTimer = setTimeout(() => {
+    _persistTimer = null
+    persistCurrentSessionSnapshot(sid)
+  }, 500)
+}
+
 function syncSessionWorkingState(sessionId?: string) {
   const sid = sessionId || currentSessionId.value
   if (!sid) return
   // 用户已请求停止：强制 idle，不因后端延迟到达的消息恢复 working 状态
   if (stoppedSessions.has(sid)) {
     markSessionIdle(sid)
-    persistCurrentSessionSnapshot(sid)
+    persistCurrentSessionSnapshotDebounced(sid)
     return
   }
-  const msgs = sid === currentSessionId.value
-    ? messages.value
-    : (loadSessionSnapshot(sid)?.messages as ChatMessage[] | undefined) ?? []
-  const sending = sid === currentSessionId.value
-    ? isSending.value
-    : !!loadSessionSnapshot(sid)?.isSending
+  const isCurrent = sid === currentSessionId.value
+  const snapshot = isCurrent ? null : loadSessionSnapshot(sid)
+  const msgs = isCurrent ? messages.value : (snapshot?.messages as ChatMessage[] | undefined) ?? []
+  const sending = isCurrent ? isSending.value : !!snapshot?.isSending
   const working = sessionHasActiveWork(msgs, sending)
   const prevWorking = isSessionWorking(sid)
   if (working) markSessionWorking(sid)
@@ -1034,7 +1073,7 @@ function syncSessionWorkingState(sessionId?: string) {
       loadingAssistantCount: msgs.filter((m) => m && (m as ChatMessage).role === 'assistant' && (m as ChatMessage).isLoading).length,
     }))
   }
-  persistCurrentSessionSnapshot(sid)
+  persistCurrentSessionSnapshotDebounced(sid)
 }
 
 function syncSnapshotWorkingState(sessionId: string, snapshot: SessionChatSnapshot) {
@@ -1240,8 +1279,8 @@ function applyLogEventSnapshot(
   }
 }
 
-/** 后台 session 的 WS 事件：只写快照，不切换当前 UI（避免输入框闪烁） */
-function applyWsPayloadToSnapshot(sessionId: string, data: Record<string, unknown>) {
+/** 后台 session 的 SSE 事件：只写快照，不切换当前 UI（避免输入框闪烁） */
+function applySsePayloadToSnapshot(sessionId: string, data: Record<string, unknown>) {
   const snapshot = getOrCreateSnapshot(sessionId, loadSessionSnapshot)
 
   if (data.type === 'log_started') {
@@ -1291,17 +1330,15 @@ async function processSsePayload(data: Record<string, unknown>) {
     }
   } else if (data.type === 'log_event') {
     const evt = data.event as Record<string, unknown> | undefined
-    const evtMessageId = Number(data.message_id) || 0
+    const evtMessageId = Number(data.message_id) || activeAssistantMessageId || 0
     if (!evt) return
-    if (!activeAssistantMessageId || evtMessageId !== activeAssistantMessageId) {
+    if (evtMessageId && (!activeAssistantMessageId || evtMessageId !== activeAssistantMessageId)) {
       activeAssistantMessageId = evtMessageId
-      if (evtMessageId) {
-        ensureLogPlaceholder(evtMessageId, String(data.jsonl_path || ''))
-      }
+      ensureLogPlaceholder(evtMessageId, String(data.jsonl_path || ''))
     }
     enqueueLogEvent({
       event: evt,
-      messageId: evtMessageId,
+      messageId: evtMessageId || activeAssistantMessageId || 0,
       jsonlPath: String(data.jsonl_path || ''),
     })
   } else if (data.type === 'log_complete') {
@@ -1311,22 +1348,34 @@ async function processSsePayload(data: Record<string, unknown>) {
     }))
     stoppedSessions.delete(currentSessionId.value || '')
     completeLogMessage(Number(data.message_id) || 0)
+  } else if (data.type === 'subagent_log_started' || data.type === 'subagent_log_event') {
+    enqueueSubagentLogEvent({
+      type: data.type,
+      task_id: data.task_id,
+      jsonl_path: data.jsonl_path || '',
+      tool_call_id: data.tool_call_id || '',
+      subagent: data.subagent || '',
+      ...(data.type === 'subagent_log_event' ? { event: data.event } : {}),
+    })
+    syncSessionWorkingState()
   } else if (data.type === 'subagent_log_complete') {
+    flushLogEventsNow()
     messages.value = handleSubagentLogPayload(data, messages.value)
     syncSessionWorkingState()
     nextTick(() => scheduleScrollToBottom())
   } else if (data.type === 'stream_event') {
     const event = data.event as Record<string, unknown> | undefined
     if (!event) return
-    // subagent 事件：subagent_event 更新状态；内嵌细节走 subagent_log_event batch
-    if (typeof event.type === 'string' && event.type.startsWith('subagent_')) {
-      if (isSubagentLogBatchBound() && SUBAGENT_GRANULAR_STREAM_TYPES.has(event.type)) {
-        return
-      }
+    const streamEvt = jsonToStreamEvent(event)
+    // 子 Agent 内嵌细节已由 subagent_log_event（JSONL）推送；stream_event 仅保留状态更新
+    if (streamEvt && isSubagentLogBatchBound() && SUBAGENT_GRANULAR_STREAM_TYPES.has(streamEvt.type)) {
+      return
+    }
+    if (streamEvt?.type === 'subagent_event') {
       const lastIdx = messages.value.length - 1
       const lastAssistant = messages.value[lastIdx]
       if (lastAssistant?.role === 'assistant') {
-        pushStreamEvent(lastAssistant, { type: event.type as any, data: event.data || {} })
+        pushStreamEvent(lastAssistant, streamEvt)
         messages.value[lastIdx] = { ...lastAssistant }
       }
       syncSessionWorkingState()
@@ -1345,7 +1394,11 @@ async function processSsePayload(data: Record<string, unknown>) {
         }
       }
     } else if (!isPlatformSession(currentSessionId.value) && !event.choices) {
-      // 平台会话正文/思考/工具已由 log_event 推送；choices  chunk 忽略避免重复渲染
+      // Agent 会话正文/工具/错误已由 log_event (JSONL) 推送；stream_event.error 与之重复
+      if (event.error) {
+        syncSessionWorkingState()
+        return
+      }
       handlePlatformStreamEvent(event)
     }
     syncSessionWorkingState()
@@ -1395,6 +1448,7 @@ async function handleSseEvent(sessionId: string, sseEvent: string, data: Record<
       type: 'log_event',
       session_id: sessionId,
       event: data,
+      message_id: data.message_id ?? activeAssistantMessageId,
       jsonl_path: data.jsonl_path || '',
     })
   } else if (sseEvent === 'stream_event') {
@@ -1409,6 +1463,25 @@ async function handleSseEvent(sessionId: string, sseEvent: string, data: Record<
       session_id: sessionId,
       message_id: data.message_id,
       jsonl_path: data.jsonl_path || '',
+    })
+  } else if (sseEvent === 'subagent_log_started') {
+    await processSsePayload({
+      type: 'subagent_log_started',
+      session_id: sessionId,
+      task_id: data.task_id,
+      jsonl_path: data.jsonl_path || '',
+      tool_call_id: data.tool_call_id || '',
+      subagent: data.subagent || '',
+    })
+  } else if (sseEvent === 'subagent_log_event') {
+    await processSsePayload({
+      type: 'subagent_log_event',
+      session_id: sessionId,
+      task_id: data.task_id,
+      jsonl_path: data.jsonl_path || '',
+      tool_call_id: data.tool_call_id || '',
+      subagent: data.subagent || '',
+      event: data.event,
     })
   } else if (sseEvent === 'subagent_log_complete') {
     await processSsePayload({
@@ -1473,6 +1546,26 @@ async function replayBufferedEvents(sessionId: string) {
         message_id: data.message_id,
         jsonl_path: data.jsonl_path || '',
       })
+    } else if (event === 'subagent_log_started') {
+      if (logEvents.length) { applyLogEventBatch(logEvents.splice(0)); flushLogEventsNow() }
+      await processSsePayload({
+        type: 'subagent_log_started',
+        session_id: sessionId,
+        task_id: data.task_id,
+        jsonl_path: data.jsonl_path || '',
+        tool_call_id: data.tool_call_id || '',
+        subagent: data.subagent || '',
+      })
+    } else if (event === 'subagent_log_event') {
+      await processSsePayload({
+        type: 'subagent_log_event',
+        session_id: sessionId,
+        task_id: data.task_id,
+        jsonl_path: data.jsonl_path || '',
+        tool_call_id: data.tool_call_id || '',
+        subagent: data.subagent || '',
+        event: data.event,
+      })
     } else if (event === 'subagent_log_complete') {
       if (logEvents.length) { applyLogEventBatch(logEvents.splice(0)); flushLogEventsNow() }
       await processSsePayload({
@@ -1497,8 +1590,18 @@ function stopChatSession(clearRouting = true) {
     activeAssistantMessageId = null
     activeAssistantIdx = null
   }
-  // 不 abort：切换对话时后台流继续跑，事件写入 buffer
-  // 只有 stopGeneration / onUnmounted 才真正 abort
+  // 切换对话时后台流继续跑，但限制并发数量避免 HTTP 连接耗尽
+  pruneBackgroundStreams()
+}
+
+/** 后台 SSE 流数量超限时，abort 最早的非当前会话流 */
+function pruneBackgroundStreams() {
+  const current = currentSessionId.value
+  const bgStreams = [...activeStreams.keys()].filter((sid) => sid !== current)
+  while (bgStreams.length > MAX_BACKGROUND_STREAMS) {
+    const oldest = bgStreams.shift()!
+    abortSessionStream(oldest)
+  }
 }
 
 /** 显式停止某 session 的后台 SSE 流（用户点击停止 / 组件卸载） */
@@ -1671,7 +1774,8 @@ const pendingWorkDir = ref('')
 
 // 当前工作目录（用于标签显示 + 选择）
 import { defaultWorkDir } from '@/utils/paths'
-const workDir = ref(defaultWorkDir.value)
+// 启动时立即从 localStorage 恢复上次工作目录，避免等待 API 时显示默认值
+const workDir = ref(localStorage.getItem('aries:lastWorkDir') || defaultWorkDir.value)
 const workDirHistory = ref<string[]>([])
 const workDirLabel = computed(() => {
   if (!workDir.value) return 'work_dir'
@@ -1681,10 +1785,62 @@ const workDirLabel = computed(() => {
   return parts[parts.length - 1] || normalized
 })
 
+let workDirPollTimer: ReturnType<typeof setInterval> | null = null
+let workDirPollAttempts = 0
+
 async function loadWorkDir() {
-  await workspaceStore.initWorkDir()
-  workDir.value = workspaceStore.workDir
-  loadWorkDirHistory()
+  try {
+    await workspaceStore.initWorkDir()
+    const dir = workspaceStore.workDir
+    if (dir && dir !== defaultWorkDir.value) {
+      workDir.value = dir
+      localStorage.setItem('aries:lastWorkDir', dir)
+      loadWorkDirHistory()
+      stopWorkDirPoll()
+      return
+    }
+    // 后端返回了默认值，说明数据库可能还没初始化好，开始轮询
+    startWorkDirPoll()
+  } catch {
+    startWorkDirPoll()
+  }
+}
+
+function startWorkDirPoll() {
+  if (workDirPollTimer) return
+  workDirPollAttempts = 0
+  workDirPollTimer = setInterval(async () => {
+    workDirPollAttempts++
+    try {
+      await workspaceStore.initWorkDir()
+      const dir = workspaceStore.workDir
+      if (dir && dir !== defaultWorkDir.value) {
+        workDir.value = dir
+        localStorage.setItem('aries:lastWorkDir', dir)
+        loadWorkDirHistory()
+        stopWorkDirPoll()
+        return
+      }
+    } catch {
+      // 继续重试
+    }
+    if (workDirPollAttempts >= 30) {
+      // 超过 30 次仍无结果，用 localStorage 缓存值或默认值
+      const cached = localStorage.getItem('aries:lastWorkDir')
+      if (cached) {
+        workDir.value = cached
+      }
+      loadWorkDirHistory()
+      stopWorkDirPoll()
+    }
+  }, 800)
+}
+
+function stopWorkDirPoll() {
+  if (workDirPollTimer) {
+    clearInterval(workDirPollTimer)
+    workDirPollTimer = null
+  }
 }
 
 async function loadWorkDirHistory() {
@@ -1711,6 +1867,7 @@ function pushWorkDirHistory(path: string) {
 function onWorkDirChanged(e: Event) {
   workDir.value = (e as CustomEvent).detail || defaultWorkDir.value
   workspaceStore.setWorkDir(workDir.value)
+  if (workDir.value) localStorage.setItem('aries:lastWorkDir', workDir.value)
   loadWorkDirHistory()
 }
 
@@ -1748,6 +1905,7 @@ async function applyWorkDir(path: string) {
     workDir.value = path
     workspaceStore.setWorkDir(path)
     pendingWorkDir.value = path
+    if (path) localStorage.setItem('aries:lastWorkDir', path)
     pushWorkDirHistory(path)
     window.dispatchEvent(new CustomEvent('aries:workdir-changed', { detail: path }))
   } catch (e) {
@@ -2173,7 +2331,6 @@ function onHeaderMenuEsc(e: KeyboardEvent) {
 
 function onFocusConsole() {
   openBottomConsole()
-  window.dispatchEvent(new CustomEvent('aries:focus-console'))
 }
 
 // AI 回复中点击链接：把右侧面板展开（具体切到浏览器 tab 由 RightPanel 处理）
@@ -2260,6 +2417,7 @@ onUnmounted(() => {
   setLogEventBatchHandler(null)
   unbindSubagentLogBatch()
   clearConfirmCountdownTimer()
+  stopWorkDirPoll()
   if (healthCheckTimer) {
     clearInterval(healthCheckTimer)
     healthCheckTimer = null
@@ -2529,6 +2687,11 @@ async function sendMessage() {
   }
 
   const abortCtrl = new AbortController()
+  // 若同一 session 已有旧流（重复 send），先 abort 旧流再覆盖，避免 AbortController 引用泄漏
+  const oldEntry = activeStreams.get(sessionIdAtSend)
+  if (oldEntry) {
+    oldEntry.abortCtrl.abort()
+  }
   activeStreams.set(sessionIdAtSend, { abortCtrl, bufferedEvents: [] })
 
   try {
@@ -2546,8 +2709,21 @@ async function sendMessage() {
       if (abortCtrl.signal.aborted) break
       await handleSseEvent(sessionIdAtSend, event, data)
     }
-    // 重要：不在这里设置 isSending=false / isLoading=false
-    // 这些由 completeLogMessage() 在收到 log_complete 事件时设置
+    flushLogEventsNow()
+    // SSE 连接关闭后兜底：若 log_complete 未到达或 messageId 未匹配，仍结束 loading 态
+    if (sessionIdAtSend === currentSessionId.value) {
+      const stillLoading = messages.value.some((m) => m.role === 'assistant' && m.isLoading)
+      if (stillLoading) {
+        completeLogMessage(activeAssistantMessageId || 0)
+      }
+    } else {
+      const snapshot = loadSessionSnapshot(sessionIdAtSend)
+      if (snapshot?.isSending) {
+        completeLogMessageSnapshot(snapshot, sessionIdAtSend, snapshot.activeAssistantMessageId || 0)
+        saveSessionSnapshot(sessionIdAtSend, snapshot)
+      }
+    }
+    // 重要：isSending / isLoading 主要由 completeLogMessage(log_complete) 设置；上方为兜底
   } catch (e: any) {
     // running 错误只在发送时发生（当前 session 一定是活跃的）
     if (e?.running) {

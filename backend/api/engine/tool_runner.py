@@ -191,7 +191,7 @@ async def run_single_tool(
         todo_args = args.get("todos", [])
         merge_mode = bool(args.get("merge", False))
         updated = update_todos(session_id, todo_args, merge=merge_mode)
-        if updated and all(t.get("status") == "completed" for t in updated):
+        if updated and all(isinstance(t, dict) and t.get("status") == "completed" for t in updated):
             clear_todos(session_id)
             updated = []
             output = "任务清单已全部完成并已自动清空"
@@ -293,6 +293,14 @@ async def run_single_tool(
         else:
             store_tool_result(tool_name, args, work_dir, result)
 
+    # ===== 清理 terminal invocation 映射（防止内存泄漏） =====
+    if tool_name == "cli_executor":
+        try:
+            from services.terminal_manager import TerminalManager
+            TerminalManager.unregister_invocation_session(invocation_key)
+        except Exception:
+            pass
+
     # ===== 错误级别标记 =====
     # 工具执行超时、hook 阻断 → 软错误（回传模型继续）
     # execute_tool 抛异常且非超时 → 硬错误（标记 fatal）
@@ -315,6 +323,7 @@ def build_tool_result_event(
     round_no: int,
     result: dict | None = None,
     cached: bool = False,
+    log_payload: dict | None = None,
 ) -> dict[str, Any]:
     """构建工具结果事件。"""
     event = {
@@ -338,6 +347,10 @@ def build_tool_result_event(
         _file_change = result.get("file_change") if isinstance(result, dict) else None
         if _file_change:
             event["file_change"] = _file_change
+    if log_payload and log_payload.get("screenshot_preview"):
+        event["screenshot_preview"] = log_payload["screenshot_preview"]
+    if log_payload and log_payload.get("screenshot_path"):
+        event["screenshot_path"] = log_payload["screenshot_path"]
     return event
 
 
@@ -348,6 +361,7 @@ async def run_delegate_items(
     logger,
     cancel_event: Optional[asyncio.Event] = None,
     round_no: int = 0,
+    sse_queue: Optional[asyncio.Queue] = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """并行执行所有 delegate_to_subagent 调用。
 
@@ -425,6 +439,7 @@ async def run_delegate_items(
             on_event=_on_parallel_subagent_event,
             session_id=session_id,
             parent_tool_call_id=tool_id,
+            sse_queue=sse_queue,
         )
         if item.get("sub_isolation"):
             run_kwargs["isolation"] = item["sub_isolation"]
@@ -445,6 +460,7 @@ async def run_delegate_items(
                 break
             for item in _parallel_subagent_events_to_yield(ev):
                 yield item
+        yield {"__sse_drain": True}
 
     # drain 剩余事件
     while True:

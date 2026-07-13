@@ -244,7 +244,10 @@ def build_skill_runtime_context(entry: SkillEntry, task: str = "") -> str:
 def build_skills_context_from_entries(relevant_skills: list[SkillEntry]) -> str:
     if not relevant_skills:
         return ""
-    lines = ["【相关本地技能】", "以下技能与当前请求相关。必要时可调用 read_file 工具（传 skill_name 参数）获取完整内容。"]
+    lines = [
+        "【相关本地技能】",
+        "以下技能与当前请求相关。读取技能文档请用 read_file(skill_name=\"<目录名>\", file_path=\"SKILL.md\")，不要拼接绝对路径。",
+    ]
     for entry in relevant_skills:
         lines.append(f"- {entry.name}: {entry.description or '无描述'}")
     return "\n".join(lines).strip()

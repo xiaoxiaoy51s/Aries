@@ -7,9 +7,15 @@
         :src="src"
         alt="用户上传图片"
         class="user-image"
+        @click="openLightbox(src, '用户上传图片')"
       />
     </div>
     <div ref="contentRef" class="message-text"></div>
+    <ImageLightbox
+      v-model:open="lightboxOpen"
+      :src="lightboxSrc"
+      :alt="lightboxAlt"
+    />
   </div>
 </template>
 
@@ -17,6 +23,8 @@
 import { computed, ref, watch, onMounted } from 'vue'
 import { getIconForFile, DEFAULT_FILE } from 'vscode-icons-js'
 import { useModelStore } from '@/stores/model'
+import ImageLightbox from '@/components/ImageLightbox.vue'
+import { useImageLightbox } from '@/composables/useImageLightbox'
 
 const FILE_ICON_CDN = './file-icons'
 
@@ -46,6 +54,7 @@ const props = defineProps<{
 
 const modelStore = useModelStore()
 const contentRef = ref<HTMLDivElement>()
+const { lightboxOpen, lightboxSrc, lightboxAlt, openLightbox } = useImageLightbox()
 
 const resolvedImages = computed(() => {
   return (props.images || []).map((src) => {
@@ -523,5 +532,6 @@ onMounted(() => {
   border-radius: 10px;
   border: 1px solid var(--border);
   object-fit: cover;
+  cursor: zoom-in;
 }
 </style>

@@ -1,4 +1,5 @@
 import json
+import threading
 import uuid
 from pathlib import Path
 from typing import Optional, List
@@ -27,16 +28,24 @@ def _dict_to_config(data: dict) -> ModelConfig:
 
 
 class ModelManager:
-    def get_config(self) -> ModelConfig:
+    """模型配置管理器，带内存缓存。
+
+    缓存策略：
+    - 首次读取从磁盘加载，后续直接返回内存副本。
+    - save_config 时更新内存缓存并写盘。
+    - 通过 mtime 检测外部修改，若文件被外部更改则自动失效重载。
+    """
+
+    def __init__(self) -> None:
+        self._cache: Optional[ModelConfig] = None
+        self._cache_mtime: Optional[float] = None
+        self._lock = threading.Lock()
+
+    def _read_from_disk(self) -> Optional[ModelConfig]:
+        """从磁盘读取配置（不加锁，调用方自行加锁）。"""
         config_path = _get_config_path()
         if not config_path.exists():
-            default = _make_default_config()
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_path.write_text(
-                json.dumps(_config_to_dict(default), ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
-            return default
+            return None
         try:
             data = json.loads(config_path.read_text(encoding="utf-8"))
             # 兼容旧版只有 vision 字段的配置
@@ -50,10 +59,51 @@ class ModelManager:
             for m in config.models:
                 m.apiKey = _sanitize(m.apiKey)
                 m.baseUrl = _sanitize(m.baseUrl)
-            self.save_config(config)
             return config
         except Exception:
-            return _make_default_config()
+            return None
+
+    def get_config(self) -> ModelConfig:
+        config_path = _get_config_path()
+        with self._lock:
+            # 检查文件 mtime 是否变化（外部修改检测）
+            try:
+                current_mtime = config_path.stat().st_mtime
+            except OSError:
+                current_mtime = None
+
+            # 缓存有效且文件未被外部修改：直接返回副本
+            if (
+                self._cache is not None
+                and self._cache_mtime is not None
+                and current_mtime is not None
+                and current_mtime == self._cache_mtime
+            ):
+                return _dict_to_config(_config_to_dict(self._cache))
+
+            # 缓存失效或首次读取：从磁盘加载
+            config = self._read_from_disk()
+            if config is None:
+                # 文件不存在：创建默认配置并写盘
+                default = _make_default_config()
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                config_path.write_text(
+                    json.dumps(_config_to_dict(default), ensure_ascii=False, indent=2),
+                    encoding="utf-8"
+                )
+                self._cache = default
+                try:
+                    self._cache_mtime = config_path.stat().st_mtime
+                except OSError:
+                    self._cache_mtime = None
+                return default
+
+            self._cache = config
+            try:
+                self._cache_mtime = config_path.stat().st_mtime
+            except OSError:
+                self._cache_mtime = None
+            return _dict_to_config(_config_to_dict(config))
 
     def save_config(self, config: ModelConfig) -> None:
         config_path = _get_config_path()
@@ -62,6 +112,12 @@ class ModelManager:
             json.dumps(_config_to_dict(config), ensure_ascii=False, indent=2),
             encoding="utf-8"
         )
+        with self._lock:
+            self._cache = _dict_to_config(_config_to_dict(config))
+            try:
+                self._cache_mtime = config_path.stat().st_mtime
+            except OSError:
+                self._cache_mtime = None
 
     def list_models(self) -> List[ModelItem]:
         return self.get_config().models

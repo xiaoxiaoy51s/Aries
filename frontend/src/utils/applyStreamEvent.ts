@@ -161,6 +161,8 @@ export function applyStreamEvent(
             ...block,
             status: isAutoConfirmed && isPendingConfirm ? 'running' : newStatus,
             result: evt.data.output || '',
+            screenshot_preview: typeof evt.data.screenshot_preview === 'string' ? evt.data.screenshot_preview : block.screenshot_preview,
+            screenshot_path: typeof evt.data.screenshot_path === 'string' ? evt.data.screenshot_path : block.screenshot_path,
             ended_at: '',
             pending_confirmation: isAutoConfirmed
               ? false
@@ -290,12 +292,17 @@ export function applyStreamEvent(
     const errorMsg = typeof evt.data === 'string' ? evt.data : JSON.stringify(evt.data)
     assistantMsg.content = errorMsg
     if (!assistantMsg.blocks) assistantMsg.blocks = []
-    assistantMsg.blocks.push({
-      type: 'text',
-      text: errorMsg,
-      phase: 'answer',
-      error: errorMsg,
-    })
+    const hasSameError = assistantMsg.blocks.some(
+      (b) => b.type === 'text' && b.error && b.text === errorMsg,
+    )
+    if (!hasSameError) {
+      assistantMsg.blocks.push({
+        type: 'text',
+        text: errorMsg,
+        phase: 'answer',
+        error: errorMsg,
+      })
+    }
   }
 }
 

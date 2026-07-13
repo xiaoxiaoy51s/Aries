@@ -5,6 +5,18 @@ function getBaseUrl() {
   return store.getBaseUrl()
 }
 
+/** 飞行中 GET 请求去重：同 URL 的并发请求复用同一个 Promise */
+const _inflightGets = new Map<string, Promise<Response>>()
+function _dedupedGet(url: string): Promise<Response> {
+  const existing = _inflightGets.get(url)
+  if (existing) return existing
+  const p = fetch(url).finally(() => {
+    _inflightGets.delete(url)
+  })
+  _inflightGets.set(url, p)
+  return p
+}
+
 export interface ProjectSession {
   session_id: string
   title: string
@@ -22,19 +34,19 @@ export interface Project {
 }
 
 export async function listSessions(limit = 30) {
-  const res = await fetch(`${getBaseUrl()}/sessions/?limit=${limit}`)
+  const res = await _dedupedGet(`${getBaseUrl()}/sessions/?limit=${limit}`)
   if (!res.ok) throw new Error('获取会话列表失败')
   return res.json()
 }
 
 export async function listProjects() {
-  const res = await fetch(`${getBaseUrl()}/sessions/projects`)
+  const res = await _dedupedGet(`${getBaseUrl()}/sessions/projects`)
   if (!res.ok) throw new Error('获取项目列表失败')
   return res.json()
 }
 
 export async function getSessionMessages(sessionId: string, limit = 100) {
-  const res = await fetch(`${getBaseUrl()}/sessions/${sessionId}/messages?limit=${limit}`)
+  const res = await _dedupedGet(`${getBaseUrl()}/sessions/${sessionId}/messages?limit=${limit}`)
   if (!res.ok) throw new Error('获取消息失败')
   return res.json()
 }
@@ -76,13 +88,13 @@ export async function getSessionBootstrap(
     limit: String(limit),
     include_snapshots: 'true',
   })
-  const res = await fetch(`${getBaseUrl()}/sessions/${sessionId}/bootstrap?${params}`)
+  const res = await _dedupedGet(`${getBaseUrl()}/sessions/${sessionId}/bootstrap?${params}`)
   if (!res.ok) throw new Error('加载会话失败')
   return res.json()
 }
 
 export async function getSessionHistory(sessionId: string, limit = 20, userOnly = false) {
-  const res = await fetch(
+  const res = await _dedupedGet(
     `${getBaseUrl()}/sessions/${sessionId}/history?limit=${limit}&user_only=${userOnly}`
   )
   if (!res.ok) throw new Error('获取历史失败')
@@ -111,7 +123,7 @@ export interface ContextUsageInfo {
 }
 
 export async function getSessionContextUsage(sessionId: string): Promise<ContextUsageInfo> {
-  const res = await fetch(`${getBaseUrl()}/sessions/${sessionId}/context-usage`)
+  const res = await _dedupedGet(`${getBaseUrl()}/sessions/${sessionId}/context-usage`)
   if (!res.ok) throw new Error('获取上下文使用情况失败')
   return res.json()
 }
@@ -142,14 +154,14 @@ export async function deleteSession(sessionId: string) {
 }
 
 export async function getSession(sessionId: string) {
-  const res = await fetch(`${getBaseUrl()}/sessions/${sessionId}`)
+  const res = await _dedupedGet(`${getBaseUrl()}/sessions/${sessionId}`)
   if (!res.ok) throw new Error('获取会话详情失败')
   return res.json()
 }
 
 export async function searchMessages(query: string, limit = 30) {
   const params = new URLSearchParams({ q: query, limit: String(limit) })
-  const res = await fetch(`${getBaseUrl()}/sessions/search/messages?${params}`)
+  const res = await _dedupedGet(`${getBaseUrl()}/sessions/search/messages?${params}`)
   if (!res.ok) throw new Error('搜索消息失败')
   return res.json()
 }

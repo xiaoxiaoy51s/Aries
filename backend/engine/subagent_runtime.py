@@ -29,7 +29,7 @@ from utils.url_utils import normalize_base_url
 logger = logging.getLogger(__name__)
 
 # ---- 三道防线超时 ----
-SUBAGENT_MAX_ROUNDS = 15
+SUBAGENT_MAX_ROUNDS = 50
 SUBAGENT_TOTAL_TIMEOUT = 1800.0          # 30 分钟硬上限
 SUBAGENT_LLM_READ_TIMEOUT = 900.0
 SUBAGENT_LLM_CONNECT_TIMEOUT = 30.0
@@ -40,6 +40,56 @@ SUBAGENT_IDLE_WARN_THRESHOLD = 60.0      # 60 秒无活动 → 标记 stalled（
 REPORT_TOOL_NAME = "report_to_main"
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
+SubagentLoggerEvent = Callable[[dict[str, Any]], None]
+
+
+def build_subagent_logger_on_event(
+    sse_queue: asyncio.Queue,
+    *,
+    task_id: str,
+    log_path: str,
+    tool_call_id: str,
+    subagent_name: str,
+) -> SubagentLoggerEvent:
+    """子 Agent SessionLogger 回调：JSONL 写入后推入主 SSE 队列（subagent_log_event）。"""
+    meta = {
+        "task_id": task_id,
+        "jsonl_path": str(log_path),
+        "tool_call_id": tool_call_id or "",
+        "subagent": subagent_name,
+    }
+
+    def _on_event(event: dict[str, Any]) -> None:
+        evt_type = event.get("type")
+        try:
+            if evt_type == "log_complete":
+                sse_queue.put_nowait({"__sse_kind": "subagent_log_complete", **meta})
+            else:
+                sse_queue.put_nowait({"__sse_kind": "subagent_log_event", **meta, "event": event})
+        except Exception:
+            pass
+
+    return _on_event
+
+
+def emit_subagent_log_started(
+    sse_queue: asyncio.Queue,
+    *,
+    task_id: str,
+    log_path: str,
+    tool_call_id: str,
+    subagent_name: str,
+) -> None:
+    try:
+        sse_queue.put_nowait({
+            "__sse_kind": "subagent_log_started",
+            "task_id": task_id,
+            "jsonl_path": str(log_path),
+            "tool_call_id": tool_call_id or "",
+            "subagent": subagent_name,
+        })
+    except Exception:
+        pass
 
 
 # 全局取消注册表：task_id -> cancel_event
@@ -411,6 +461,7 @@ async def run_subagent(
     isolation: str = "",
     session_id: str | None = None,
     parent_tool_call_id: str | None = None,
+    sse_queue: asyncio.Queue | None = None,
 ) -> dict[str, Any]:
     """执行一次子 Agent 任务。
 
@@ -474,10 +525,31 @@ async def run_subagent(
 
     # 3. 准备独立 SessionLogger（子 Agent 专属 JSONL）
     log_path = get_subagent_jsonl_path(task_id)
-    sub_logger = SessionLogger(session_id=f"sub_agent_{task_id}", message_id="run")
+    on_logger_event = None
+    if sse_queue is not None:
+        on_logger_event = build_subagent_logger_on_event(
+            sse_queue,
+            task_id=task_id,
+            log_path=str(log_path),
+            tool_call_id=parent_tool_call_id or "",
+            subagent_name=subagent_name,
+        )
+    sub_logger = SessionLogger(
+        session_id=f"sub_agent_{task_id}",
+        message_id="run",
+        on_event=on_logger_event,
+    )
     sub_logger.path = log_path  # 直接覆盖路径到 sub_agent 目录
     sub_logger.set_model(real_model)
     execution.log_path = str(log_path)
+    if sse_queue is not None:
+        emit_subagent_log_started(
+            sse_queue,
+            task_id=task_id,
+            log_path=str(log_path),
+            tool_call_id=parent_tool_call_id or "",
+            subagent_name=subagent_name,
+        )
 
     # 4. 构造工具集：核心 + skills + 过滤后的 MCP + report_to_main
     #    显式不暴露 delegate_to_subagent，防止递归
