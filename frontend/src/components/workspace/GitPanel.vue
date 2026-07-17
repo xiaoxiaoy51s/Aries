@@ -1,14 +1,37 @@
 <template>
   <div class="git-panel">
     <div class="git-toolbar">
-      <div class="git-branch">
+      <div
+        v-if="isRepo"
+        class="git-branch-selector"
+        :class="{ expanded: branchDropdownVisible }"
+        @click.stop="toggleBranchDropdown"
+         title="点击查看分支列表"
+      >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/>
           <path d="M6 9v6M9 6h6a3 3 0 0 1 3 3v0"/>
         </svg>
-        <span class="branch-name">{{ branch || (isRepo ? 'unknown' : '未初始化仓库') }}</span>
+        <span class="branch-name">{{ branch || 'unknown' }}</span>
+        <svg class="dropdown-arrow" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M6 9l6 6 6-6"/>
+        </svg>
+      </div>
+      <div v-else class="git-branch-selector">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/>
+          <path d="M6 9v6M9 6h6a3 3 0 0 1 3 3v0"/>
+        </svg>
+        <span class="branch-name">未初始化仓库</span>
       </div>
       <template v-if="isRepo">
+        <button type="button" class="git-text-btn" :class="{ active: branchDropdownVisible }" title="Branches" @click.stop="toggleBranchDropdown">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/>
+            <path d="M6 9v6M9 6h6a3 3 0 0 1 3 3v0"/>
+          </svg>
+          Branches
+        </button>
         <button type="button" class="git-btn" title="刷新" @click="refresh">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 3v6h6"/>
@@ -32,6 +55,63 @@
           </svg>
         </button>
       </template>
+    </div>
+
+    <!-- 分支下拉列表 -->
+    <div v-if="branchDropdownVisible && isRepo" class="git-branch-dropdown">
+      <div class="branch-dropdown-header">
+        <span class="branch-dropdown-title">Branches</span>
+        <button type="button" class="branch-create-btn" @click="startCreateBranch">New Branch</button>
+      </div>
+      <div class="branch-list">
+        <div
+          v-for="b in allBranches"
+          :key="b.name"
+          class="branch-item"
+          :class="{ active: b.name === branch, remote: b.isRemote }"
+          @click="checkoutBranch(b.name)"
+          @contextmenu.prevent="showBranchContextMenu($event, b)"
+        >
+          <svg
+            v-if="b.name === branch"
+            class="branch-check-icon"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M20 6L9 17l-5-5"/>
+          </svg>
+          <svg
+            v-else-if="b.isRemote"
+            class="branch-remote-icon"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><path d="M2 12h3M19 12h3"/>
+          </svg>
+          <svg
+            v-else
+            class="branch-local-icon"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/>
+            <path d="M6 9v6M9 6h6a3 3 0 0 1 3 3v0"/>
+          </svg>
+          <span class="branch-item-name" :title="b.name">{{ b.name }}</span>
+        </div>
+      </div>
     </div>
 
     <div class="git-body">
@@ -121,6 +201,7 @@
                 class="git-commit-item"
                 :class="{ expanded: expandedCommit === c.hash }"
                 @click="toggleCommit(c.hash)"
+                @contextmenu.prevent="showCommitContextMenu($event, c)"
               >
                 <div class="git-commit-left">
                   <div class="git-commit-dot" :class="{ 'git-commit-dot-head': idx === 0 }"></div>
@@ -163,11 +244,119 @@
         </div>
       </template>
     </div>
+
+    <!-- 提交右键菜单 -->
+    <Teleport to="body">
+      <div
+        v-if="commitContextMenu.visible"
+        class="git-context-menu"
+        :style="{ left: commitContextMenu.x + 'px', top: commitContextMenu.y + 'px' }"
+        @click.stop
+      >
+        <div class="ctx-item" @click="openCommitOnGithub">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+          Open on GitHub
+        </div>
+        <div class="ctx-item" @click="copyCommitHash">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          Copy commit ID
+        </div>
+        <div class="ctx-item" @click="copyCommitMessage">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          Copy commit message
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 分支右键菜单 -->
+    <Teleport to="body">
+      <div
+        v-if="branchContextMenu.visible"
+        class="git-context-menu"
+        :style="{ left: branchContextMenu.x + 'px', top: branchContextMenu.y + 'px' }"
+        @click.stop
+      >
+        <div class="ctx-item" @click="checkoutBranchFromMenu">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M6 9v6M9 6h6a3 3 0 0 1 3 3v0"/></svg>
+          Checkout
+        </div>
+        <div class="ctx-item" @click="createBranchFrom">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          New branch from...
+        </div>
+        <div class="ctx-divider"></div>
+        <div class="ctx-item" @click="mergeBranchIntoCurrent">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="12" r="3"/><path d="M6 9v6M9 6h6a3 3 0 0 1 3 3v0"/></svg>
+          Merge into current
+        </div>
+        <div class="ctx-item" @click="pushBranch">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21V9M7 14l5-5 5 5M5 3h14"/></svg>
+          Push...
+        </div>
+        <div class="ctx-item" @click="pullBranch">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+          Pull
+        </div>
+        <div class="ctx-divider"></div>
+        <div class="ctx-item" @click="renameBranch">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          Rename...
+        </div>
+        <div class="ctx-item ctx-item-danger" @click="deleteBranch">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          Delete
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 新建分支弹窗 -->
+    <Teleport to="body">
+      <div v-if="createBranchModal.visible" class="modal-overlay" @click="closeCreateBranchModal">
+        <div class="modal-dialog" @click.stop>
+          <div class="modal-header">{{ createBranchModal.fromBranch ? `New branch from '${createBranchModal.fromBranch}'` : 'New Branch' }}</div>
+          <div class="modal-body">
+            <input
+              v-model="createBranchModal.name"
+              type="text"
+              class="form-input"
+              placeholder="Enter branch name"
+              @keyup.enter="confirmCreateBranch"
+            />
+          </div>
+          <div class="modal-footer">
+            <button class="modal-btn modal-btn-cancel" @click="closeCreateBranchModal">Cancel</button>
+            <button class="modal-btn modal-btn-primary" :disabled="!createBranchModal.name.trim()" @click="confirmCreateBranch">Create</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 重命名分支弹窗 -->
+    <Teleport to="body">
+      <div v-if="renameBranchModal.visible" class="modal-overlay" @click="closeRenameBranchModal">
+        <div class="modal-dialog" @click.stop>
+          <div class="modal-header">Rename Branch</div>
+          <div class="modal-body">
+            <input
+              v-model="renameBranchModal.newName"
+              type="text"
+              class="form-input"
+              placeholder="Enter new branch name"
+              @keyup.enter="confirmRenameBranch"
+            />
+          </div>
+          <div class="modal-footer">
+            <button class="modal-btn modal-btn-cancel" @click="closeRenameBranchModal">Cancel</button>
+            <button class="modal-btn modal-btn-primary" :disabled="!renameBranchModal.newName.trim()" @click="confirmRenameBranch">Rename</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useModelStore } from '@/stores/model'
 import { storeToRefs } from 'pinia'
@@ -221,6 +410,50 @@ const historyHeight = ref(200)
 const expandedCommit = ref<string | null>(null)
 const commitFiles = ref<Record<string, { path: string; status: string }[]>>({})
 
+// 右键菜单
+const commitContextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  commit: null as GitCommit | null,
+})
+const remoteUrl = ref<string | null>(null)
+
+// 分支
+interface BranchInfo {
+  name: string
+  isRemote: boolean
+}
+
+const branchDropdownVisible = ref(false)
+const localBranches = ref<string[]>([])
+const remoteBranches = ref<string[]>([])
+const allBranches = computed(() => {
+  const list: BranchInfo[] = []
+  localBranches.value.forEach((name) => list.push({ name, isRemote: false }))
+  remoteBranches.value.forEach((name) => list.push({ name, isRemote: true }))
+  return list
+})
+
+const branchContextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  branch: null as BranchInfo | null,
+})
+
+const createBranchModal = ref({
+  visible: false,
+  fromBranch: '',
+  name: '',
+})
+
+const renameBranchModal = ref({
+  visible: false,
+  oldName: '',
+  newName: '',
+})
+
 // 拖动调整历史记录区域高度
 let resizingHistory = false
 let startY = 0
@@ -266,9 +499,11 @@ async function refresh() {
       branch.value = data.branch || ''
     }
     if (isRepo.value) {
-      const [statusRes, logRes] = await Promise.all([
+      const [statusRes, logRes, branchesRes, remoteBranchesRes] = await Promise.all([
         fetch(`${getBaseUrl()}/git/status?work_dir=${encodeURIComponent(workDir.value)}`),
         fetch(`${getBaseUrl()}/git/log?work_dir=${encodeURIComponent(workDir.value)}&limit=30`),
+        fetch(`${getBaseUrl()}/git/branches?work_dir=${encodeURIComponent(workDir.value)}`),
+        fetch(`${getBaseUrl()}/git/remote-branches?work_dir=${encodeURIComponent(workDir.value)}`),
       ])
       if (statusRes.ok) {
         const data = await statusRes.json()
@@ -281,9 +516,23 @@ async function refresh() {
         const data = await logRes.json()
         commits.value = data.commits || []
       }
+      if (branchesRes.ok) {
+        const data = await branchesRes.json()
+        localBranches.value = (data.branches || []).filter((name: string) => name !== branch.value)
+        // 当前分支放最前面
+        if (branch.value) {
+          localBranches.value.unshift(branch.value)
+        }
+      }
+      if (remoteBranchesRes.ok) {
+        const data = await remoteBranchesRes.json()
+        remoteBranches.value = data.branches || []
+      }
     } else {
       files.value = []
       commits.value = []
+      localBranches.value = []
+      remoteBranches.value = []
     }
   } catch (e) {
     console.error('Git 状态获取失败', e)
@@ -357,12 +606,322 @@ async function push() {
 function showGitError(data: any, action: string) {
   if (data.auth_error) {
     if (!data.github_connected) {
-      alert(`${action}失败：未连接 GitHub。\n\n请到「设置 → 账号绑定 → GitHub」中连接你的 GitHub 账号。`)
+      alert(`${action} failed: GitHub not connected.\n\nPlease connect your GitHub account in Settings -> Account Binding -> GitHub.`)
     } else {
-      alert(`${action}失败：GitHub 认证失败，Token 可能已过期。\n\n请到「设置 → 账号绑定 → GitHub」中重新连接。`)
+      alert(`${action} failed: GitHub authentication failed. Token may have expired.\n\nPlease reconnect your GitHub account in Settings -> Account Binding -> GitHub.`)
     }
   } else {
-    alert(`${action}失败：${data.message}`)
+    alert(`${action} failed: ${data.message}`)
+  }
+}
+
+// ---------- 提交右键菜单 ----------
+
+function showCommitContextMenu(e: MouseEvent, commit: GitCommit) {
+  commitContextMenu.value = {
+    visible: true,
+    x: e.clientX,
+    y: e.clientY,
+    commit,
+  }
+}
+
+function hideContextMenu() {
+  commitContextMenu.value.visible = false
+  branchContextMenu.value.visible = false
+  branchDropdownVisible.value = false
+}
+
+async function openCommitOnGithub() {
+  const commit = commitContextMenu.value.commit
+  hideContextMenu()
+  if (!commit) return
+
+  // 如果还没获取 remoteUrl，先获取
+  if (remoteUrl.value === null && workDir.value) {
+    try {
+      const res = await fetch(`${getBaseUrl()}/git/remote-url?work_dir=${encodeURIComponent(workDir.value)}`)
+      const data = await res.json()
+      remoteUrl.value = data.url
+    } catch {
+      remoteUrl.value = null
+    }
+  }
+
+  if (!remoteUrl.value) {
+    alert('No remote repository URL found, cannot open on GitHub.')
+    return
+  }
+
+  const url = `${remoteUrl.value}/commit/${commit.hash}`
+  const electronAPI = (window as any).electronAPI
+  if (electronAPI?.openExternal) {
+    electronAPI.openExternal(url)
+  } else {
+    window.open(url, '_blank')
+  }
+}
+
+async function copyCommitHash() {
+  const commit = commitContextMenu.value.commit
+  hideContextMenu()
+  if (!commit) return
+  await navigator.clipboard.writeText(commit.hash)
+}
+
+async function copyCommitMessage() {
+  const commit = commitContextMenu.value.commit
+  hideContextMenu()
+  if (!commit) return
+  await navigator.clipboard.writeText(commit.message)
+}
+
+// ---------- 分支操作 ----------
+
+function toggleBranchDropdown() {
+  branchDropdownVisible.value = !branchDropdownVisible.value
+}
+
+function hideBranchDropdown() {
+  branchDropdownVisible.value = false
+}
+
+function showBranchContextMenu(e: MouseEvent, branchInfo: BranchInfo) {
+  branchContextMenu.value = {
+    visible: true,
+    x: e.clientX,
+    y: e.clientY,
+    branch: branchInfo,
+  }
+}
+
+function hideBranchContextMenu() {
+  branchContextMenu.value.visible = false
+}
+
+async function checkoutBranch(name: string) {
+  if (!workDir.value || name === branch.value) return
+  try {
+    const res = await fetch(`${getBaseUrl()}/git/checkout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ work_dir: workDir.value, branch: name }),
+    })
+    const data = await res.json()
+    if (data.success) {
+      branchDropdownVisible.value = false
+      await refresh()
+    } else {
+      alert(`Checkout failed: ${data.message}`)
+    }
+  } catch (e) {
+    console.error('切换分支失败', e)
+  }
+}
+
+async function checkoutBranchFromMenu() {
+  const b = branchContextMenu.value.branch
+  hideBranchContextMenu()
+  if (!b) return
+  await checkoutBranch(b.name)
+}
+
+function startCreateBranch() {
+  createBranchModal.value = {
+    visible: true,
+    fromBranch: '',
+    name: '',
+  }
+  branchDropdownVisible.value = false
+}
+
+function createBranchFrom() {
+  const b = branchContextMenu.value.branch
+  hideBranchContextMenu()
+  if (!b) return
+  createBranchModal.value = {
+    visible: true,
+    fromBranch: b.name,
+    name: '',
+  }
+}
+
+function closeCreateBranchModal() {
+  createBranchModal.value.visible = false
+}
+
+async function confirmCreateBranch() {
+  if (!workDir.value || !createBranchModal.value.name.trim()) return
+  try {
+    const res = await fetch(`${getBaseUrl()}/git/create-branch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        work_dir: workDir.value,
+        name: createBranchModal.value.name.trim(),
+        checkout: true,
+      }),
+    })
+    const data = await res.json()
+    if (data.success) {
+      closeCreateBranchModal()
+      await refresh()
+    } else {
+      alert(`Create branch failed: ${data.message}`)
+    }
+  } catch (e) {
+    console.error('创建分支失败', e)
+  }
+}
+
+async function mergeBranchIntoCurrent() {
+  const b = branchContextMenu.value.branch
+  hideBranchContextMenu()
+  if (!b || !workDir.value) return
+  if (b.name === branch.value) {
+    alert('Cannot merge a branch into itself')
+    return
+  }
+  if (!confirm(`Merge '${b.name}' into current branch '${branch.value}'?`)) return
+  try {
+    const res = await fetch(`${getBaseUrl()}/git/merge-branch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ work_dir: workDir.value, branch: b.name }),
+    })
+    const data = await res.json()
+    if (data.success) {
+      await refresh()
+    } else {
+      alert(`Merge failed: ${data.message}`)
+    }
+  } catch (e) {
+    console.error('Merge branch failed', e)
+  }
+}
+
+async function pushBranch() {
+  const b = branchContextMenu.value.branch
+  hideBranchContextMenu()
+  if (!b || !workDir.value) return
+  const isRemote = b.isRemote
+  const branchName = isRemote ? b.name.replace(/^origin\//, '') : b.name
+  if (!confirm(`Push branch '${branchName}' to origin?`)) return
+  try {
+    const res = await fetch(`${getBaseUrl()}/git/push-branch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        work_dir: workDir.value,
+        branch: branchName,
+        set_upstream: !isRemote,
+      }),
+    })
+    const data = await res.json()
+    if (data.success) {
+      await refresh()
+    } else {
+      if (data.auth_error) {
+        showGitError(data, 'Push')
+      } else {
+        alert(`Push failed: ${data.message}`)
+      }
+    }
+  } catch (e) {
+    console.error('Push branch failed', e)
+  }
+}
+
+async function pullBranch() {
+  const b = branchContextMenu.value.branch
+  hideBranchContextMenu()
+  if (!b || !workDir.value) return
+  const branchName = b.isRemote ? b.name.replace(/^origin\//, '') : b.name
+  try {
+    const res = await fetch(`${getBaseUrl()}/git/pull`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ work_dir: workDir.value }),
+    })
+    const data = await res.json()
+    if (!data.success) {
+      if (data.auth_error) {
+        showGitError(data, 'Pull')
+      } else {
+        alert(`Pull failed: ${data.message}`)
+      }
+    }
+    await refresh()
+  } catch (e) {
+    console.error('Pull failed', e)
+  }
+}
+
+function renameBranch() {
+  const b = branchContextMenu.value.branch
+  hideBranchContextMenu()
+  if (!b || b.isRemote) return
+  renameBranchModal.value = {
+    visible: true,
+    oldName: b.name,
+    newName: '',
+  }
+}
+
+function closeRenameBranchModal() {
+  renameBranchModal.value.visible = false
+}
+
+async function confirmRenameBranch() {
+  if (!workDir.value || !renameBranchModal.value.newName.trim()) return
+  try {
+    const res = await fetch(`${getBaseUrl()}/git/rename-branch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        work_dir: workDir.value,
+        old_name: renameBranchModal.value.oldName,
+        new_name: renameBranchModal.value.newName.trim(),
+      }),
+    })
+    const data = await res.json()
+    if (data.success) {
+      closeRenameBranchModal()
+      await refresh()
+    } else {
+      alert(`Rename failed: ${data.message}`)
+    }
+  } catch (e) {
+    console.error('Rename branch failed', e)
+  }
+}
+
+async function deleteBranch() {
+  const b = branchContextMenu.value.branch
+  hideBranchContextMenu()
+  if (!b || !workDir.value) return
+  if (b.isRemote) {
+    alert('Deleting remote branches is not supported yet')
+    return
+  }
+  if (b.name === branch.value) {
+    alert('Cannot delete the current branch')
+    return
+  }
+  if (!confirm(`Delete branch '${b.name}'?`)) return
+  try {
+    const res = await fetch(
+      `${getBaseUrl()}/git/branch?work_dir=${encodeURIComponent(workDir.value)}&branch=${encodeURIComponent(b.name)}`,
+      { method: 'DELETE' }
+    )
+    const data = await res.json()
+    if (data.success) {
+      await refresh()
+    } else {
+      alert(`Delete failed: ${data.message}`)
+    }
+  } catch (e) {
+    console.error('Delete branch failed', e)
   }
 }
 
@@ -405,10 +964,18 @@ function selectCommitFile(path: string, hash: string) {
   emit('showCommitDiff', path, hash)
 }
 
-watch(workDir, () => refresh())
+watch(workDir, () => {
+  remoteUrl.value = null
+  refresh()
+})
 
 onMounted(() => {
+  document.addEventListener('click', hideContextMenu)
   if (props.visible) refresh()
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', hideContextMenu)
 })
 
 watch(() => props.visible, (val) => {
@@ -426,6 +993,7 @@ watch(() => props.visible, (val) => {
 }
 
 .git-toolbar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -436,21 +1004,46 @@ watch(() => props.visible, (val) => {
   min-height: 32px;
 }
 
-.git-branch {
+.git-branch-selector {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 0 8px;
+  gap: 6px;
+  padding: 4px 10px;
   font-size: 12px;
-  color: var(--text-secondary);
+  color: var(--text, #333);
+  background: #fff;
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: 6px;
   flex: 1;
   min-width: 0;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s;
+}
+
+.git-branch-selector:hover {
+  background: var(--accent-hover, #f0f0f0);
+}
+
+.git-branch-selector.expanded {
+  background: var(--accent-active, #e0e0e0);
+  border-color: var(--border-strong, #ccc);
 }
 
 .branch-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 500;
+}
+
+.dropdown-arrow {
+  margin-left: auto;
+  transition: transform 0.15s;
+}
+
+.git-branch-selector.expanded .dropdown-arrow {
+  transform: rotate(180deg);
 }
 
 .git-btn {
@@ -471,6 +1064,32 @@ watch(() => props.visible, (val) => {
 .git-btn:hover {
   background: var(--accent-hover);
   color: var(--text);
+}
+
+.git-text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.git-text-btn:hover {
+  background: var(--accent-hover, #f0f0f0);
+  color: var(--text, #333);
+}
+
+.git-text-btn.active {
+  background: var(--accent-active, #e0e0e0);
+  color: var(--text, #333);
 }
 
 .git-body {
@@ -817,5 +1436,209 @@ watch(() => props.visible, (val) => {
   font-size: 11px;
   color: var(--text-muted);
   font-family: monospace;
+}
+
+/* ---------- 右键菜单 ---------- */
+.git-context-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 160px;
+  background: var(--bg-panel, #fff);
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  padding: 4px;
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text, #333);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.ctx-item:hover {
+  background: var(--accent-hover, #f0f0f0);
+}
+
+.ctx-item svg {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.ctx-item-danger {
+  color: #991b1b;
+}
+
+.ctx-item-danger:hover {
+  background: #fee2e2;
+}
+
+.ctx-divider {
+  height: 1px;
+  background: var(--border, #e0e0e0);
+  margin: 4px 0;
+}
+
+/* ---------- 分支下拉 ---------- */
+.git-branch-dropdown {
+  position: absolute;
+  top: 36px;
+  left: 8px;
+  min-width: 220px;
+  max-width: 320px;
+  max-height: 360px;
+  background: var(--bg-panel, #fff);
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+}
+
+.branch-dropdown-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border, #e0e0e0);
+}
+
+.branch-dropdown-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.branch-create-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+  color: #2d7a4f;
+  background: transparent;
+  border: 1px solid #b8dfc8;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.branch-create-btn:hover {
+  background: #e8f5ee;
+}
+
+.branch-list {
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.branch-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text, #333);
+}
+
+.branch-item:hover {
+  background: var(--accent-hover, #f0f0f0);
+}
+
+.branch-item.active {
+  color: #2d7a4f;
+  background: #e8f5ee;
+}
+
+.branch-item.remote {
+  color: var(--text-secondary, #666);
+}
+
+.branch-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-check-icon,
+.branch-local-icon,
+.branch-remote-icon {
+  flex-shrink: 0;
+}
+
+/* ---------- 弹窗 ---------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10001;
+}
+
+.modal-dialog {
+  background: var(--bg-panel, #fff);
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: 8px;
+  min-width: 280px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.modal-header {
+  padding: 14px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border, #e0e0e0);
+}
+
+.modal-body {
+  padding: 16px;
+}
+
+.modal-body .form-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.modal-footer {
+  padding: 12px 16px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--border, #e0e0e0);
+}
+
+.modal-btn {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.modal-btn-cancel {
+  background: var(--accent-hover, #f0f0f0);
+  color: var(--text, #333);
+}
+
+.modal-btn-primary {
+  background: #2d7a4f;
+  color: #fff;
+}
+
+.modal-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>

@@ -42,6 +42,25 @@ class MergeBranchRequest(BaseModel):
     no_ff: bool = False
 
 
+class RenameBranchRequest(BaseModel):
+    work_dir: str
+    old_name: str
+    new_name: str
+
+
+class DeleteBranchRequest(BaseModel):
+    work_dir: str
+    branch: str
+    force: bool = False
+
+
+class PushBranchRequest(BaseModel):
+    work_dir: str
+    branch: str
+    remote: str = "origin"
+    set_upstream: bool = False
+
+
 def _run_git(work_dir: str, args: list[str]) -> tuple[int, str, str]:
     """执行 git 命令，返回 (returncode, stdout, stderr)。"""
     try:
@@ -395,6 +414,105 @@ async def git_merge_branch(req: MergeBranchRequest) -> dict[str, Any]:
     return {"success": True, "message": stdout.strip()}
 
 
+@router.post("/rename-branch")
+async def git_rename_branch(req: RenameBranchRequest) -> dict[str, Any]:
+    """重命名分支。"""
+    wd = _normalize_work_dir(req.work_dir)
+    old_name = (req.old_name or "").strip()
+    new_name = (req.new_name or "").strip()
+
+    if not old_name or not new_name:
+        return {"success": False, "message": "old_name and new_name are required"}
+
+    code, stdout, stderr = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _run_git(wd, ["branch", "-m", old_name, new_name])
+    )
+    if code != 0:
+        return {
+            "success": False,
+            "message": stderr.strip() or stdout.strip() or "rename branch failed",
+        }
+    return {"success": True, "message": stdout.strip() or stderr.strip()}
+
+
+@router.delete("/branch")
+async def git_delete_branch(
+    work_dir: str,
+    branch: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    """删除本地分支。"""
+    wd = _normalize_work_dir(work_dir)
+    branch_name = (branch or "").strip()
+    if not branch_name:
+        return {"success": False, "message": "branch is required"}
+
+    args = ["branch", "-D" if force else "-d", branch_name]
+    code, stdout, stderr = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _run_git(wd, args)
+    )
+    if code != 0:
+        return {
+            "success": False,
+            "message": stderr.strip() or stdout.strip() or "delete branch failed",
+        }
+    return {"success": True, "message": stdout.strip() or stderr.strip()}
+
+
+@router.post("/push-branch")
+async def git_push_branch(req: PushBranchRequest) -> dict[str, Any]:
+    """推送指定分支到远程。自动使用 GitHub token 认证。"""
+    wd = _normalize_work_dir(req.work_dir)
+    branch = (req.branch or "").strip()
+    remote = (req.remote or "origin").strip()
+    if not branch:
+        return {"success": False, "message": "branch is required"}
+
+    args = ["push"]
+    if req.set_upstream:
+        args.append("-u")
+    args.extend([remote, branch])
+
+    code, stdout, stderr = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _run_git_with_auth(wd, args)
+    )
+    if code != 0:
+        msg = stderr.strip() or stdout.strip() or "push branch failed"
+        return {
+            "success": False,
+            "message": msg,
+            "auth_error": _is_auth_error(msg),
+            "github_connected": _load_github_token() is not None,
+        }
+    return {"success": True, "message": stdout.strip()}
+
+
+@router.get("/remote-branches")
+async def git_remote_branches(work_dir: str | None = None) -> dict[str, Any]:
+    """列出远程分支。"""
+    wd = _normalize_work_dir(work_dir)
+
+    code, _, _ = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _run_git(wd, ["rev-parse", "--git-dir"])
+    )
+    if code != 0:
+        return {"is_repo": False, "branches": []}
+
+    code, stdout, _ = await asyncio.get_event_loop().run_in_executor(
+        None,
+        lambda: _run_git(wd, ["branch", "-r", "--format=%(refname:short)"]),
+    )
+
+    branches: list[str] = []
+    if code == 0:
+        for line in stdout.splitlines():
+            name = line.strip()
+            if name and not name.endswith("/HEAD"):
+                branches.append(name)
+
+    return {"is_repo": True, "branches": branches}
+
+
 # --- 二进制 / 图片 文件展示支持 -------------------------------------------------
 
 _IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico"}
@@ -578,6 +696,24 @@ async def git_init(req: GitActionRequest) -> dict[str, Any]:
     if code != 0:
         return {"success": False, "message": stderr.strip() or stdout.strip() or "init failed"}
     return {"success": True, "message": stdout.strip()}
+
+
+@router.get("/remote-url")
+async def git_remote_url(work_dir: str | None = None) -> dict[str, Any]:
+    """获取远程仓库 URL（用于拼接 GitHub 链接）。"""
+    wd = _normalize_work_dir(work_dir)
+    code, stdout, _ = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _run_git(wd, ["remote", "get-url", "origin"])
+    )
+    if code != 0:
+        return {"url": None}
+    url = stdout.strip()
+    # 把 git@github.com:user/repo.git 转成 https://github.com/user/repo
+    if url.startswith("git@github.com:"):
+        url = "https://github.com/" + url[len("git@github.com:"):]
+    if url.endswith(".git"):
+        url = url[:-4]
+    return {"url": url}
 
 
 @router.get("/log")
