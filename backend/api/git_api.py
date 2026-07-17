@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/git", tags=["git"])
+
+_GITHUB_CONFIG_PATH = Path.home() / ".Aries" / "github_config.json"
 
 
 class CommitRequest(BaseModel):
@@ -58,6 +61,64 @@ def _run_git(work_dir: str, args: list[str]) -> tuple[int, str, str]:
         return -1, "", "git not found"
     except Exception as e:
         return -1, "", str(e)
+
+
+def _load_github_token() -> str | None:
+    """从 ~/.Aries/github_config.json 加载 GitHub token。"""
+    if not _GITHUB_CONFIG_PATH.exists():
+        return None
+    try:
+        config = json.loads(_GITHUB_CONFIG_PATH.read_text(encoding="utf-8"))
+        return config.get("token")
+    except Exception:
+        return None
+
+
+def _run_git_with_auth(work_dir: str, args: list[str]) -> tuple[int, str, str]:
+    """执行需要远程认证的 git 命令（push/pull/fetch），自动注入 GitHub token。
+
+    通过 git credential.helper 内联返回 token，无需 SSH key，不落盘。
+    """
+    token = _load_github_token()
+
+    if token:
+        # 用 -c 注入 credential.helper，内联返回 token
+        cred_helper = f'!f() {{ echo "username=x-access-token"; echo "password={token}"; }}; f'
+        full_args = ["-c", f"credential.helper={cred_helper}"] + args
+    else:
+        full_args = args
+
+    try:
+        result = subprocess.run(
+            ["git"] + full_args,
+            cwd=work_dir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+        )
+        return result.returncode, result.stdout, result.stderr
+    except subprocess.TimeoutExpired:
+        return -1, "", "git command timed out"
+    except FileNotFoundError:
+        return -1, "", "git not found"
+    except Exception as e:
+        return -1, "", str(e)
+
+
+def _is_auth_error(stderr: str) -> bool:
+    """判断 git 错误是否与认证相关。"""
+    keywords = [
+        "Authentication failed",
+        "could not read Username",
+        "Invalid username or token",
+        "Permission denied",
+        "fatal: could not read Password",
+        "requests to GitHub",
+        "rate limit",
+    ]
+    return any(kw.lower() in stderr.lower() for kw in keywords)
 
 
 def _normalize_work_dir(work_dir: str | None) -> str:
@@ -473,25 +534,37 @@ async def git_commit(req: CommitRequest) -> dict[str, Any]:
 
 @router.post("/pull")
 async def git_pull(req: GitActionRequest) -> dict[str, Any]:
-    """拉取远程更新。"""
+    """拉取远程更新，自动使用已连接的 GitHub token 认证。"""
     wd = _normalize_work_dir(req.work_dir)
     code, stdout, stderr = await asyncio.get_event_loop().run_in_executor(
-        None, lambda: _run_git(wd, ["pull"])
+        None, lambda: _run_git_with_auth(wd, ["pull"])
     )
     if code != 0:
-        return {"success": False, "message": stderr.strip() or stdout.strip() or "pull failed"}
+        msg = stderr.strip() or stdout.strip() or "pull failed"
+        return {
+            "success": False,
+            "message": msg,
+            "auth_error": _is_auth_error(msg),
+            "github_connected": _load_github_token() is not None,
+        }
     return {"success": True, "message": stdout.strip()}
 
 
 @router.post("/push")
 async def git_push(req: GitActionRequest) -> dict[str, Any]:
-    """推送到远程。"""
+    """推送到远程，自动使用已连接的 GitHub token 认证。"""
     wd = _normalize_work_dir(req.work_dir)
     code, stdout, stderr = await asyncio.get_event_loop().run_in_executor(
-        None, lambda: _run_git(wd, ["push"])
+        None, lambda: _run_git_with_auth(wd, ["push"])
     )
     if code != 0:
-        return {"success": False, "message": stderr.strip() or stdout.strip() or "push failed"}
+        msg = stderr.strip() or stdout.strip() or "push failed"
+        return {
+            "success": False,
+            "message": msg,
+            "auth_error": _is_auth_error(msg),
+            "github_connected": _load_github_token() is not None,
+        }
     return {"success": True, "message": stdout.strip()}
 
 

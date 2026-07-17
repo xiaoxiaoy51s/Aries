@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, screen, dialog, Tray, nativeImage } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, screen, dialog, Tray, nativeImage, shell } = require('electron')
 const path = require('path')
 const { spawn, spawnSync } = require('child_process')
 const http = require('http')
@@ -663,6 +663,13 @@ ipcMain.handle('dialog:select-file', async (event, opts = {}) => {
     return { path: null, paths: [], cancelled: true }
   }
   return { path: result.filePaths[0], paths: result.filePaths, cancelled: false }
+})
+
+// 使用系统默认浏览器打开外部链接
+ipcMain.handle('shell:open-external', async (event, url) => {
+  if (!url || typeof url !== 'string') return { success: false }
+  await shell.openExternal(url)
+  return { success: true }
 })
 
 // ---------- 自动更新 (electron-updater) ----------

@@ -43,6 +43,41 @@
             </template>
           </div>
         </div>
+
+        <!-- GitHub 卡片 -->
+        <div class="account-item github-item">
+          <div class="account-icon github">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+            </svg>
+          </div>
+          <div class="account-info">
+            <span class="account-name">GitHub</span>
+            <span class="account-status" :class="{ bound: githubStore.status.connected }">
+              {{ githubStore.status.connected ? `已连接 @${githubStore.status.username}` : '未连接' }}
+            </span>
+          </div>
+          <div class="account-actions">
+            <button
+              v-if="!githubStore.status.connected"
+              type="button"
+              class="bind-btn"
+              @click="openConfigPanel('github')"
+              :disabled="githubStore.loading"
+            >
+              连接
+            </button>
+            <template v-else>
+              <button
+                type="button"
+                class="bind-btn"
+                @click="openGithubSettings()"
+              >
+                设置
+              </button>
+            </template>
+          </div>
+        </div>
       </div>
     </template>
 
@@ -107,6 +142,83 @@
       </div>
     </div>
 
+    <!-- GitHub 配置面板 -->
+    <div v-if="configPanel === 'github'" class="config-panel">
+      <div class="config-panel-header">
+        <button type="button" class="back-btn" @click="closeConfigPanel">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h3>GitHub 连接</h3>
+      </div>
+
+      <!-- PAT 方式 -->
+      <div class="github-pat-section">
+        <div class="auth-method-header">
+          <span class="auth-method-title">Personal Access Token</span>
+          <span class="auth-method-desc">粘贴 GitHub Token 以便 git push/pull 免密</span>
+        </div>
+        <div class="pat-form">
+          <input
+            v-model="githubPatToken"
+            type="password"
+            class="form-input"
+            placeholder="ghp_xxxxxxxxxxxx"
+            @keyup.enter="connectWithGithubPat"
+          />
+          <a
+            href="https://github.com/settings/tokens/new?scopes=repo,read:user&description=Aries+Agent"
+            class="pat-help-link"
+            @click.prevent="openExternalLink"
+          >
+            如何获取 Token？
+          </a>
+          <button
+            type="button"
+            class="form-submit-btn"
+            @click="connectWithGithubPat"
+            :disabled="!githubPatToken.trim() || githubStore.loading"
+          >
+            {{ githubStore.loading ? '验证中...' : '连接 GitHub' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- 错误提示 -->
+      <p v-if="githubStore.error" class="error-tip">{{ githubStore.error }}</p>
+    </div>
+
+    <!-- GitHub 设置弹窗 -->
+    <div v-if="showGithubSettingsModal" class="modal-overlay" @click="closeGithubSettingsModal">
+      <div class="modal-dialog settings-dialog" @click.stop>
+        <div class="modal-header">GitHub 设置</div>
+        <div class="modal-body">
+          <div class="github-user-info" v-if="githubStore.status.connected">
+            <img
+              :src="githubStore.status.avatar_url || ''"
+              :alt="githubStore.status.username || ''"
+              class="github-avatar"
+            />
+            <div class="github-user-details">
+              <span class="github-username">@{{ githubStore.status.username }}</span>
+              <span class="github-name" v-if="githubStore.status.name">{{ githubStore.status.name }}</span>
+              <div class="github-scope-tags">
+                <span v-for="scope in githubStore.status.scope" :key="scope" class="scope-tag">{{ scope }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-row">
+            <button type="button" class="unbind-inline-btn" @click="disconnectGithub">
+              断开连接
+            </button>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="modal-btn modal-btn-cancel" @click="closeGithubSettingsModal">关闭</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 平台配置弹窗 -->
     <div v-if="showSettingsModal" class="modal-overlay" @click="closeSettingsModal">
       <div class="modal-dialog settings-dialog" @click.stop>
@@ -144,6 +256,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useAccountStore } from '@/stores/account'
+import { useGithubStore } from '@/stores/github'
 import {
   saveQQConfig,
   saveFeishuConfig,
@@ -160,6 +273,7 @@ import { selectDirectory } from '@/api/system'
 import { defaultWorkDir, initPaths } from '@/utils/paths'
 
 const accountStore = useAccountStore()
+const githubStore = useGithubStore()
 
 const configPanel = ref('')
 const configLoading = ref(false)
@@ -175,6 +289,10 @@ let wechatPollTimer: ReturnType<typeof setInterval> | null = null
 const feishuQRImg = ref('')
 const feishuPollStatus = ref('')
 let feishuPollTimer: ReturnType<typeof setInterval> | null = null
+
+// GitHub
+const githubPatToken = ref('')
+const showGithubSettingsModal = ref(false)
 
 // ---------- 平台配置弹窗 ----------
 const showSettingsModal = ref(false)
@@ -422,10 +540,51 @@ function stopFeishuPoll() {
   }
 }
 
+// ---------- GitHub ----------
+
+/** 使用系统默认浏览器打开链接 */
+function openExternalLink(e: MouseEvent) {
+  const href = (e.currentTarget as HTMLAnchorElement).href
+  const electronAPI = (window as any).electronAPI
+  if (electronAPI?.openExternal) {
+    electronAPI.openExternal(href)
+  } else {
+    window.open(href, '_blank')
+  }
+}
+
+async function connectWithGithubPat() {
+  const token = githubPatToken.value.trim()
+  if (!token) return
+
+  const success = await githubStore.connectWithToken(token)
+  if (success) {
+    githubPatToken.value = ''
+    configPanel.value = ''
+  }
+}
+
+function openGithubSettings() {
+  showGithubSettingsModal.value = true
+}
+
+function closeGithubSettingsModal() {
+  showGithubSettingsModal.value = false
+}
+
+async function disconnectGithub() {
+  if (!confirm('确定要断开 GitHub 连接吗？')) return
+  const success = await githubStore.disconnect()
+  if (success) {
+    showGithubSettingsModal.value = false
+  }
+}
+
 onMounted(() => {
   initPaths()
   accountStore.fetchAccounts()
   loadPlatformSessions()
+  githubStore.fetchStatus()
 })
 
 onUnmounted(() => {
@@ -827,5 +986,114 @@ onUnmounted(() => {
 .chat-link-btn:hover {
   background: var(--accent-hover);
   color: var(--text);
+}
+
+/* ---------- GitHub 卡片 ---------- */
+.account-icon.github {
+  background: #24292e;
+  color: #fff;
+}
+
+.account-icon.github svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* ---------- GitHub 配置面板 ---------- */
+.github-pat-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.auth-method-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.auth-method-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.auth-method-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* PAT 表单 */
+.pat-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pat-help-link {
+  font-size: 12px;
+  color: #2563eb;
+  text-decoration: none;
+  align-self: flex-start;
+}
+
+.pat-help-link:hover {
+  text-decoration: underline;
+}
+
+.error-tip {
+  font-size: 12px;
+  color: #991b1b;
+  background: #fee2e2;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin: 0;
+}
+
+/* ---------- GitHub 设置弹窗 ---------- */
+.github-user-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0 16px;
+}
+
+.github-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+}
+
+.github-user-details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.github-username {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.github-name {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.github-scope-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.scope-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--accent-hover);
+  color: var(--text-secondary);
 }
 </style>

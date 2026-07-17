@@ -320,11 +320,15 @@ async function commit() {
 async function pull() {
   if (!workDir.value) return
   try {
-    await fetch(`${getBaseUrl()}/git/pull`, {
+    const res = await fetch(`${getBaseUrl()}/git/pull`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ work_dir: workDir.value }),
     })
+    const data = await res.json()
+    if (!data.success) {
+      showGitError(data, '拉取')
+    }
     await refresh()
   } catch (e) {
     console.error('拉取失败', e)
@@ -334,14 +338,31 @@ async function pull() {
 async function push() {
   if (!workDir.value) return
   try {
-    await fetch(`${getBaseUrl()}/git/push`, {
+    const res = await fetch(`${getBaseUrl()}/git/push`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ work_dir: workDir.value }),
     })
+    const data = await res.json()
+    if (!data.success) {
+      showGitError(data, '推送')
+    }
     await refresh()
   } catch (e) {
     console.error('推送失败', e)
+  }
+}
+
+/** 根据后端返回的 auth_error / github_connected 给出友好提示 */
+function showGitError(data: any, action: string) {
+  if (data.auth_error) {
+    if (!data.github_connected) {
+      alert(`${action}失败：未连接 GitHub。\n\n请到「设置 → 账号绑定 → GitHub」中连接你的 GitHub 账号。`)
+    } else {
+      alert(`${action}失败：GitHub 认证失败，Token 可能已过期。\n\n请到「设置 → 账号绑定 → GitHub」中重新连接。`)
+    }
+  } else {
+    alert(`${action}失败：${data.message}`)
   }
 }
 

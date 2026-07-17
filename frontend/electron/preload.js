@@ -32,6 +32,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectDirectory: (opts) => ipcRenderer.invoke('dialog:select-directory', opts),
   selectFile: (opts) => ipcRenderer.invoke('dialog:select-file', opts),
 
+  /** 使用系统默认浏览器打开外部链接 */
+  openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
+
   /** 重启应用 */
   relaunch: () => ipcRenderer.send('app:relaunch'),
 

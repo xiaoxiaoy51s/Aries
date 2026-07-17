@@ -37,6 +37,8 @@ interface Window {
     /** 弹出系统原生文件/文件夹选择对话框 */
     selectDirectory?: (opts?: any) => Promise<{ path: string | null; cancelled: boolean }>
     selectFile?: (opts?: any) => Promise<{ path: string | null; cancelled: boolean }>
+    /** 使用系统默认浏览器打开外部链接 */
+    openExternal?: (url: string) => Promise<{ success: boolean }>
     /** 重启应用 */
     relaunch?: () => void
     /** 完全退出应用（关闭后端） */
