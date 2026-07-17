@@ -10,6 +10,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from utils.url_utils import normalize_base_url
+from utils.network_manager import get_httpx_proxy_for_url
 from engine.skills_manager import execute_tool
 from utils.session_logger import SessionLogger
 from models.model_manager import resolve_active_model_config
@@ -591,7 +592,7 @@ async def chat_completions(request: ChatRequest, http_request: Request):
         "memory_context": context_token_info,
     })
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=60.0, proxy=get_httpx_proxy_for_url(request.baseUrl)) as client:
         response = await client.post(
             f"{normalize_base_url(request.baseUrl)}/chat/completions",
             headers=headers,
@@ -760,7 +761,7 @@ async def temp_chat(req, http_request: Request):
 
     async def stream_temp():
         timeout = httpx.Timeout(connect=30.0, read=900.0, write=120.0, pool=30.0)
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, proxy=get_httpx_proxy_for_url(base_url)) as client:
             async with client.stream(
                 "POST",
                 f"{normalize_base_url(base_url)}/chat/completions",

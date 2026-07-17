@@ -149,11 +149,30 @@ def get_proxy_for_url(url: str) -> dict[str, str] | None:
     """获取指定 URL 的代理配置。
 
     返回 {"http": "...", "https": "..."} 或 None（不走代理）。
+    适用于 requests 库的 proxies 参数。
     """
     if not should_use_proxy_for_url(url):
         return None
     proxy_url = get_proxy_url()
     return {"http": proxy_url, "https": proxy_url}
+
+
+def get_httpx_proxy_for_url(url: str) -> str | None:
+    """获取指定 URL 的 httpx 代理 URL。
+
+    依据 ~/.Aries/network.json 的 enabled / proxy_url / proxy_domains 配置，
+    按域名匹配判断是否走代理：
+    - GPT / Claude / Gemini / Grok 等境外模型 API，用户在 proxy_domains 中
+      添加对应域名（如 openai.com、anthropic.com、generativelanguage.googleapis.com、
+      x.ai）即会走代理；
+    - 国产模型（如 deepseek.com、dashscope.aliyuncs.com、bigmodel.cn 等）默认
+      不在 proxy_domains 中，因此直连，不会被代理干扰。
+
+    返回代理 URL 字符串（如 "http://127.0.0.1:7890"）或 None（不走代理）。
+    """
+    if not should_use_proxy_for_url(url):
+        return None
+    return get_proxy_url()
 
 
 def should_inject_proxy_for_command(command: str) -> bool:

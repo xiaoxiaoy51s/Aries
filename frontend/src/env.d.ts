@@ -53,5 +53,7 @@ interface Window {
 
     /** 创建新窗口 */
     createNewWindow?: () => void
+    /** 切换开发者工具 */
+    toggleDevTools?: () => void
   }
 }

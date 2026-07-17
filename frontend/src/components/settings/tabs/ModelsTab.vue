@@ -18,7 +18,16 @@
         @click="handleSetActive(model.id)"
       >
         <div class="model-info">
-          <span class="model-name">{{ model.name }}</span>
+          <img
+            class="model-icon"
+            :src="`/model/${getProviderIcon(model.name)}`"
+            :alt="getProviderLabel(model.name)"
+            :title="getProviderLabel(model.name)"
+          />
+          <div class="model-meta">
+            <span class="model-name">{{ model.name }}</span>
+            <span class="model-provider">{{ getProviderLabel(model.name) }}</span>
+          </div>
           <span v-if="model.isActive" class="model-tag">默认</span>
         </div>
         <div class="model-actions" @click.stop>
@@ -72,6 +81,7 @@
 import { ref, onMounted } from 'vue'
 import { useModelStore, type ModelItem } from '@/stores/model'
 import ModelEditModal from '../ModelEditModal.vue'
+import { detectProvider } from '@/utils/modelProviders'
 
 const modelStore = useModelStore()
 
@@ -133,6 +143,14 @@ function cancelDelete() {
 onMounted(() => {
   modelStore.loadModels()
 })
+
+function getProviderIcon(modelName: string) {
+  return detectProvider(modelName).icon
+}
+
+function getProviderLabel(modelName: string) {
+  return detectProvider(modelName).label
+}
 </script>
 
 <style scoped>
@@ -209,13 +227,31 @@ onMounted(() => {
 .model-info {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+}
+
+.model-icon {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.model-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .model-name {
   font-size: 14px;
   font-weight: 500;
   color: var(--text);
+}
+
+.model-provider {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .model-tag {

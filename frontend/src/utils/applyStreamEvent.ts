@@ -6,8 +6,6 @@ import {
   flushPetStatusForComplete,
   onStreamContentDelta,
   onStreamReasoningDelta,
-  onStreamToolPhase,
-  sendPetStatus,
 } from '@/utils/chatPetStatus'
 
 export interface ApplyStreamEventDeps {
@@ -63,7 +61,6 @@ export function applyStreamEvent(
   } else if (evt.type === 'tool_call') {
     if (!assistantMsg.tools) assistantMsg.tools = []
     if (!assistantMsg.blocks) assistantMsg.blocks = []
-    if (!silent) onStreamToolPhase()
     const toolCallId = String(evt.data.tool_call_id || '').trim()
     let existingBlockIdx = -1
     if (toolCallId) {
@@ -108,15 +105,6 @@ export function applyStreamEvent(
   } else if (evt.type === 'tool_result') {
     if (!assistantMsg.tools) assistantMsg.tools = []
     const toolName = evt.data.tool_name || 'tool'
-    const ok = evt.data.status !== 'error'
-    const output = (evt.data.output || '').trim()
-    if (!silent) {
-      let msg = `${ok ? '✅' : '❌'} ${toolName}`
-      if (output) {
-        msg += ': ' + (output.length > 150 ? output.slice(0, 150) + '…' : output)
-      }
-      sendPetStatus(msg)
-    }
     if (evt.data.file_change) {
       if (!assistantMsg.artifacts) assistantMsg.artifacts = []
       assistantMsg.artifacts.push({

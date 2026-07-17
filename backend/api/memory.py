@@ -16,6 +16,7 @@ from models.model_manager import resolve_active_model_config
 from prompt.init_agent_memory import INIT_AGENT_MEMORY_PROMPT
 from prompt.role_prompts import ROLE_GUIDE, ROLE_POLISH_SYSTEM_PROMPT
 from utils.url_utils import normalize_base_url
+from utils.network_manager import get_httpx_proxy_for_url
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -95,7 +96,7 @@ async def polish_rules(req: PolishRulesRequest) -> dict:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, proxy=get_httpx_proxy_for_url(base_url)) as client:
             response = await client.post(
                 f"{normalize_base_url(base_url)}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},

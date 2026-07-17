@@ -51,6 +51,20 @@
     <div class="network-field">
       <label class="form-label">代理域名</label>
       <span class="network-field-hint">访问这些域名时走代理（子域名自动匹配，如 google.com 包含 www.google.com）</span>
+      <!-- 常用 AI 域名快捷添加 -->
+      <div class="network-presets">
+        <span class="network-presets-label">常用境外 AI：</span>
+        <button
+          v-for="preset in AI_DOMAIN_PRESETS"
+          :key="preset.domain"
+          type="button"
+          class="network-preset-btn"
+          :class="{ active: networkConfig.proxy_domains.includes(preset.domain) }"
+          :disabled="!networkConfig.enabled"
+          :title="preset.desc"
+          @click="addPresetDomain(preset.domain)"
+        >+ {{ preset.label }}</button>
+      </div>
       <div class="network-tag-input">
         <input
           v-model="networkDomainInput"
@@ -163,6 +177,16 @@ const networkSaving = ref(false)
 const networkTesting = ref(false)
 const networkTestResult = ref<{ success: boolean; error?: string } | null>(null)
 
+// 常用境外 AI 模型 API 域名一键添加（国产模型如 deepseek/通义/智谱/百川 默认不走代理）
+const AI_DOMAIN_PRESETS: { label: string; domain: string; desc: string }[] = [
+  { label: 'OpenAI', domain: 'openai.com', desc: 'GPT 系列：api.openai.com' },
+  { label: 'Anthropic', domain: 'anthropic.com', desc: 'Claude 系列：api.anthropic.com' },
+  { label: 'Gemini', domain: 'generativelanguage.googleapis.com', desc: 'Google Gemini' },
+  { label: 'Grok', domain: 'x.ai', desc: 'xAI Grok：api.x.ai' },
+  { label: 'OpenRouter', domain: 'openrouter.ai', desc: 'OpenRouter 聚合网关' },
+  { label: 'GitHub', domain: 'github.com', desc: 'github.com / raw.githubusercontent.com' },
+]
+
 async function loadNetworkConfig() {
   try {
     const data = await getNetworkConfig()
@@ -188,6 +212,13 @@ function addNetworkDomain() {
   }
   networkConfig.value.proxy_domains.push(val)
   networkDomainInput.value = ''
+}
+
+function addPresetDomain(domain: string) {
+  const val = domain.toLowerCase()
+  if (!networkConfig.value.proxy_domains.includes(val)) {
+    networkConfig.value.proxy_domains.push(val)
+  }
 }
 
 function removeNetworkDomain(idx: number) {
@@ -357,6 +388,51 @@ onMounted(() => {
 .network-tag-input {
   display: flex;
   gap: 6px;
+}
+
+.network-presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+
+.network-presets-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-right: 2px;
+}
+
+.network-preset-btn {
+  padding: 3px 10px;
+  background: var(--bg-panel, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.network-preset-btn:hover:not(:disabled) {
+  border-color: #2d7a4f;
+  color: #2d7a4f;
+}
+
+.network-preset-btn.active {
+  background: rgba(45, 122, 79, 0.12);
+  border-color: #2d7a4f;
+  color: #2d7a4f;
+  cursor: default;
+}
+
+.network-preset-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .network-tag-input-field {

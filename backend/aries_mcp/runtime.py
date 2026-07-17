@@ -604,12 +604,24 @@ class McpConnectionPool:
         terminate_mcp_stdio_processes()
 
     def _abandon(self) -> None:
-        """放弃当前连接池（不 graceful aclose），供 reset 时丢弃旧实例。"""
+        """放弃当前连接池。先在事件循环上优雅关闭 stdio 连接，再停循环。
+
+        直接停循环会导致 stdio_client 生成器在 task 回收阶段抛出
+        anyio "Attempted to exit cancel scope in a different task" 异常。
+        先调用 _shutdown_async() 让每个 stack 在循环上 aclose（RuntimeError 已被
+        _disconnect_server 捕获），生成器关闭后循环即可干净停止。
+        """
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            try:
+                fut = asyncio.run_coroutine_threadsafe(self._shutdown_async(), loop)
+                fut.result(timeout=3)
+            except Exception:
+                pass
         self._connections.clear()
         self._routes.clear()
         self._definitions.clear()
         self._diagnostics.clear()
-        loop = self._loop
         self._loop = None
         self._thread = None
         self._started = False
@@ -728,8 +740,6 @@ class McpConnectionPool:
             conn.last_error = str(exc)
             # 不在此 task 里 aclose 旧 stack（stdio anyio scope 必须同 task 退出）
             self._connections.pop(route.server_id, None)
-            if route.server_id == "computer-use":
-                self._release_stale_stdio_processes()
             server = get_all_servers().get(route.server_id)
             if server is None:
                 raise
@@ -814,13 +824,7 @@ _pool_lock = threading.RLock()
 
 
 def terminate_mcp_stdio_processes() -> None:
-    """结束 MCP stdio 子进程（node index.mjs、codex-computer-use.exe 等）。"""
-    try:
-        from utils.computer_use_lifecycle import release_computer_use_client
-        release_computer_use_client()
-    except Exception:
-        pass
-
+    """结束 MCP stdio 子进程（node index.mjs 等）。"""
     killed_any = False
     try:
         import os
@@ -829,18 +833,14 @@ def terminate_mcp_stdio_processes() -> None:
         root = psutil.Process(os.getpid())
         keywords = (
             "index.mjs",
-            "computer-use",
-            "computer_use",
             "mcp-server",
-            "codex-computer-use",
             "@modelcontextprotocol",
         )
         children = root.children(recursive=True)
         for child in children:
             try:
-                name = (child.name() or "").lower()
                 cmdline = " ".join(child.cmdline()).lower()
-                if name == "codex-computer-use.exe" or any(token in cmdline for token in keywords):
+                if any(token in cmdline for token in keywords):
                     child.terminate()
                     killed_any = True
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -848,27 +848,14 @@ def terminate_mcp_stdio_processes() -> None:
         _gone, alive = psutil.wait_procs(children, timeout=2)
         for proc in alive:
             try:
-                name = (proc.name() or "").lower()
                 cmdline = " ".join(proc.cmdline()).lower()
-                if name == "codex-computer-use.exe" or any(token in cmdline for token in keywords):
+                if any(token in cmdline for token in keywords):
                     proc.kill()
                     killed_any = True
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
     except ImportError:
-        if sys.platform == "win32":
-            import subprocess
-            for image in ("codex-computer-use.exe",):
-                try:
-                    subprocess.run(
-                        ["taskkill", "/F", "/IM", image],
-                        capture_output=True,
-                        timeout=5,
-                        check=False,
-                    )
-                    killed_any = True
-                except Exception:
-                    pass
+        pass
     except Exception:
         pass
 
@@ -880,12 +867,6 @@ def reset_mcp_pool() -> None:
     """完全重置 MCP 连接池（等效于重启应用内的 MCP 子系统）。"""
     global _pool
     with _pool_lock:
-        try:
-            from utils.bundled_mcp import ensure_bundled_mcp_installed
-            ensure_bundled_mcp_installed()
-        except Exception:
-            pass
-
         terminate_mcp_stdio_processes()
         old = _pool
         old_thread = old._thread if old is not None else None

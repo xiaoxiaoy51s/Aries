@@ -37,7 +37,7 @@ export function formatMcpToolDisplayName(toolName: string): string {
   if (!isMcpTool(toolName)) return toolName
 
   const rest = toolName.slice(4)
-  const slugs = cachedServerSlugs?.length ? cachedServerSlugs : ['computer_use']
+  const slugs = cachedServerSlugs?.length ? cachedServerSlugs : []
 
   for (const serverSlug of slugs) {
     if (rest === serverSlug) return serverSlug.replace(/_/g, '-')

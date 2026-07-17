@@ -2976,6 +2976,7 @@ function scheduleScrollToBottom(force = false) {
   width: 100%;
   max-width: 900px;
   flex-shrink: 0;
+  padding-bottom: 16px;
 }
 
 .bottom-console-dock {

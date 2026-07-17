@@ -25,6 +25,7 @@ import httpx
 from utils.session_logger import SessionLogger, get_subagent_jsonl_path
 from utils.token_counter import extract_usage_from_stream_chunk
 from utils.url_utils import normalize_base_url
+from utils.network_manager import get_httpx_proxy_for_url
 
 logger = logging.getLogger(__name__)
 
@@ -710,7 +711,7 @@ async def _run_subagent_loop(
     )
     normalized_base = normalize_base_url(base_url)
 
-    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False, proxy=get_httpx_proxy_for_url(base_url)) as client:
         for round_no in range(1, SUBAGENT_MAX_ROUNDS + 1):
             if cancel_event and cancel_event.is_set():
                 return await _fail_subagent_loop(
@@ -1240,7 +1241,7 @@ async def run_subagent_direct(
     normalized_base = normalize_base_url(base_url)
     tool_results: list[dict] = []
 
-    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False, proxy=get_httpx_proxy_for_url(base_url)) as client:
         for round_no in range(1, min(SUBAGENT_MAX_ROUNDS, 5) + 1):  # 直接模式最多 5 轮
             if cancel_event and cancel_event.is_set():
                 return {"status": "cancelled", "error": "用户取消了请求", "tool_results": tool_results}

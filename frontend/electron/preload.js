@@ -51,6 +51,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** 创建新窗口 */
   createNewWindow: () => ipcRenderer.send('window:create-new'),
 
+  /** 切换开发者工具 */
+  toggleDevTools: () => ipcRenderer.send('window:toggle-devtools'),
+
   /** 应用更新（仅打包模式可用） */
   update: {
     check: () => ipcRenderer.invoke('update:check'),

@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from services.platform_segment import PlatformStreamSink
 
 from utils.url_utils import normalize_base_url
+from utils.network_manager import get_httpx_proxy_for_url
 from utils.message_snapshot import (
     create_assistant_snapshot,
     set_summary_block,
@@ -441,6 +442,9 @@ async def stream_agent_mode(
 
         base_url = normalize_base_url(request.baseUrl)
         llm_timeout = httpx.Timeout(connect=LLM_CONNECT_TIMEOUT_SECONDS, read=LLM_READ_TIMEOUT_SECONDS, write=LLM_WRITE_TIMEOUT_SECONDS, pool=30.0)
+        # 按域名规则决定是否走代理：境外模型 API (openai/anthropic/google/x.ai) 走代理，
+        # 国产模型默认直连；代理 URL 与域名列表由用户在前端「网络代理」设置页维护。
+        llm_proxy = get_httpx_proxy_for_url(request.baseUrl)
 
         # ESC 全局紧急停止（Windows 后台监听；等同前端停止 + 终端 Ctrl+C）
         if cancel_event and not _esc_listener_started and not is_subagent_mode:
@@ -456,7 +460,7 @@ async def stream_agent_mode(
             if start_computer_use_esc_listener(_on_esc):
                 _esc_listener_started = True
 
-        async with httpx.AsyncClient(timeout=llm_timeout, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=llm_timeout, trust_env=False, proxy=llm_proxy) as client:
             last_tool_name: str = ""
             repeat_count: int = 0
             _pending_images: list[str] = []

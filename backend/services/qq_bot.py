@@ -275,8 +275,13 @@ class _QQRunner:
                     asyncio.run_coroutine_threadsafe(close(), loop)
                 except Exception as e:
                     _log.debug("[QQ] 提交 close 失败: %s", e)
+            # 先取消所有 pending tasks，避免 "Task was destroyed but it is pending"
+            def _cancel_and_stop():
+                for task in asyncio.all_tasks(loop):
+                    task.cancel()
+                loop.stop()
             try:
-                loop.call_soon_threadsafe(loop.stop)
+                loop.call_soon_threadsafe(_cancel_and_stop)
             except RuntimeError:
                 pass
         thread = self._thread

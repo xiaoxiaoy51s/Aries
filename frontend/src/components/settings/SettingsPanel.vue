@@ -5,7 +5,12 @@
         <!-- 左侧导航 -->
         <nav class="modal-nav">
           <div class="modal-nav-header">
-            <h1>设置</h1>
+            <button type="button" class="back-btn-nav" @click="$emit('close')">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/>
+              </svg>
+              <span>返回</span>
+            </button>
           </div>
           <ul class="modal-nav-list">
             <li
@@ -194,22 +199,23 @@ const tabTitle = computed(() => {
 <style scoped>
 .modal-overlay {
   position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  top: 40px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bg-primary);
   display: flex;
-  align-items: center;
-  justify-content: center;
   z-index: 1000;
 }
 
 .modal-container {
   display: flex;
-  width: min(1080px, 92vw);
-  height: min(720px, 86vh);
+  width: 100%;
+  height: 100%;
   background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
   overflow: hidden;
 }
 
@@ -225,14 +231,29 @@ const tabTitle = computed(() => {
 }
 
 .modal-nav-header {
-  padding: 0 20px 16px;
+  padding: 0 12px 16px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 8px;
 }
 
-.modal-nav-header h1 {
-  font-size: 18px;
-  font-weight: 600;
+.back-btn-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: all 0.15s;
+}
+
+.back-btn-nav:hover {
+  background: var(--accent-hover);
+  color: var(--text);
 }
 
 .modal-nav-list {

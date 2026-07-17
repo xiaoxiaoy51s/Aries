@@ -65,7 +65,7 @@ def _check_and_cleanup_proxy():
             parsed = urlparse(url)
             host = parsed.hostname or "127.0.0.1"
             port = parsed.port or 8080
-            with socket.create_connection((host, port), timeout=2):
+            with socket.create_connection((host, port), timeout=0.5):
                 proxy_reachable = True
                 break
         except (OSError, ValueError):
@@ -87,29 +87,26 @@ async def lifespan(app: FastAPI):
 
     _check_and_cleanup_proxy()
 
-    # 同步内置插件到 ~/.Aries/plugins/
-    try:
-        from engine.plugin_manager import sync_plugins
-        counts = sync_plugins()
-        if any(counts.values()):
-            print(f"[Plugins] 同步完成: {counts}")
-    except Exception as exc:
-        print(f"[Plugins] 同步失败: {exc}")
+    # ---- 以下 IO 密集型初始化全部移到后台线程，不阻塞 lifespan ----
+    def _boot_background():
+        # 同步内置插件到 ~/.Aries/plugins/
+        try:
+            from engine.plugin_manager import sync_plugins
+            counts = sync_plugins()
+            if any(counts.values()):
+                print(f"[Plugins] 同步完成: {counts}")
+        except Exception as exc:
+            print(f"[Plugins] 同步失败: {exc}")
 
-    # 释放内置 computer-use MCP server + exe 到 ~/.Aries/plugins/mcps/computer-use/
-    try:
-        from utils.bundled_mcp import ensure_bundled_mcp_installed
-        ensure_bundled_mcp_installed()
-    except Exception as exc:
-        print(f"[MCP] 释放内置 computer-use 失败: {exc}")
+        # 内置 Node 检查（已在进程启动最早阶段释放，这里仅打印日志）
+        try:
+            from utils.bundled_node import get_default_node_install_dir, get_default_node_exe
+            if get_default_node_exe().is_file():
+                print(f"[Node] 使用内置 Node: {get_default_node_install_dir()}")
+        except Exception as exc:
+            print(f"[Node] 内置 Node 检查失败: {exc}")
 
-    # 内置 Node 已在进程启动最早阶段释放并写入 env.json（init_runtime_env）
-    try:
-        from utils.bundled_node import get_default_node_install_dir, get_default_node_exe
-        if get_default_node_exe().is_file():
-            print(f"[Node] 使用内置 Node: {get_default_node_install_dir()}")
-    except Exception as exc:
-        print(f"[Node] 内置 Node 检查失败: {exc}")
+    threading.Thread(target=_boot_background, daemon=True, name="BackgroundBoot").start()
 
     stale = reset_stale_running_tasks()
     if stale:
@@ -146,7 +143,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_boot_bots, daemon=True, name="BotManagerBoot").start()
 
     # ---- 启动 Node.js CLI Server（VS Code 风格 CLI） ----
-    # 放到线程中执行，避免阻塞 FastAPI 事件循环
+    # 放到后台线程自行启动，不阻塞 FastAPI lifespan（前端连接时会自动重试）
     def _boot_cli():
         try:
             from services.terminal_manager import start_cli_server
@@ -155,10 +152,7 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             print(f"[CLI] 启动 Node.js CLI Server 失败: {exc}")
 
-    cli_thread = threading.Thread(target=_boot_cli, daemon=True, name="CLIBoot")
-    cli_thread.start()
-    # 等待 CLI Server 就绪（最多 10 秒）
-    cli_thread.join(timeout=10)
+    threading.Thread(target=_boot_cli, daemon=True, name="CLIBoot").start()
 
     yield
 
@@ -269,12 +263,26 @@ if __name__ == "__main__":
         os._exit(0)
 
     def _install_force_exit_timer():
-        # 只在收到退出信号后才启动计时器
+        # 只在收到退出信号后才启动计时器；一次性触发，避免重复写已关闭的 wakeup fd
+        _fired = False
+
         def _handler(signum, frame):
+            nonlocal _fired
+            if _fired:
+                return
+            _fired = True
+            # 恢复默认 handler，后续信号交给 uvicorn/Python 处理
+            try:
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
+                signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            except (ValueError, OSError):
+                pass
             timer = threading.Timer(FORCE_EXIT_TIMEOUT, _force_exit)
             timer.daemon = True
             timer.start()
-            # 默认行为交回：抛 KeyboardInterrupt，让 uvicorn 走优雅退出
+            # 抛 KeyboardInterrupt，让 uvicorn 走优雅退出
+            raise KeyboardInterrupt
+
         try:
             signal.signal(signal.SIGINT, _handler)
             signal.signal(signal.SIGTERM, _handler)

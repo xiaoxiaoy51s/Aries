@@ -60,7 +60,7 @@ async function waitBackendReady(maxWaitMs = 15000) {
   const start = Date.now()
   while (Date.now() - start < maxWaitMs) {
     if (await checkBackendReady()) return true
-    await new Promise(r => setTimeout(r, 500))
+    await new Promise(r => setTimeout(r, 200))
   }
   return false
 }
@@ -414,11 +414,20 @@ ipcMain.on('pet:hide', () => {
   }
 })
 
-// IPC: 宠物窗口拖拽
+// IPC: 宠物窗口拖拽（含自主行走；按当前所在显示器限制，至少保留 32px 可见）
 ipcMain.on('pet:drag', (event, { dx, dy }) => {
   if (!petWindow || petWindow.isDestroyed()) return
   const [x, y] = petWindow.getPosition()
-  petWindow.setPosition(Math.round(x + dx), Math.round(y + dy))
+  const [w, h] = petWindow.getSize()
+  // 找到宠物当前所在显示器，按该屏工作区限制（支持多屏拖拽）
+  const wa = screen.getDisplayMatching({ x, y, width: w, height: h }).workArea
+  const minX = wa.x - w + 32
+  const maxX = wa.x + wa.width - 32
+  const minY = wa.y
+  const maxY = wa.y + wa.height - 32
+  const nx = Math.round(Math.max(minX, Math.min(maxX, x + dx)))
+  const ny = Math.round(Math.max(minY, Math.min(maxY, y + dy)))
+  petWindow.setPosition(nx, ny)
   // 状态窗口跟随移动
   if (petStatusWindow && !petStatusWindow.isDestroyed() && petStatusWindow.isVisible()) {
     const [sx, sy] = petStatusWindow.getPosition()
@@ -599,6 +608,13 @@ ipcMain.on('window:maximize', (event) => {
     } else {
       win.maximize()
     }
+  }
+})
+
+ipcMain.on('window:toggle-devtools', (event) => {
+  const win = getSenderWindow(event)
+  if (win && !win.isDestroyed()) {
+    win.webContents.toggleDevTools()
   }
 })
 

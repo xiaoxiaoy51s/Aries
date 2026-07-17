@@ -17,36 +17,6 @@
           </svg>
         </button>
 
-        <button
-          type="button"
-          class="title-bar-icon-btn"
-          :class="{ disabled: !canGoBack }"
-          title="返回"
-          aria-label="返回"
-          @click="onGoBack"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M19 12H5"/>
-            <path d="M12 19l-7-7 7-7"/>
-          </svg>
-        </button>
-
-        <button
-          type="button"
-          class="title-bar-icon-btn"
-          :class="{ disabled: !canGoForward }"
-          title="前进"
-          aria-label="前进"
-          @click="onGoForward"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M5 12h14"/>
-            <path d="M12 5l7 7-7 7"/>
-          </svg>
-        </button>
-
-        <span class="title-bar-brand">Aries</span>
-
         <TitleBarMenu :menus="menus" @select="onMenuSelect" />
       </div>
       <div class="title-bar-spacer" />
@@ -77,12 +47,18 @@
       :error="bootError"
       @retry="onBootRetry"
     />
+    <OnboardingModal
+      v-if="showOnboarding"
+      :visible="showOnboarding"
+      @skip="showOnboarding = false"
+      @save="handleOnboardingSave"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue'
-import { RouterView, useRouter, useRoute } from 'vue-router'
+import { ref, onMounted, watch } from 'vue'
+import { RouterView } from 'vue-router'
 import { useSidebar } from '@/composables/useSidebar'
 import { useBackendBoot } from '@/composables/useBackendBoot'
 import { useModelStore } from '@/stores/model'
@@ -90,6 +66,7 @@ import { useWorkspaceStore } from '@/stores/workspace'
 import { initPaths } from '@/utils/paths'
 import TitleBarMenu, { type MenuDef } from '@/components/TitleBarMenu.vue'
 import BackendBootSplash from '@/components/BackendBootSplash.vue'
+import OnboardingModal from '@/components/OnboardingModal.vue'
 
 const { sidebarOpen, toggleSidebar } = useSidebar()
 
@@ -102,13 +79,35 @@ const { ready: backendReady, error: bootError, start: startBackendBoot } = useBa
 
 const isMaximized = ref(false)
 let appInitialized = false
+const showOnboarding = ref(false)
 
 async function initAppData() {
   if (appInitialized) return
   appInitialized = true
-  modelStore.loadModels().catch(() => {})
+  await modelStore.loadModels().catch(() => {})
+  // 首次启动且未配置任何模型时，弹出引导界面
+  if (modelStore.models.length === 0) {
+    showOnboarding.value = true
+  }
   await initPaths().catch(() => {})
   workspaceStore.initWorkDir().catch(() => {})
+}
+
+async function handleOnboardingSave(data: { model: string; baseUrl: string; apiKey: string }) {
+  try {
+    await modelStore.addModel({
+      model: data.model,
+      name: data.model,
+      baseUrl: data.baseUrl,
+      apiKey: data.apiKey,
+      isActive: true,
+    })
+    showOnboarding.value = false
+  } catch (e) {
+    console.error('引导配置模型失败', e)
+    alert('保存失败，请稍后在设置中手动配置模型')
+    showOnboarding.value = false
+  }
 }
 
 function onBootRetry() {
@@ -144,72 +143,92 @@ async function onClose() {
   window.electronAPI?.windowClose?.()
 }
 
-const router = useRouter()
-
-// 追踪路由历史，实现浏览器式的返回/前进
-const historyStack = ref<string[]>([])
-const historyIndex = ref(-1)
-
-const canGoBack = computed(() => historyIndex.value > 0)
-const canGoForward = computed(() => historyIndex.value < historyStack.value.length - 1)
-
-function recordRoute(path: string) {
-  // 如果不在栈尾，先截断当前位置之后的“前进历史”
-  if (historyIndex.value < historyStack.value.length - 1) {
-    historyStack.value = historyStack.value.slice(0, historyIndex.value + 1)
-  }
-  // 避免连续重复记录
-  if (historyStack.value[historyIndex.value] !== path) {
-    historyStack.value.push(path)
-    historyIndex.value++
-  }
-}
-
-router.afterEach((to) => {
-  if (historyStack.value.length === 0) {
-    historyStack.value.push(to.fullPath)
-    historyIndex.value = 0
-    return
-  }
-
-  const prevPath = historyStack.value[historyIndex.value - 1]
-  const nextPath = historyStack.value[historyIndex.value + 1]
-
-  if (to.fullPath === prevPath) {
-    // 浏览器或程序触发 back
-    historyIndex.value--
-  } else if (to.fullPath === nextPath) {
-    // 浏览器或程序触发 forward
-    historyIndex.value++
-  } else if (to.fullPath !== historyStack.value[historyIndex.value]) {
-    recordRoute(to.fullPath)
-  }
-})
-
-function onGoBack() {
-  if (canGoBack.value) router.back()
-}
-
-function onGoForward() {
-  if (canGoForward.value) router.forward()
-}
-
 const menus: MenuDef[] = [
   {
     key: 'file',
     label: '文件',
     items: [
-      { id: 'new-window', label: '新建窗口', shortcut: 'Ctrl+Shift+N' },
-      { id: 'new-chat', label: '新对话', shortcut: 'Ctrl+N' },
-      { id: 'quick-chat', label: '快速对话', shortcut: 'Alt+Ctrl+N' },
+      { id: 'new-chat', label: '新建会话', shortcut: 'Ctrl+N' },
       { id: 'open-folder', label: '打开文件夹...', shortcut: 'Ctrl+O' },
       { divider: true },
       { id: 'settings', label: '设置', shortcut: 'Ctrl+,' },
       { divider: true },
-      { id: 'exit', label: '退出', shortcut: 'Ctrl+Q' },
+      { id: 'exit', label: '退出', shortcut: 'Alt+F4' },
+    ],
+  },
+  {
+    key: 'edit',
+    label: '编辑',
+    items: [
+      { id: 'undo', label: '撤销', shortcut: 'Ctrl+Z' },
+      { id: 'redo', label: '重做', shortcut: 'Ctrl+Y' },
+      { divider: true },
+      { id: 'cut', label: '剪切', shortcut: 'Ctrl+X' },
+      { id: 'copy', label: '复制', shortcut: 'Ctrl+C' },
+      { id: 'paste', label: '粘贴', shortcut: 'Ctrl+V' },
+      { divider: true },
+      { id: 'select-all', label: '全选', shortcut: 'Ctrl+A' },
+    ],
+  },
+  {
+    key: 'view',
+    label: '查看',
+    items: [
+      { id: 'reload', label: '重新加载', shortcut: 'Ctrl+R' },
+      { id: 'new-window', label: '新窗口', shortcut: 'Ctrl+Shift+N' },
+      { id: 'dev-tools', label: '开发者工具', shortcut: 'F12' },
+      { divider: true },
+      { id: 'open-sessions-dir', label: '查看会话日志' },
+      { id: 'open-skills-dir', label: '查看技能列表' },
+      { id: 'open-mcps-dir', label: '查看 MCP 工具列表' },
+    ],
+  },
+  {
+    key: 'window',
+    label: '窗口',
+    items: [
+      { id: 'minimize', label: '最小化' },
+      { id: 'maximize', label: '最大化' },
+      { id: 'close', label: '关闭窗口' },
+    ],
+  },
+  {
+    key: 'help',
+    label: '帮助',
+    items: [
+      { id: 'version', label: '查看版本' },
+      { id: 'open-backend-log', label: '打开运行日志' },
     ],
   },
 ]
+
+async function openInExplorer(workDir: string, path?: string, selectFile = false) {
+  try {
+    const res = await fetch(`${modelStore.getBaseUrl()}/files/open-in-editor`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        work_dir: workDir,
+        path,
+        editor: selectFile ? 'explorer-file' : 'explorer',
+      }),
+    })
+    const data = await res.json()
+    if (data.error) {
+      console.error('[Menu] openInExplorer failed:', data.error)
+    }
+  } catch (e) {
+    console.error('[Menu] openInExplorer error:', e)
+  }
+}
+
+function editCommand(cmd: string) {
+  try {
+    document.execCommand(cmd)
+  } catch {
+    // 按钮样式保留，部分浏览器可能不支持
+  }
+}
 
 function onMenuSelect(menuKey: string, item: { id?: string; divider?: boolean }) {
   if (item.divider || !item.id) return
@@ -218,11 +237,7 @@ function onMenuSelect(menuKey: string, item: { id?: string; divider?: boolean })
 
   if (menuKey === 'file') {
     switch (id) {
-      case 'new-window':
-        window.electronAPI?.createNewWindow?.()
-        break
       case 'new-chat':
-      case 'quick-chat':
         window.dispatchEvent(new CustomEvent('aries:new-chat'))
         break
       case 'open-folder':
@@ -238,6 +253,88 @@ function onMenuSelect(menuKey: string, item: { id?: string; divider?: boolean })
     return
   }
 
+  if (menuKey === 'edit') {
+    switch (id) {
+      case 'undo':
+        editCommand('undo')
+        break
+      case 'redo':
+        editCommand('redo')
+        break
+      case 'cut':
+        editCommand('cut')
+        break
+      case 'copy':
+        editCommand('copy')
+        break
+      case 'paste':
+        editCommand('paste')
+        break
+      case 'select-all':
+        editCommand('selectAll')
+        break
+    }
+    return
+  }
+
+  if (menuKey === 'view') {
+    switch (id) {
+      case 'reload':
+        location.reload()
+        break
+      case 'new-window':
+        window.electronAPI?.createNewWindow?.()
+        break
+      case 'dev-tools':
+        window.electronAPI?.toggleDevTools?.()
+        break
+      case 'open-sessions-dir': {
+        const home = window.electronAPI?.homePath || ''
+        void openInExplorer(`${home}\\.Aries`, 'session')
+        break
+      }
+      case 'open-skills-dir': {
+        const home = window.electronAPI?.homePath || ''
+        void openInExplorer(`${home}\\.Aries`, 'skills')
+        break
+      }
+      case 'open-mcps-dir': {
+        const home = window.electronAPI?.homePath || ''
+        void openInExplorer(`${home}\\.Aries`, 'mcps')
+        break
+      }
+    }
+    return
+  }
+
+  if (menuKey === 'window') {
+    switch (id) {
+      case 'minimize':
+        window.electronAPI?.windowMinimize?.()
+        break
+      case 'maximize':
+        window.electronAPI?.windowMaximize?.()
+        break
+      case 'close':
+        window.electronAPI?.windowClose?.()
+        break
+    }
+    return
+  }
+
+  if (menuKey === 'help') {
+    switch (id) {
+      case 'version':
+        window.dispatchEvent(new CustomEvent('aries:open-settings', { detail: { tab: 'updates' } }))
+        break
+      case 'open-backend-log': {
+        const home = window.electronAPI?.homePath || ''
+        void openInExplorer(`${home}\\.Aries`, 'logs/backend.log', true)
+        break
+      }
+    }
+    return
+  }
 }
 </script>
 
@@ -385,14 +482,7 @@ body {
   pointer-events: none;
 }
 
-.title-bar-brand {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-  user-select: none;
-  margin-left: 6px;
-  margin-right: 8px;
-}
+
 
 .title-bar-spacer {
   flex: 1;

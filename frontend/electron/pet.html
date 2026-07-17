@@ -119,9 +119,15 @@
       states: DEFAULT_STATES,
       currentState: 'idle',
       currentFrame: 0,
-      frameIntervalMs: 120, // ~8 fps，符合 Codex 风格
+      frameIntervalMs: 150, // ~6.7 fps，更舒缓
     }
     let animTimer = null
+
+    // ---------- 行为状态 ----------
+    let externalActive = false      // AI 流式输出时为 true，暂停 idle 休息
+    let idleResting = false         // idle 休息中（暂停切帧，避免频繁眨眼）
+    let restTimer = null
+    let manualDragging = false      // 手动拖拽中
 
     function findState(name) {
       return spriteState.states.find(s => s.name === name)
@@ -147,18 +153,67 @@
       void fw; void fh // 保留供未来 canvas 渲染使用
     }
 
+    // 单帧步进：推进动画 + idle 周期休息
+    function tickFrame() {
+      if (idleResting) return
+      const st = findState(spriteState.currentState)
+      const frames = Math.max(1, st.frames || 1)
+      const nextFrame = spriteState.currentFrame + 1
+      if (nextFrame >= frames) {
+        // 完成一个完整动画周期
+        spriteState.currentFrame = 0
+        applyFrame()
+        // idle 状态下每完成一次眨眼周期后休息，避免频繁眨眼
+        if (spriteState.currentState === 'idle' && !externalActive && !manualDragging) {
+          enterIdleRest()
+        }
+      } else {
+        spriteState.currentFrame = nextFrame
+        applyFrame()
+      }
+    }
+
     function startAnimLoop() {
       stopAnimLoop()
-      animTimer = setInterval(() => {
-        spriteState.currentFrame += 1
-        applyFrame()
-      }, spriteState.frameIntervalMs)
+      animTimer = setInterval(tickFrame, spriteState.frameIntervalMs)
     }
 
     function stopAnimLoop() {
       if (animTimer) {
         clearInterval(animTimer)
         animTimer = null
+      }
+    }
+
+    // ---------- idle 休息（减少眨眼频率）----------
+    function clearRestTimer() {
+      if (restTimer) {
+        clearTimeout(restTimer)
+        restTimer = null
+      }
+    }
+
+    function enterIdleRest() {
+      idleResting = true
+      clearRestTimer()
+      // 休息 2.5~4.5 秒后再播放下一次眨眼
+      restTimer = setTimeout(() => {
+        idleResting = false
+        spriteState.currentFrame = 0
+        applyFrame()
+      }, 2500 + Math.random() * 2000)
+    }
+
+    // 统一的状态切换（内部拖拽 + 外部驱动共用）
+    function setSpriteStateInternal(name) {
+      const st = findState(name)
+      if (!st) return
+      if (spriteState.currentState !== st.name) {
+        spriteState.currentState = st.name
+        spriteState.currentFrame = 0
+        clearRestTimer()
+        idleResting = false
+        applyFrame()
       }
     }
 
@@ -176,6 +231,11 @@
         : DEFAULT_STATES
       spriteState.currentState = 'idle'
       spriteState.currentFrame = 0
+      // 重置行为状态
+      clearRestTimer()
+      idleResting = false
+      externalActive = false
+      manualDragging = false
       applyFrame()
       startAnimLoop()
     }
@@ -205,16 +265,14 @@
       }
     })
 
-    // 主进程切换状态
+    // 主进程切换状态（外部驱动：AI 流式输出）
     ipcRenderer.on('pet:set-state', (event, data) => {
       if (mode !== 'sprite' || !data || !data.state) return
-      const st = findState(data.state)
-      if (!st) return
-      if (spriteState.currentState !== st.name) {
-        spriteState.currentState = st.name
-        spriteState.currentFrame = 0
-        applyFrame()
-      }
+      const name = data.state
+      if (!findState(name)) return
+      // AI 活动状态标记，暂停 idle 休息；idle 时恢复
+      externalActive = (name !== 'idle')
+      setSpriteStateInternal(name)
     })
 
     // 点击宠物主体 → 进入主界面
@@ -266,13 +324,16 @@
     // ---------- 拖拽移动 ----------
     let dragging = false
     let lastX = 0, lastY = 0
+    let dragDirection = 0  // -1 左 / +1 右，仅水平方向切换动画
 
     container.addEventListener('pointerdown', (e) => {
       if (e.target.closest('.pet-btn')) return
       container.setPointerCapture(e.pointerId)
       dragging = true
+      manualDragging = true
       lastX = e.screenX
       lastY = e.screenY
+      dragDirection = 0
     })
 
     container.addEventListener('pointermove', (e) => {
@@ -282,12 +343,26 @@
       ipcRenderer.send('pet:drag', { dx, dy })
       lastX = e.screenX
       lastY = e.screenY
+      // 根据水平移动方向切换 running-left / running-right
+      if (Math.abs(dx) > 0.5 && !externalActive) {
+        const newDir = dx < 0 ? -1 : 1
+        if (newDir !== dragDirection) {
+          dragDirection = newDir
+          setSpriteStateInternal(newDir < 0 ? 'running-left' : 'running-right')
+        }
+      }
     })
 
     container.addEventListener('pointerup', (e) => {
       if (dragging) {
         container.releasePointerCapture(e.pointerId)
         dragging = false
+        manualDragging = false
+        dragDirection = 0
+        // 松手回到 idle（AI 活动中则不动）
+        if (!externalActive) {
+          setSpriteStateInternal('idle')
+        }
       }
     })
   </script>

@@ -7,12 +7,55 @@
           <button type="button" class="close-btn" @click="$emit('close')">×</button>
         </div>
         <div class="modal-body">
+          <div class="compat-notice">
+            仅兼容 <strong>OpenAI 格式</strong>的 API。Claude / Gemini 等原生 API 暂不支持，
+            请使用对应的 OpenAI 兼容网关地址（如 <code>/v1</code> 结尾）。
+          </div>
+
+          <!-- 模型图标选择 -->
+          <label class="form-label">模型类型</label>
+          <div class="provider-row">
+            <button
+              v-for="p in PROVIDERS"
+              :key="p.id"
+              type="button"
+              class="provider-chip"
+              :class="{ active: selectedProvider === p.id }"
+              :title="p.label"
+              @click="selectProvider(p)"
+            >
+              <img :src="`/model/${p.icon}`" :alt="p.label" class="provider-chip-icon" />
+            </button>
+          </div>
+
           <label class="form-label">模型名称</label>
           <input v-model="form.name" type="text" class="form-input" placeholder="例如: gpt-4o" />
+
           <label class="form-label">API 地址</label>
           <input v-model="form.baseUrl" type="text" class="form-input" placeholder="https://api.openai.com/v1" />
+
           <label class="form-label">API Key</label>
-          <input v-model="form.apiKey" type="password" class="form-input" placeholder="sk-..." />
+          <div class="input-with-actions">
+            <input
+              v-model="form.apiKey"
+              :type="showApiKey ? 'text' : 'password'"
+              class="form-input"
+              placeholder="sk-..."
+            />
+            <button
+              type="button"
+              class="text-btn"
+              :title="showApiKey ? '隐藏' : '显示'"
+              @click="showApiKey = !showApiKey"
+            >{{ showApiKey ? '隐藏' : '显示' }}</button>
+            <button
+              type="button"
+              class="text-btn"
+              title="复制"
+              :disabled="!form.apiKey"
+              @click="copyApiKey"
+            >{{ copied ? '已复制' : '复制' }}</button>
+          </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="secondary-btn" @click="$emit('close')">取消</button>
@@ -25,6 +68,7 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { PROVIDERS, detectProvider, type Provider } from '@/utils/modelProviders'
 
 const props = defineProps<{
   visible: boolean
@@ -35,10 +79,37 @@ const props = defineProps<{
 const emit = defineEmits<{ close: []; save: [data: any] }>()
 
 const form = ref({ name: '', baseUrl: '', apiKey: '' })
+const selectedProvider = ref('custom')
+const showApiKey = ref(false)
+const copied = ref(false)
+
+function selectProvider(p: Provider) {
+  selectedProvider.value = p.id
+  if (p.model) form.value.name = p.model
+  form.value.baseUrl = p.baseUrl
+}
+
+async function copyApiKey() {
+  if (!form.value.apiKey) return
+  try {
+    await navigator.clipboard.writeText(form.value.apiKey)
+    copied.value = true
+    setTimeout(() => (copied.value = false), 1500)
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = form.value.apiKey
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+    copied.value = true
+    setTimeout(() => (copied.value = false), 1500)
+  }
+}
 
 watch(() => props.visible, (val) => {
   if (val) {
-    if (props.isEdit && props.model) {
+    if (props.model && (props.model.name || props.model.model)) {
       form.value = {
         name: props.model.name || props.model.model || '',
         baseUrl: props.model.baseUrl || '',
@@ -47,6 +118,7 @@ watch(() => props.visible, (val) => {
     } else {
       form.value = { name: '', baseUrl: '', apiKey: '' }
     }
+    selectedProvider.value = detectProvider(form.value.name).id
   }
 })
 
@@ -106,6 +178,62 @@ function onSave() {
   gap: 12px;
 }
 
+.compat-notice {
+  padding: 10px 12px;
+  background: rgba(234, 179, 8, 0.1);
+  border: 1px solid rgba(234, 179, 8, 0.4);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.compat-notice strong { color: #b45309; }
+
+.compat-notice code {
+  padding: 1px 5px;
+  background: var(--bg);
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.provider-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.provider-chip {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.15s;
+}
+
+.provider-chip:hover {
+  border-color: var(--border-strong);
+  background: var(--accent-hover);
+}
+
+.provider-chip.active {
+  border-color: #2d7a4f;
+  background: rgba(45, 122, 79, 0.08);
+  box-shadow: 0 0 0 1px #2d7a4f;
+}
+
+.provider-chip-icon {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}
+
 .form-label {
   font-size: 13px;
   font-weight: 500;
@@ -123,6 +251,61 @@ function onSave() {
 }
 
 .form-input:focus { border-color: var(--border-strong); }
+
+.input-with-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.input-with-actions .form-input {
+  flex: 1;
+}
+
+.icon-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.text-btn {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.text-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+  color: var(--text);
+}
+
+.text-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
 .modal-footer {
   display: flex;
