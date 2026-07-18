@@ -692,9 +692,7 @@ async def chat_completions(request: ChatRequest, http_request: Request):
 
         update_message(
             assistant_message_id,
-            content=assistant_content or "（无响应）",
             message_snapshot_json=logger.jsonl_path_str(),
-            reasoning_content=logger.build_db_reasoning(),
         )
 
         logger.finalize()

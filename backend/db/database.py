@@ -64,6 +64,7 @@ def init_database():
             image_path TEXT,
             message_snapshot_json TEXT,
             mode TEXT NOT NULL DEFAULT 'agent',
+            compacted INTEGER NOT NULL DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -72,6 +73,11 @@ def init_database():
     if not _column_exists(cursor, "chat_messages", "mode"):
         cursor.execute(
             "ALTER TABLE chat_messages ADD COLUMN mode TEXT NOT NULL DEFAULT 'agent'"
+        )
+    # 老库迁移：补 compacted 列
+    if not _column_exists(cursor, "chat_messages", "compacted"):
+        cursor.execute(
+            "ALTER TABLE chat_messages ADD COLUMN compacted INTEGER NOT NULL DEFAULT 0"
         )
 
     cursor.execute("""

@@ -851,8 +851,7 @@ async def _run_subagent_loop(
                                 except Exception:
                                     pass
 
-                        if finish_reason in ("tool_calls", "stop"):
-                            break
+                        # 不在 finish_reason 时 break：usage 可能在后续独立 chunk 返回
             except httpx.TimeoutException:
                 execution.status = "failed"
                 execution.error = f"模型 API 读取超时（>{int(SUBAGENT_LLM_READ_TIMEOUT)}s）"
@@ -1281,6 +1280,10 @@ async def run_subagent_direct(
                         except json.JSONDecodeError:
                             continue
 
+                        usage = extract_usage_from_stream_chunk(chunk)
+                        if usage:
+                            sub_logger.add_token_usage(usage)
+
                         choices = chunk.get("choices", [])
                         if not choices:
                             continue
@@ -1323,8 +1326,7 @@ async def run_subagent_direct(
                             except Exception:
                                 pass
 
-                        if finish_reason in ("tool_calls", "stop"):
-                            break
+                        # 不在 finish_reason 时 break：usage 可能在后续独立 chunk 返回
             except Exception as exc:
                 return {"status": "error", "error": str(exc), "tool_results": tool_results}
 

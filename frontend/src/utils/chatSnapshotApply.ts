@@ -175,7 +175,6 @@ export function buildMessageFromSnapshotEvents(
       new_content: e.fileChange!.new_content || '',
       tool_name: e.toolName || '',
       tool_call_id: e.toolCallId || '',
-      reverted: false,
     }))
 
   return {

@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 import time
+import json
 
 from db.chat import (
     save_message,
@@ -12,6 +13,7 @@ from db.chat import (
     get_conversation_history,
     get_recent_messages,
     compact_session_if_needed,
+    get_latest_assistant_message,
 )
 from db.database import get_connection
 from db.sessions import (
@@ -296,8 +298,55 @@ def get_session_context_usage(session_id: str, refresh: bool = False):
     for k in ("recent_message_count", "memory_count", "reasoning_count", "recent_window_tokens"):
         if token_info.get(k) is not None:
             breakdown[k] = token_info[k]
+
+    # 如果有最近的 assistant 回复，尝试用 API 真实 prompt_tokens 校准上下文占用
+    # 这比估算更接近模型实际看到的上下文 token 数
+    latest_assistant = get_latest_assistant_message(session_id)
+    if latest_assistant and latest_assistant.get("snapshot_path"):
+        real_prompt = _extract_real_prompt_tokens_from_jsonl(latest_assistant["snapshot_path"])
+        if real_prompt:
+            context_window = int(breakdown.get("context_window") or 200_000)
+            breakdown["estimated_tokens"] = real_prompt
+            breakdown["usage_percent"] = round((real_prompt / context_window) * 100, 1) if context_window > 0 else 0.0
+            breakdown["from_api_prompt_tokens"] = real_prompt
+
     _context_usage_cache[session_id] = (now, breakdown)
     return breakdown
+
+
+def _extract_real_prompt_tokens_from_jsonl(snapshot_path: str) -> int | None:
+    """从 assistant 消息的 JSONL 日志中提取最后一次 API 返回的真实 prompt_tokens。"""
+    if not snapshot_path or not snapshot_path.endswith(".jsonl"):
+        return None
+    try:
+        from pathlib import Path
+        path = Path(snapshot_path)
+        if not path.exists():
+            return None
+        real_prompt: int | None = None
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    evt = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(evt, dict):
+                    continue
+                token_usage = evt.get("token_usage")
+                if not isinstance(token_usage, dict):
+                    continue
+                api_usage = token_usage.get("api_usage")
+                if isinstance(api_usage, dict) and api_usage.get("prompt_tokens"):
+                    real_prompt = int(api_usage.get("prompt_tokens") or 0) or None
+                # 用 final run_metadata 覆盖中间快照，确保取完整值
+                if evt.get("type") == "run_metadata" and evt.get("final") and real_prompt:
+                    break
+        return real_prompt
+    except Exception:
+        return None
 
 
 @router.post("/{session_id}/compact")

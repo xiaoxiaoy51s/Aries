@@ -320,27 +320,38 @@ class SessionLogger:
     def add_token_usage(self, usage: dict[str, Any] | None) -> None:
         if not usage:
             return
-        from utils.token_counter import recalc_api_usage_totals
+        from utils.token_counter import recalc_api_usage_totals, get_model_context_window
 
         api_usage = self._token_usage.setdefault("api_usage", {})
-        touched = False
-        for key in (
-            "prompt_tokens",
-            "completion_tokens",
-            "total_tokens",
-            "cached_tokens",
-            "cache_read_input_tokens",
-            "cache_creation_input_tokens",
-            "reasoning_tokens",
-        ):
+
+        # prompt_tokens / cached_tokens 代表"当前上下文大小"，多轮工具调用中每轮
+        # 的 prompt_tokens 已含之前所有轮次，应取最后一次的值（覆盖），不能累加。
+        # completion_tokens / reasoning_tokens 是每轮生成量，需要累加。
+        snapshot_keys = ("prompt_tokens", "cached_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+        accumulate_keys = ("completion_tokens", "reasoning_tokens")
+
+        for key in snapshot_keys:
             val = int(usage.get(key) or 0)
             if val:
-                api_usage[key] = int(api_usage.get(key, 0) or 0) + val
-                touched = True
-        if touched:
+                api_usage[key] = val  # 覆盖
+
+        for key in accumulate_keys:
+            val = int(usage.get(key) or 0)
+            if val:
+                api_usage[key] = int(api_usage.get(key, 0) or 0) + val  # 累加
+
+        if any(usage.get(k) for k in snapshot_keys + accumulate_keys):
             recalc_api_usage_totals(api_usage)
             api_usage["from_api"] = True
             api_usage.pop("estimated", None)
+
+        # 用 API 返回的真实 prompt_tokens 更新上下文占用百分比
+        last_prompt = int(usage.get("prompt_tokens") or 0)
+        if last_prompt:
+            context = self._token_usage.setdefault("context", {})
+            context_window = int(context.get("context_window") or 0) or get_model_context_window(self._model)
+            context["estimated_tokens"] = last_prompt
+            context["usage_percent"] = round((last_prompt / context_window) * 100, 1) if context_window > 0 else 0.0
 
     def emit_run_metadata_snapshot(self) -> None:
         """流式过程中推送累计 API usage（可多次，finalize 前不写盘标记）。"""
@@ -483,10 +494,10 @@ class SessionLogger:
         MiMo / DeepSeek 等 OpenAI 兼容接口在流式最后一包会返回 usage；
         completion_tokens 已包含 reasoning，无需单独累加 reasoning_tokens。
         """
-        from utils.token_counter import estimate_tokens
+        from utils.token_counter import estimate_tokens, get_model_context_window
 
         api = dict(self._token_usage.get("api_usage") or {})
-        context = self._token_usage.get("context") or {}
+        context = dict(self._token_usage.get("context") or {})
         if not isinstance(context, dict):
             context = {}
 
@@ -495,6 +506,7 @@ class SessionLogger:
         if api.get("from_api") or (had_api_prompt and had_api_completion):
             api.pop("estimated", None)
             self._token_usage["api_usage"] = api
+            # 已在 add_token_usage 中用真实 prompt_tokens 更新过 context，无需再估算
             return
 
         prompt = int(api.get("prompt_tokens") or 0)
@@ -518,6 +530,13 @@ class SessionLogger:
         merged["estimated"] = True
 
         self._token_usage["api_usage"] = merged
+
+        # 用最终的 prompt_tokens 更新上下文占用百分比（兜底：API 未返回 usage 时）
+        if prompt:
+            context_window = int(context.get("context_window") or 0) or get_model_context_window(self._model)
+            context["estimated_tokens"] = prompt
+            context["usage_percent"] = round((prompt / context_window) * 100, 1) if context_window > 0 else 0.0
+            self._token_usage["context"] = context
 
     def build_db_reasoning(self) -> str | None:
         if not self._reasoning_all and not self._tool_log:

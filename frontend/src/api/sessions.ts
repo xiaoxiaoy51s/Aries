@@ -122,8 +122,11 @@ export interface ContextUsageInfo {
   recent_window_tokens?: number
 }
 
-export async function getSessionContextUsage(sessionId: string): Promise<ContextUsageInfo> {
-  const res = await _dedupedGet(`${getBaseUrl()}/sessions/${sessionId}/context-usage`)
+export async function getSessionContextUsage(sessionId: string, refresh: boolean = false): Promise<ContextUsageInfo> {
+  const url = refresh
+    ? `${getBaseUrl()}/sessions/${sessionId}/context-usage?refresh=true`
+    : `${getBaseUrl()}/sessions/${sessionId}/context-usage`
+  const res = await _dedupedGet(url)
   if (!res.ok) throw new Error('获取上下文使用情况失败')
   return res.json()
 }

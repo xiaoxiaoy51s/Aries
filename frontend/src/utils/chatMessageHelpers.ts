@@ -65,6 +65,7 @@ export function mapRawMessagesToChat(rawMessages: Array<Record<string, unknown>>
       isLoading: false,
       messageSnapshotJson: (m.message_snapshot_json as string) || undefined,
       messageId: m.id as number | undefined,
+      compacted: !!m.compacted,
     }
     if (m.role === 'user') {
       Object.assign(base, enrichUserMessage((m.content as string) || ''))

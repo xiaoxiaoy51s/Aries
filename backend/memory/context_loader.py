@@ -27,16 +27,43 @@ def _truncate(text: str, limit: int) -> str:
     return text[:limit] + "\n...(内容已截断)"
 
 
+def _load_assistant_content_from_snapshot(msg: dict[str, Any]) -> str:
+    """从 JSONL 快照日志读取 assistant 消息的完整文本内容。"""
+    snapshot = msg.get("message_snapshot_json")
+    if not snapshot:
+        return ""
+    try:
+        from utils.session_logger import resolve_message_log_events
+        events = resolve_message_log_events(snapshot)
+        text_parts = []
+        for evt in events:
+            if isinstance(evt, dict) and evt.get("type") == "assistant_text":
+                text_parts.append(evt.get("text", ""))
+        return "\n".join(text_parts)
+    except Exception:
+        return ""
+
+
 def normalize_db_message(msg: dict[str, Any]) -> dict[str, Any] | None:
-    """DB 消息转 LLM 消息。"""
+    """DB 消息转 LLM 消息。
+
+    user 消息从 DB content 读取；assistant 消息优先从 JSONL 日志读取完整 content，
+    日志不可用时回退到 DB content。已压缩的消息跳过。
+    """
     role = msg.get("role", "")
-    content = msg.get("content", "") or ""
     if role not in ("user", "assistant"):
         return None
+    # 已压缩的消息不加载到上下文
+    if msg.get("compacted"):
+        return None
+    content = msg.get("content", "") or ""
+    if role == "assistant":
+        # 优先从日志读取完整内容
+        if not content.strip():
+            content = _load_assistant_content_from_snapshot(msg)
+        content = _truncate(content, MAX_ASSISTANT_CHARS)
     if not content.strip():
         return None
-    if role == "assistant":
-        content = _truncate(content, MAX_ASSISTANT_CHARS)
     return {"role": role, "content": content}
 
 

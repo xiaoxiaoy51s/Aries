@@ -598,6 +598,7 @@ const emit = defineEmits<{
   pickWorkDir: []
   applyWorkDir: [path: string]
   toggleSideChat: []
+  compactStart: []
   compactDone: []
 }>()
 
@@ -1252,12 +1253,17 @@ async function confirmCompact() {
   const sid = props.sessionId
   if (!sid || compactLoading.value) return
   compactLoading.value = true
+  emit('compactStart')
   try {
-    await compactSession(sid)
+    const result = await compactSession(sid)
     compactModalOpen.value = false
+    if (!result.compacted) {
+      console.warn('[Compact] 没有足够消息需要压缩')
+    }
     emit('compactDone')
   } catch (e) {
     console.error('压缩会话失败', e)
+    emit('compactDone')
   } finally {
     compactLoading.value = false
   }

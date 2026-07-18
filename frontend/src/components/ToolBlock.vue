@@ -11,7 +11,7 @@
         />
       </div>
       <div v-if="isExpanded && status === 'running' && !pendingConfirmation && !result && !error" class="file-edit-running">
-        运行中...
+        Running...
       </div>
       <ToolActionBar
         :show-terminal="hasTerminalSession"
@@ -388,6 +388,7 @@ function openScreenshotPreview() {
 }
 
 const fileEditPreview = computed(() => buildFileEditPreview(props.toolName, props.args))
+
 const subagentStatusLabel = computed(() => {
   const s = props.subagent?.status || ''
   switch (s) {

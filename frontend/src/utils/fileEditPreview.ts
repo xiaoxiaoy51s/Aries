@@ -5,6 +5,7 @@ const ICON_CDN = './file-icons'
 export const FILE_EDIT_TOOL_NAMES = new Set([
   'edit_file',
   'write_file',
+  'delete_file',
   'apply_patch',
   'multi_replace_string',
 ])

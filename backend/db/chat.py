@@ -33,6 +33,7 @@ def update_message(
     reasoning_content: str | None = None,
     image_path: str | None = None,
     message_snapshot_json: str | None = None,
+    compacted: int | None = None,
 ) -> None:
     updates: list[str] = []
     values: list[str | int | None] = []
@@ -49,6 +50,9 @@ def update_message(
     if message_snapshot_json is not None:
         updates.append("message_snapshot_json = ?")
         values.append(message_snapshot_json)
+    if compacted is not None:
+        updates.append("compacted = ?")
+        values.append(compacted)
 
     if not updates:
         return
@@ -127,7 +131,7 @@ def get_messages_after_id(session_id: str, after_id: int = 0, limit: int = 200) 
 
     rows = conn.execute(
         """
-        SELECT id, role, content, reasoning_content, image_path, message_snapshot_json, mode
+        SELECT id, role, content, reasoning_content, image_path, message_snapshot_json, mode, compacted
         FROM chat_messages
         WHERE session_id = ? AND id > ?
         ORDER BY id DESC
@@ -149,6 +153,7 @@ def get_messages_after_id(session_id: str, after_id: int = 0, limit: int = 200) 
             "image_path": row[4],
             "message_snapshot_json": row[5] or None,
             "mode": row[6] or "agent",
+            "compacted": bool(row[7]) if len(row) > 7 else False,
         }
         result.append(item)
     return result
@@ -188,6 +193,9 @@ def get_recent_agent_reasoning(session_id: str, rounds: int = 3) -> list[str]:
     for msg in db_msgs:
         if msg.get("role") != "assistant":
             continue
+        # 已压缩的消息不加载工作记录
+        if msg.get("compacted"):
+            continue
         events = resolve_message_log_events(msg.get("message_snapshot_json"))
         trace = build_work_trace_from_events(events) if events else ""
         if not trace:
@@ -219,19 +227,48 @@ def build_agent_reasoning_context(session_id: str, rounds: int = 3) -> dict | No
     }
 
 
+def _build_llm_messages_from_db(db_messages: list[dict]) -> list[dict]:
+    """从 DB 消息构建 LLM 消息列表。
+
+    user 消息从 DB content 读取；assistant 消息优先从 JSONL 日志读取完整 content，
+    日志不可用时回退到 DB content。已压缩的消息跳过。
+    """
+    result: list[dict] = []
+    for msg in db_messages:
+        # 已压缩的消息不加载到上下文
+        if msg.get("compacted"):
+            continue
+        role = msg.get("role", "")
+        if role == "user":
+            content = msg.get("content") or ""
+            if content.strip():
+                result.append({"role": "user", "content": content})
+        elif role == "assistant":
+            content = msg.get("content") or ""
+            if not content.strip():
+                # DB content 为空时从 JSONL 日志读取
+                snapshot = msg.get("message_snapshot_json")
+                if snapshot:
+                    events = resolve_message_log_events(snapshot)
+                    text_parts = []
+                    for evt in events:
+                        if isinstance(evt, dict) and evt.get("type") == "assistant_text":
+                            text_parts.append(evt.get("text", ""))
+                    content = "\n".join(text_parts)
+            if content.strip():
+                result.append({"role": "assistant", "content": content})
+    return result
+
+
 def compact_session_if_needed(session_id: str, force: bool = False) -> dict | None:
-    from memory.compaction import make_memory_record, should_compact, split_messages_for_compaction
+    from memory.compaction import make_memory_record, should_compact, split_messages_for_compaction, build_session_summary_with_llm
 
     boundary = get_latest_memory_boundary(session_id)
     db_messages = get_messages_after_id(session_id, after_id=boundary, limit=200)
-    llm_messages = []
     max_id = boundary
     for msg in db_messages:
         max_id = max(max_id, int(msg.get("id") or 0))
-        role = msg.get("role")
-        content = msg.get("content") or ""
-        if role in ("user", "assistant") and content.strip():
-            llm_messages.append({"role": role, "content": content})
+    llm_messages = _build_llm_messages_from_db(db_messages)
 
     if not force and not should_compact(llm_messages):
         return None
@@ -246,16 +283,56 @@ def compact_session_if_needed(session_id: str, force: bool = False) -> dict | No
     for msg in db_messages:
         role = msg.get("role")
         content = msg.get("content") or ""
-        if role in ("user", "assistant") and content.strip():
+        # user 消息看 content，assistant 消息看 snapshot 或 content
+        has_content = bool(content.strip()) if role == "user" else bool(
+            content.strip() or (msg.get("message_snapshot_json") or "").strip()
+        )
+        if role in ("user", "assistant") and has_content:
             seen += 1
             compact_until_id = int(msg.get("id") or compact_until_id)
             if seen >= compact_until_count:
                 break
 
-    memory = make_memory_record(session_id, to_compact)
+    # 优先用 LLM 生成摘要，失败时 make_memory_record 内部回退到确定性规则
+    memory = None
+    try:
+        from models.model_manager import resolve_active_model_config
+        import asyncio
+        base_url, api_key, model = resolve_active_model_config()
+        if base_url and api_key and model:
+            llm_summary = None
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # 已在事件循环中（如被 async 路由间接调用），用新线程跑
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        llm_summary = pool.submit(
+                            lambda: asyncio.run(build_session_summary_with_llm(
+                                to_compact, base_url, api_key, model,
+                            ))
+                        ).result(timeout=30)
+                else:
+                    llm_summary = loop.run_until_complete(
+                        build_session_summary_with_llm(to_compact, base_url, api_key, model)
+                    )
+            except RuntimeError:
+                llm_summary = asyncio.run(
+                    build_session_summary_with_llm(to_compact, base_url, api_key, model)
+                )
+            if llm_summary:
+                memory = make_memory_record(session_id, to_compact, summary_override=llm_summary)
+    except Exception:
+        pass
+
+    if not memory:
+        memory = make_memory_record(session_id, to_compact)
+
     memory["source_until_message_id"] = compact_until_id
     memory_id = save_session_memory(memory)
     memory["id"] = memory_id
+    # 标记被压缩的 assistant 消息
+    mark_messages_compacted(session_id, compact_until_id)
     return memory
 
 
@@ -268,24 +345,22 @@ def _apply_background_compaction(session_id: str, result) -> bool:
 
     boundary = get_latest_memory_boundary(session_id)
     db_messages = get_messages_after_id(session_id, after_id=boundary, limit=200)
-    llm_messages = []
-    for msg in db_messages:
-        role = msg.get("role")
-        content = msg.get("content") or ""
-        if role in ("user", "assistant") and content.strip():
-            llm_messages.append({"role": role, "content": content})
+    llm_messages = _build_llm_messages_from_db(db_messages)
 
     compact_until_count = result.source_messages
     if compact_until_count == 0 or len(llm_messages) < compact_until_count:
         return False
 
-    # 映射 compact_until_count → DB message id
+    # 映射 compact_until_count -> DB message id
     compact_until_id = boundary
     seen = 0
     for msg in db_messages:
         role = msg.get("role")
         content = msg.get("content") or ""
-        if role in ("user", "assistant") and content.strip():
+        has_content = bool(content.strip()) if role == "user" else bool(
+            content.strip() or (msg.get("message_snapshot_json") or "").strip()
+        )
+        if role in ("user", "assistant") and has_content:
             seen += 1
             compact_until_id = int(msg.get("id") or compact_until_id)
             if seen >= compact_until_count:
@@ -301,6 +376,8 @@ def _apply_background_compaction(session_id: str, result) -> bool:
         "created_at": result.created_at,
     }
     save_session_memory(memory)
+    # 标记被压缩的 assistant 消息
+    mark_messages_compacted(session_id, compact_until_id)
     return True
 
 
@@ -348,9 +425,22 @@ def get_conversation_history(
     history: list[dict] = []
     for msg in history_msgs:
         role = msg.get("role", "")
-        content = msg.get("content", "")
         if role not in ("user", "assistant"):
             continue
+        # 已压缩的消息不加载到上下文
+        if msg.get("compacted"):
+            continue
+        content = msg.get("content", "") or ""
+        # assistant 消息 content 为空时从日志读取
+        if role == "assistant" and not content.strip():
+            snapshot = msg.get("message_snapshot_json")
+            if snapshot:
+                events = resolve_message_log_events(snapshot)
+                text_parts = []
+                for evt in events:
+                    if isinstance(evt, dict) and evt.get("type") == "assistant_text":
+                        text_parts.append(evt.get("text", ""))
+                content = "\n".join(text_parts)
         if not content or not content.strip():
             continue
         if user_only and role != "user":
@@ -391,7 +481,7 @@ def get_session_messages(session_id: str, limit: int = 100) -> list[dict]:
 
     rows = conn.execute(
         """
-        SELECT id, role, content, created_at, reasoning_content, image_path, message_snapshot_json, mode
+        SELECT id, role, content, created_at, reasoning_content, image_path, message_snapshot_json, mode, compacted
         FROM chat_messages
         WHERE session_id = ?
         ORDER BY id DESC
@@ -413,9 +503,24 @@ def get_session_messages(session_id: str, limit: int = 100) -> list[dict]:
             "image_path": row[5],
             "message_snapshot_json": row[6] or None,
             "mode": row[7] or "agent",
+            "compacted": bool(row[8]) if len(row) > 8 else False,
         }
         result.append(item)
     return result
+
+
+def mark_messages_compacted(session_id: str, up_to_message_id: int) -> int:
+    """标记 session 内 id <= up_to_message_id 的消息为已压缩（user + assistant）。"""
+    conn = get_connection()
+    cursor = conn.execute(
+        """
+        UPDATE chat_messages SET compacted = 1
+        WHERE session_id = ? AND id <= ? AND role IN ('user', 'assistant')
+        """,
+        (session_id, up_to_message_id),
+    )
+    conn.commit()
+    return cursor.rowcount
 
 
 def get_latest_memory_boundary(session_id: str) -> int:

@@ -64,7 +64,7 @@ const props = defineProps<{
   error?: string
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   click: []
 }>()
 

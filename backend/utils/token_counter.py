@@ -8,18 +8,46 @@ from __future__ import annotations
 import json
 from typing import Any
 
-# 与 opencode 一致：4 字符 ≈ 1 token
+# 估算参考：英文约 4 字符/token，中文约 1.5 字符/token，混合取折中
 CHARS_PER_TOKEN = 4
+CJK_CHARS_PER_TOKEN = 1.5
 
 # 当前统一按 200k 上下文窗口估算，不做模型映射。
 DEFAULT_CONTEXT_WINDOW = 200_000
 
 
-def estimate_tokens(text: str) -> int:
-    """估算字符串的 token 数量（参考 opencode: len / 4）。"""
+def _count_cjk_chars(text: str) -> int:
+    """统计 CJK（中日韩）字符数量。"""
     if not text:
         return 0
-    return max(0, len(text) // CHARS_PER_TOKEN)
+    count = 0
+    for ch in text:
+        cp = ord(ch)
+        # CJK 统一表意文字、扩展区、日文假名、韩文音节等
+        if (
+            0x4E00 <= cp <= 0x9FFF       # CJK 统一表意文字
+            or 0x3400 <= cp <= 0x4DBF    # CJK 扩展 A
+            or 0x20000 <= cp <= 0x2A6DF  # CJK 扩展 B
+            or 0x3040 <= cp <= 0x30FF    # 日文假名
+            or 0xAC00 <= cp <= 0xD7AF    # 韩文音节
+            or 0xFF00 <= cp <= 0xFFEF    # 全角字符
+        ):
+            count += 1
+    return count
+
+
+def estimate_tokens(text: str) -> int:
+    """估算字符串的 token 数量。
+
+    英文按 ~4 字符/token，CJK 字符按 ~1.5 字符/token（中文 1 字约 1-2 token）。
+    """
+    if not text:
+        return 0
+    cjk_count = _count_cjk_chars(text)
+    non_cjk_len = len(text) - cjk_count
+    cjk_tokens = int(cjk_count / CJK_CHARS_PER_TOKEN) if cjk_count else 0
+    non_cjk_tokens = non_cjk_len // CHARS_PER_TOKEN
+    return max(0, cjk_tokens + non_cjk_tokens)
 
 
 def estimate_message_tokens(message: dict[str, Any]) -> int:

@@ -222,8 +222,8 @@ async def _handle_llm_stream(
                             logger.record_assistant_content(content)
                             yield True
 
-                        if finish_reason in ("tool_calls", "stop"):
-                            break
+                        # 不在 finish_reason 时 break：部分 OpenAI 兼容 API 的 usage
+                        # 在 finish_reason 之后的独立 chunk 返回（无 choices），需要继续读取
 
                     except json.JSONDecodeError:
                         continue
@@ -904,12 +904,19 @@ async def stream_agent_mode(
             stop_note = ""
             if cancelled and not db_content:
                 stop_note = "（用户中断，任务未完成。请发送「继续」以恢复执行。）"
-            update_message(
-                assistant_message_id,
-                content=db_content or stop_note or "（无响应）",
-                message_snapshot_json=logger.jsonl_path_str(),
-                reasoning_content=logger.build_db_reasoning()
-            )
+            # AI 消息不再写 content/reasoning_content 到 DB，仅更新快照路径
+            # 取消时写入 stop_note 作为兜底，确保前端有内容显示
+            if stop_note:
+                update_message(
+                    assistant_message_id,
+                    content=stop_note,
+                    message_snapshot_json=logger.jsonl_path_str(),
+                )
+            else:
+                update_message(
+                    assistant_message_id,
+                    message_snapshot_json=logger.jsonl_path_str(),
+                )
             yield f"event: stream_event\ndata: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
             async for ev in _drain_sse_queue():
                 yield ev

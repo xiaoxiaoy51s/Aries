@@ -69,7 +69,7 @@
           </div>
         </div>
 
-        <!-- 最终回复块（assistant_text，phase=answer） -->
+        <!-- 最终回复块（assistant_text，phase=answer）+ 文件变更工具 -->
         <template v-else>
           <template v-for="(block, idx) in group.items" :key="idx">
             <div
@@ -88,6 +88,26 @@
                 :is-streaming="isLoading"
               />
             </div>
+            <ToolBlock
+              v-else-if="block.type === 'tool'"
+              :tool-name="block.tool_name || 'unknown'"
+              :status="block.status || 'running'"
+              :args="block.args"
+              :preview="block.preview"
+              :result="block.result || ''"
+              :error="block.error || ''"
+              :screenshot-preview="block.screenshot_preview || ''"
+              :screenshot-path="block.screenshot_path || ''"
+              :started-at="block.started_at || ''"
+              :ended-at="block.ended_at || ''"
+              :compact="false"
+              :pending-confirmation="block.pending_confirmation || false"
+              :danger-info="block.danger_info || ''"
+              :session-id="block.session_id || ''"
+              :tool-call-id="block.tool_call_id || ''"
+              :chat-session-id="chatSessionId || ''"
+              :subagent="block.subagent"
+            />
           </template>
         </template>
       </template>
@@ -156,22 +176,20 @@
         </svg>
         <svg t="1782211062629" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="2784" width="14" height="14"><path d="M490.23 221.699l-47.125-49.852c-13.802-14.603-32.937-22.868-52.943-22.868H186.101c-40.402 0-73.153 33.035-73.153 73.786v548.08c0 40.75 32.751 73.786 73.153 73.786h653.697c40.398 0 73.15-33.037 73.15-73.786V318.351c0-40.75-32.751-73.784-73.15-73.784H543.174c-20.006 0-39.137-8.266-52.944-22.868l-47.125-49.852a73.533 73.533 0 0 0-5.56-5.293 266.288 266.288 0 0 0-15.423-0.463c-144.821-0.001-262.221 117.399-262.221 262.218z m444.469-20.93c0 111.124-90.084 201.208-201.208 201.208s-201.208-90.084-201.208-201.208 90.084-201.208 201.208-201.208 201.208 90.084 201.208 201.208z" fill="#FFC134" p-id="2790"></path><path d="M201.956 407.379c0 111.124 90.084 201.208 201.208 201.208s201.208-90.084 201.208-201.208-90.084-201.208-201.208-201.208-201.208 90.084-201.208 201.208z m322.447-20.931c0 77.429-62.768 140.197-140.197 140.197s-140.197-62.768-140.197-140.197 62.768-140.197 140.197-140.197 140.197 62.769 140.197 140.197z" fill="#FFC634" p-id="2791"></path><path d="M384.206 386.448m-140.197 0a140.197 140.197 0 1 0 280.394 0 140.197 140.197 0 1 0-280.394 0Z" fill="#FFCB34" p-id="2792"></path><path d="M390.162 166.979c14.982 0 29.511 6.281 39.862 17.233l47.127 49.854c17.127 18.113 41.191 28.501 66.023 28.501h296.624c30.41 0 55.15 25.025 55.15 55.784v452.494c0 30.761-24.74 55.786-55.15 55.786H186.101c-30.411 0-55.153-25.026-55.153-55.786v-548.08c0-30.761 24.742-55.786 55.153-55.786h204.061m0-18H186.101c-40.402 0-73.153 33.035-73.153 73.786v548.08c0 40.75 32.751 73.786 73.153 73.786h653.697c40.398 0 73.15-33.037 73.15-73.786V318.351c0-40.75-32.751-73.784-73.15-73.784H543.175c-20.007 0-39.137-8.266-52.944-22.868l-47.125-49.852c-13.803-14.604-32.938-22.868-52.944-22.868z" fill="#FFA820" p-id="2793"></path></svg>
         <span class="artifacts-title">变更</span>
-        <span class="artifacts-count">{{ props.artifacts.length }} 个文件</span>
+        <span class="artifacts-count">{{ groupedArtifacts.length }} 个文件</span>
         <span class="artifacts-summary">
           <span v-if="artifactStats.added" class="sum-badge sum-created">+{{ artifactStats.added }}</span>
           <span v-if="artifactStats.removed" class="sum-badge sum-deleted">-{{ artifactStats.removed }}</span>
         </span>
       </div>
       <div v-show="showArtifacts" class="artifacts-list">
-        <div v-for="(item, idx) in props.artifacts" :key="idx" class="artifact-item" :class="{ 'artifact-reverted': item.reverted, ['op-' + artifactRows[idx].op]: true }">
-          <div class="artifact-row" @click="emit('view-artifact', idx)">
+        <div v-for="(item, idx) in groupedArtifacts" :key="idx" class="artifact-item" :class="['op-' + artifactRows[idx].op]">
+          <div class="artifact-row" @click="emit('view-artifact', item.indices[0])">
               <img class="artifact-file-icon" :src="getFileIconUrl(getFileName(item.file_path))" width="15" height="15" alt="" />
               <span class="artifact-path" :title="item.file_path">{{ getFileName(item.file_path) }}</span>
               <span v-if="artifactRows[idx].diff" class="artifact-diffstat">
                 <span v-if="artifactRows[idx].diff!.added" class="diff-add">+{{ artifactRows[idx].diff!.added }}</span><span v-if="artifactRows[idx].diff!.added && artifactRows[idx].diff!.removed" class="diff-sep"> </span><span v-if="artifactRows[idx].diff!.removed" class="diff-del">-{{ artifactRows[idx].diff!.removed }}</span>
               </span>
-              <span v-if="item.reverted" class="artifact-reverted-badge">已回退</span>
-              <button v-else class="artifact-revert-btn" @click.stop="emit('revert', idx)" title="回退此变更">回退</button>
             </div>
         </div>
       </div>
@@ -198,6 +216,13 @@
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import ToolBlock from './ToolBlock.vue'
+import { FILE_EDIT_TOOL_NAMES } from '@/utils/fileEditPreview'
+
+interface BlockGroup {
+  type: 'work' | 'normal'
+  items: MessageBlock[]
+}
+
 import { getIconForFile, DEFAULT_FILE } from 'vscode-icons-js'
 import {
   streamDurationTick,
@@ -282,7 +307,6 @@ const props = withDefaults(defineProps<{
     new_content: string
     tool_name: string
     tool_call_id: string
-    reverted?: boolean
   }>
   isLoading?: boolean
   textColor?: string
@@ -303,7 +327,6 @@ const props = withDefaults(defineProps<{
 })
 
 const emit = defineEmits<{
-  (e: 'revert', artifactIndex: number): void
   (e: 'view-artifact', artifactIndex: number): void
 }>()
 
@@ -416,9 +439,51 @@ function computeDiff(prev: string, next: string): { added: number; removed: numb
   return { added, removed }
 }
 
-// 预计算每个产物的类型 + diff，避免模板里多次重复跑 LCS
+// 按 file_path 分组去重：同一文件多次编辑合并为一条
+// 使用第一条的 previous_content 和最后一条的 new_content 计算整体 diff
+// 保留所有原始索引，以便 view 操作
+const groupedArtifacts = computed(() => {
+  const artifacts = props.artifacts || []
+  const map = new Map<string, {
+    file_path: string
+    operation: string
+    previous_content: string
+    new_content: string
+    tool_name: string
+    tool_call_id: string
+    indices: number[]
+  }>()
+
+  for (let i = 0; i < artifacts.length; i++) {
+    const item = artifacts[i]
+    const key = item.file_path
+    if (map.has(key)) {
+      const existing = map.get(key)!
+      // 更新：用最新的 new_content，保留最早的 previous_content
+      existing.new_content = item.new_content
+      existing.operation = item.operation
+      existing.tool_name = item.tool_name
+      existing.tool_call_id = item.tool_call_id
+      existing.indices.push(i)
+    } else {
+      map.set(key, {
+        file_path: item.file_path,
+        operation: item.operation,
+        previous_content: item.previous_content,
+        new_content: item.new_content,
+        tool_name: item.tool_name,
+        tool_call_id: item.tool_call_id,
+        indices: [i],
+      })
+    }
+  }
+
+  return Array.from(map.values())
+})
+
+// 预计算每个分组产物的类型 + diff
 const artifactRows = computed(() => {
-  return (props.artifacts || []).map((item) => {
+  return groupedArtifacts.value.map((item) => {
     const op = getOpType(item)
     const diff = computeDiff(item.previous_content ?? '', item.new_content ?? '')
     return { op, diff }
@@ -540,9 +605,11 @@ const groupedBlocks = computed<BlockGroup[]>(() => {
   let current: BlockGroup | null = null
 
   blocks.forEach((b, idx) => {
+    const isFileTool = b.type === 'tool' && FILE_EDIT_TOOL_NAMES.has(b.tool_name || '')
     const isFinalText =
       (b.type === 'text' || b.type === 'summary') && b.phase !== 'work'
-    const groupType: 'work' | 'normal' = isFinalText ? 'normal' : 'work'
+    // 文件变更工具单独成组，不折叠在"思考过程"中
+    const groupType: 'work' | 'normal' = isFileTool ? 'normal' : (isFinalText ? 'normal' : 'work')
     if (!current || current.type !== groupType) {
       current = { type: groupType, items: [] }
       groups.push(current)
@@ -1098,37 +1165,6 @@ function onMessageClick(e: MouseEvent) {
 .diff-add { color: #16a34a; }
 .diff-del { color: #dc2626; }
 .diff-sep { display: inline-block; width: 4px; }
-
-.artifact-reverted-badge {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: #fef3c7;
-  color: #92400e;
-  flex-shrink: 0;
-}
-
-.artifact-revert-btn {
-  font-size: 10px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  border: 1px solid var(--border, #ddd);
-  background: transparent;
-  color: var(--text-muted, #888);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: all 0.15s;
-}
-
-.artifact-revert-btn:hover {
-  background: #fee2e2;
-  color: #dc2626;
-  border-color: #fecaca;
-}
-
-.artifact-reverted {
-  opacity: 0.5;
-}
 
 /* 统一复制按钮：始终位于消息最底部（产物之后） */
 .message-actions {

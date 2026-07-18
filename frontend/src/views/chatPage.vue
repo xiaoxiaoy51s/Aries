@@ -29,6 +29,7 @@
         @pick-work-dir="pickWorkDir"
         @apply-work-dir="applyWorkDir"
         @toggle-side-chat="toggleRightPanel"
+        @compact-start="onCompactStart"
         @compact-done="onCompactDone"
       />
     </div>
@@ -121,7 +122,15 @@
           
           <!-- 助手消息（支持 Markdown/LaTeX/思考/工具） -->
           <div v-else class="msg-bubble assistant-bubble">
+            <div v-if="msg.compacted" class="compacted-notice">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                <path d="M3 3v5h5"/>
+              </svg>
+              <span>上文已被压缩过，如需查看完整内容请向上滚动或新建会话</span>
+            </div>
             <AssistantMessage
+              v-else
               :content="msg.content"
               :reasoning="msg.reasoning || []"
               :tools="msg.tools || []"
@@ -133,7 +142,6 @@
               :meta="msg.meta"
               :message-id="msg.messageId"
               :chat-session-id="currentSessionId || ''"
-              @revert="(idx: number) => revertArtifact(index, idx)"
               @view-artifact="(idx: number) => viewArtifact(index, idx)"
             />
           </div>
@@ -914,6 +922,7 @@ async function loadNewMessages(force: boolean = false) {
         blocks: [],
         isLoading: false,
         messageSnapshotJson: m.message_snapshot_json || undefined,
+        compacted: !!m.compacted,
       }
       if (m.role === 'user') {
         Object.assign(base, enrichUserMessage(m.content || ''))
@@ -930,6 +939,8 @@ async function loadNewMessages(force: boolean = false) {
     // 异步加载所有尚未加载快照的助手消息
     for (let i = 0; i < allMsgs.length; i++) {
       if (allMsgs[i].role !== 'assistant') continue
+      // 跳过已压缩的消息
+      if (msgs[i]?.compacted) continue
       const messageId = allMsgs[i].id
       if (!messageId) continue
       // 跳过已加载 blocks 的消息，避免 SSE 事件反复触发 jsonl 请求
@@ -1727,11 +1738,41 @@ watch(() => modelStore.activeModel?.id, (id) => {
   }
 }, { immediate: true })
 
-// 压缩完成后刷新上下文占用
+// 压缩开始：显示 loading 占位消息（复用流式输出样式）
+function onCompactStart() {
+  if (!currentSessionId.value) return
+  console.log('[Compact] onCompactStart - 显示 loading')
+  isSending.value = true
+  messages.value.push({
+    role: 'assistant',
+    content: '',
+    reasoning: [],
+    tools: [],
+    blocks: [],
+    isLoading: true,
+    mode: 'agent',
+  })
+  activeAssistantIdx = messages.value.length - 1
+  nextTick(() => scheduleScrollToBottom(true))
+}
+
+// 压缩完成后：移除占位消息，重新加载消息列表（更新 compacted 标记），刷新上下文占用
 async function onCompactDone() {
   if (!currentSessionId.value) return
+  console.log('[Compact] onCompactDone - 移除 loading, 重新加载')
+  // 移除 loading 占位消息
+  isSending.value = false
+  messages.value = messages.value.filter((m) => !m.isLoading)
+  activeAssistantIdx = null
+  // 重新加载消息列表（更新 compacted 标记）
   try {
-    const usage = await getSessionContextUsage(currentSessionId.value)
+    await loadNewMessages(true)
+  } catch {
+    // ignore
+  }
+  // 刷新上下文占用
+  try {
+    const usage = await getSessionContextUsage(currentSessionId.value, true)
     contextUsagePercent.value = Math.round(usage.usage_percent ?? 0)
     contextUsageBreakdown.value = usage
   } catch {
@@ -1971,6 +2012,7 @@ function scheduleSnapshotLoads(
   for (let i = 0; i < msgs.length; i++) {
     const msg = msgs[i]
     if (!msg || msg.role !== 'assistant') continue
+    if (msg.compacted) continue  // 已压缩的消息不加载快照
     if (msg.blocks && msg.blocks.length > 0) continue
     const raw = rawMessages[i]
     const messageId = raw?.id ?? msg.messageId
@@ -2002,6 +2044,7 @@ function applyBootstrapSnapshots(
 ): void {
   for (let i = 0; i < messages.value.length; i++) {
     if (messages.value[i].role !== 'assistant') continue
+    if (messages.value[i].compacted) continue  // 已压缩的消息跳过快照加载
     const messageId = rawMessages[i]?.id ?? messages.value[i].messageId
     if (!messageId) continue
     const snap = snapshots[String(messageId)]
@@ -2177,30 +2220,6 @@ async function tryResumeSession(sessionId: string) {
       error: String((err as Error)?.message || err),
     })
     syncSessionWorkingState(sessionId)
-  }
-}
-
-async function revertArtifact(msgIdx: number, artifactIdx: number) {
-  const msg = messages.value[msgIdx]
-  if (!msg?.artifacts?.[artifactIdx]) return
-  const artifact = msg.artifacts[artifactIdx]
-  try {
-    const baseUrl = modelStore.getBaseUrl()
-    const res = await fetch(`${baseUrl}/files/revert`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        file_path: artifact.file_path,
-        content: artifact.previous_content,
-      }),
-    })
-    const data = await res.json()
-    if (data.ok) {
-      artifact.reverted = true
-      messages.value[msgIdx] = { ...msg, artifacts: [...msg.artifacts!] }
-    }
-  } catch {
-    // 静默处理
   }
 }
 
@@ -3091,6 +3110,21 @@ function scheduleScrollToBottom(force = false) {
   background: transparent;
   border: none;
   color: var(--text);
+}
+
+.compacted-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  margin: 4px 0;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary, #f8fafc);
+  color: var(--text-secondary, #94a3b8);
+  font-size: 13px;
+  text-align: center;
+  justify-content: center;
 }
 
 

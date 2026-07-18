@@ -3,42 +3,27 @@
 借鉴 Claude Code 的 CompactBoundary 思路和 OpenCode 的结构化摘要模板：
 - 将旧消息压缩为一条 session memory，不再固定加载最近 14 轮；
 - 保留最近窗口，避免 tool_call / tool_result 被硬切断；
-- 压缩摘要不调用模型，先用确定性规则从历史记录生成结构化记忆。
+- 压缩摘要调用 LLM 生成结构化记忆，失败时回退到确定性规则。
 """
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import Any
 
+import httpx
+
 from utils.token_counter import estimate_tokens, estimate_message_tokens
+from utils.url_utils import normalize_base_url
+from utils.network_manager import get_httpx_proxy_for_url
 
-SUMMARY_TEMPLATE = """## Goal
-{goal}
-
-## Progress
-### Done
-{done}
-
-### In Progress
-{in_progress}
-
-## Key Decisions
-{decisions}
-
-## Next Steps
-{next_steps}
-
-## Critical Context
-{critical_context}
-
-## Relevant Files
-{relevant_files}
-"""
+logger = logging.getLogger(__name__)
 
 MAX_TOOL_RESULT_CHARS = 2_000
 MAX_MESSAGE_CHARS = 4_000
 MAX_SUMMARY_CHARS = 12_000
+MAX_LLM_INPUT_CHARS = 60_000  # 送给摘要 LLM 的历史文本上限
 DEFAULT_KEEP_TOKENS = 10_000
 DEFAULT_MAX_HISTORY_TOKENS = 180_000
 
@@ -82,59 +67,156 @@ def _format_message(message: dict[str, Any]) -> str:
 def _extract_file_mentions(text: str) -> list[str]:
     import re
 
-    candidates = re.findall(r"(?:[A-Za-z]:\\[^\s`'\"]+|[\w./-]+\.[A-Za-z0-9]{1,8})", text)
+    # 匹配文件路径：包含斜杠/反斜杠的路径，或明确的文件名（xxx.py / xxx.ts 等）
+    # 排除变量访问（item.price）、缩写（e.g）等
+    file_ext_pattern = r'(?:[A-Za-z]:\\[^\s`\'"]+|[/~][^\s`\'"]+|(?:src|backend|frontend|tests?|docs?|config|api|utils|components?|engine|db|memory|prompt|plugins?)[/\\][^\s`\'"]+|[\w-]+\.(?:py|ts|js|vue|json|md|yaml|yml|toml|css|scss|html|sql|sh|bat|ps1|tsx|jsx))'
+    candidates = re.findall(file_ext_pattern, text)
     result: list[str] = []
     for item in candidates:
         cleaned = item.rstrip(".,;:)")
-        if cleaned and cleaned not in result:
+        # 排除太短的误匹配
+        if len(cleaned) < 4:
+            continue
+        if cleaned not in result:
             result.append(cleaned)
         if len(result) >= 12:
             break
     return result
 
 
+def _format_history_for_llm(messages: list[dict[str, Any]]) -> str:
+    """将消息列表格式化为 LLM 可读的对话文本，控制总长度。"""
+    lines: list[str] = []
+    total_chars = 0
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        content = _message_text(msg)
+        if not content or not content.strip():
+            continue
+        # 工具结果截断到更短
+        if role == "tool":
+            content = _truncate(content, 800)
+        else:
+            content = _truncate(content, 2000)
+        line = f"[{role}] {content}".strip()
+        if total_chars + len(line) > MAX_LLM_INPUT_CHARS:
+            remaining = MAX_LLM_INPUT_CHARS - total_chars
+            if remaining > 200:
+                lines.append(line[:remaining] + "\n[...截断...]")
+            break
+        lines.append(line)
+        total_chars += len(line) + 1
+    return "\n".join(lines)
+
+
+SUMMARY_SYSTEM_PROMPT = """你是一个对话摘要助手。请将以下用户与 AI 助手的对话历史压缩为简洁的中文摘要。
+
+要求：
+1. 用几百字概述对话中实际做了什么，不要用模板套话
+2. 如果没有对应内容，直接省略该部分，不要写 "(none)"
+3. 涉及的文件路径只列出真正被编辑或读取的文件，不要列变量名或缩写
+4. 保持简洁，总长度控制在 500 字以内
+
+格式：
+## 目标
+（用户想做什么）
+
+## 已完成
+（实际做了哪些工作）
+
+## 关键决策
+（如有重要技术选择或决策）
+
+## 下一步
+（根据对话推断的后续方向）
+
+## 相关文件
+（列出真正涉及到的文件路径，没有则省略此节）"""
+
+
+async def build_session_summary_with_llm(
+    messages: list[dict[str, Any]],
+    base_url: str,
+    api_key: str,
+    model: str,
+) -> str | None:
+    """调用 LLM 生成结构化摘要。失败返回 None。"""
+    if not base_url or not api_key or not model:
+        return None
+
+    history_text = _format_history_for_llm(messages)
+    if not history_text.strip():
+        return None
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+            {"role": "user", "content": f"以下是待压缩的对话历史：\n\n{history_text}"},
+        ],
+        "temperature": 0.3,
+        "max_tokens": 1024,
+        "stream": False,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0, proxy=get_httpx_proxy_for_url(base_url)) as client:
+            resp = await client.post(
+                f"{normalize_base_url(base_url)}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+            )
+            if resp.status_code != 200:
+                logger.warning("[Compactor] LLM 摘要请求失败 %d: %s", resp.status_code, resp.text[:200])
+                return None
+            data = resp.json()
+            choices = data.get("choices") or []
+            if not choices:
+                return None
+            content = choices[0].get("message", {}).get("content", "") or ""
+            content = content.strip()
+            if not content:
+                return None
+            return _truncate(content, MAX_SUMMARY_CHARS)
+    except Exception as exc:
+        logger.warning("[Compactor] LLM 摘要异常: %s", exc)
+        return None
+
+
 def build_session_summary(messages: list[dict[str, Any]]) -> str:
-    """把待压缩历史整理为结构化 session memory。"""
+    """确定性规则回退摘要（LLM 不可用时使用）。"""
     user_messages = [m for m in messages if m.get("role") == "user"]
     assistant_messages = [m for m in messages if m.get("role") == "assistant"]
     tool_messages = [m for m in messages if m.get("role") == "tool"]
 
-    first_user = _message_text(user_messages[0]) if user_messages else "(unknown)"
-    last_user = _message_text(user_messages[-1]) if user_messages else "(unknown)"
+    first_user = _message_text(user_messages[0]) if user_messages else ""
+    last_user = _message_text(user_messages[-1]) if user_messages else ""
     recent_assistant = [_message_text(m) for m in assistant_messages[-5:]]
     recent_tools = [_message_text(m) for m in tool_messages[-8:]]
 
     all_text = "\n".join(_message_text(m) for m in messages)
     files = _extract_file_mentions(all_text)
 
+    parts: list[str] = []
+
+    if first_user:
+        parts.append(f"## 目标\n- {_truncate(first_user.replace(chr(10), ' '), 800)}")
+
     done_lines = []
     for text in recent_assistant:
         text = text.strip()
         if text:
-            done_lines.append(f"- {_truncate(text.replace(chr(10), ' '), 500)}")
-    if not done_lines:
-        done_lines = ["- (none)"]
+            done_lines.append(f"- {_truncate(text.replace(chr(10), ' '), 300)}")
+    if done_lines:
+        parts.append("## 已完成\n" + "\n".join(done_lines))
 
-    tool_lines = []
-    for text in recent_tools:
-        text = text.strip()
-        if text:
-            tool_lines.append(f"- {_truncate(text.replace(chr(10), ' '), 500)}")
-    if not tool_lines:
-        tool_lines = ["- (none)"]
+    if last_user:
+        parts.append(f"## 下一步\n- {_truncate(last_user.replace(chr(10), ' '), 800)}")
 
-    file_lines = [f"- {path}" for path in files] or ["- (none)"]
+    if files:
+        parts.append("## 相关文件\n" + "\n".join(f"- {f}" for f in files))
 
-    summary = SUMMARY_TEMPLATE.format(
-        goal=f"- {_truncate(first_user.replace(chr(10), ' '), 800)}",
-        done="\n".join(done_lines),
-        in_progress=f"- 最近用户请求：{_truncate(last_user.replace(chr(10), ' '), 800)}",
-        decisions="- (none)",
-        next_steps="- 根据最新用户输入继续推进，必要时先核对当前文件状态。",
-        critical_context="\n".join(tool_lines),
-        relevant_files="\n".join(file_lines),
-    )
-    return _truncate(summary, MAX_SUMMARY_CHARS)
+    return _truncate("\n\n".join(parts), MAX_SUMMARY_CHARS)
 
 
 def split_messages_for_compaction(
@@ -166,9 +248,13 @@ def should_compact(messages: list[dict[str, Any]], max_history_tokens: int = DEF
     return total > max_history_tokens or len(messages) > 80
 
 
-def make_memory_record(session_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+def make_memory_record(
+    session_id: str,
+    messages: list[dict[str, Any]],
+    summary_override: str = "",
+) -> dict[str, Any]:
     """生成可存储的 session memory 记录。"""
-    summary = build_session_summary(messages)
+    summary = summary_override.strip() if summary_override and summary_override.strip() else build_session_summary(messages)
     return {
         "session_id": session_id,
         "summary": summary,
@@ -351,7 +437,21 @@ class BackgroundCompactor:
                     tracker.state = CompactionState.IDLE
                     return
 
-                summary = build_session_summary(to_compact)
+                # 优先用 LLM 生成摘要，失败时回退到确定性规则
+                summary = None
+                try:
+                    from models.model_manager import resolve_active_model_config
+                    base_url, api_key, model = resolve_active_model_config()
+                    if base_url and api_key and model:
+                        summary = await build_session_summary_with_llm(
+                            to_compact, base_url, api_key, model,
+                        )
+                except Exception as exc:
+                    logger.warning("[Compactor] LLM 摘要初始化失败: %s", exc)
+
+                if not summary:
+                    summary = build_session_summary(to_compact)
+
                 result = CompactionResult(
                     state=CompactionState.COMPLETED,
                     summary=summary,

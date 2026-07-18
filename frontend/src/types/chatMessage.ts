@@ -55,7 +55,6 @@ export interface FileChangeArtifact {
   new_content: string
   tool_name: string
   tool_call_id: string
-  reverted?: boolean
 }
 
 export interface ChatMessage {
@@ -74,6 +73,7 @@ export interface ChatMessage {
   messageSnapshotJson?: string
   hasSnapshot?: boolean
   meta?: MessageMeta
+  compacted?: boolean
 }
 
 export interface SubagentRecord {
