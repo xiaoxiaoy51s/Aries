@@ -132,7 +132,11 @@ def _sync_file(src: Path, dst: Path) -> bool:
 
 
 def _sync_dir(src: Path, dst: Path) -> bool:
-    """同步目录（递归），返回是否有更新。"""
+    """同步目录（递归），返回是否有更新。
+
+    全量同步：包含 node_modules 等依赖目录，使 MCP 插件开箱即用，
+    用户无需在目标侧手动 `npm install`。
+    """
     if not src.exists() or not src.is_dir():
         return False
     updated = False

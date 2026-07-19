@@ -14,7 +14,7 @@
           class="provider-card"
           @click="openProviderModal(p)"
         >
-          <img :src="`/model/${p.icon}`" :alt="p.label" class="provider-icon" />
+          <img :src="`./model/${p.icon}`" :alt="p.label" class="provider-icon" />
           <span class="provider-name">{{ p.label }}</span>
         </button>
       </div>

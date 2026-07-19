@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import hashlib
 import re
 from pathlib import Path
 
@@ -20,12 +19,11 @@ def _normalize_work_dir(work_dir: str | None) -> str:
 
 
 def _safe_work_dir_name(work_dir: str) -> str:
-    digest = hashlib.sha1(work_dir.encode("utf-8", errors="ignore")).hexdigest()[:10]
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", work_dir.replace(":", ""))
     name = name.strip("._-") or "work_dir"
     if len(name) > 80:
         name = name[-80:]
-    return f"{name}_{digest}"
+    return name
 
 
 def get_agent_memory_path(work_dir: str | None) -> Path:

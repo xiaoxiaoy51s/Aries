@@ -24,7 +24,7 @@
               :title="p.label"
               @click="selectProvider(p)"
             >
-              <img :src="`/model/${p.icon}`" :alt="p.label" class="provider-chip-icon" />
+              <img :src="`./model/${p.icon}`" :alt="p.label" class="provider-chip-icon" />
             </button>
           </div>
 

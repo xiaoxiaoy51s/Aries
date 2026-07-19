@@ -106,7 +106,7 @@
       >
         <div 
           v-for="(msg, index) in messages" 
-          :key="index"
+          :key="msg.id || index"
           class="msg-row"
           :class="msg.role"
         >
@@ -174,6 +174,7 @@
         @pick-work-dir="pickWorkDir"
         @apply-work-dir="applyWorkDir"
         @toggle-side-chat="toggleRightPanel"
+        @compact-start="onCompactStart"
         @compact-done="onCompactDone"
       >
         <DangerCommandConfirm

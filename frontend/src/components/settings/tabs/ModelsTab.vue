@@ -20,7 +20,7 @@
         <div class="model-info">
           <img
             class="model-icon"
-            :src="`/model/${getProviderIcon(model.name)}`"
+            :src="`./model/${getProviderIcon(model.name)}`"
             :alt="getProviderLabel(model.name)"
             :title="getProviderLabel(model.name)"
           />
