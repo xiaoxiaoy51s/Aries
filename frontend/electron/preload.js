@@ -44,6 +44,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** 确保后端进程已启动（启动页重试） */
   ensureBackend: () => ipcRenderer.send('backend:ensure'),
 
+  /** 强制 kill 并重启后端进程（不重启 Electron） */
+  forceRestartBackend: () => ipcRenderer.send('backend:force-restart'),
+
   /** 窗口控制 */
   windowMinimize: () => ipcRenderer.send('window:minimize'),
   windowMaximize: () => ipcRenderer.send('window:maximize'),

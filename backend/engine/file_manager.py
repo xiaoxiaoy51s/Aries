@@ -26,23 +26,6 @@ logger = logging.getLogger(__name__)
 _ripgrep_available: bool | None = None
 
 
-def _parse_skill_path_from_file_path(file_path: str) -> tuple[str, str] | None:
-    """若 file_path 指向技能目录内文件，解析为 (skill_name, relative_path)。"""
-    normalized = str(file_path or "").strip()
-    if not normalized:
-        return None
-    expanded = str(Path(normalized).expanduser()).replace("\\", "/")
-    for prefix in ("/.Aries/plugins/skills/", "/.Aries/skills/"):
-        idx = expanded.find(prefix)
-        if idx == -1:
-            continue
-        rest = expanded[idx + len(prefix):]
-        parts = rest.split("/", 1)
-        if len(parts) == 2 and parts[0] and parts[1]:
-            return parts[0], parts[1]
-    return None
-
-
 def _check_ripgrep_available() -> bool:
     """检查 ripgrep 是否可用"""
     global _ripgrep_available
@@ -94,26 +77,16 @@ class FileManagerTool:
         offset: int | None = None,
         limit: int | None = None,
         max_chars: int = 20000,
-        skill_name: str | None = None,
         skip_confirmation: bool = False,
         **extra: Any,
     ) -> dict[str, Any]:
         """Read file content with optional line range.
 
-        支持普通文件读取和技能文件读取（skill_name 不为空时）。
         兼容旧参数名 start_line/end_line。
         """
         normalized_path = str(file_path or "").strip()
         if not normalized_path:
             return self._error_response("缺少 file_path 参数", "")
-
-        # 技能文件模式：通过 skill_name 定位技能目录
-        if not skill_name:
-            parsed = _parse_skill_path_from_file_path(normalized_path)
-            if parsed:
-                skill_name, normalized_path = parsed
-        if skill_name:
-            return self._read_skill_file(skill_name, normalized_path, offset, limit, max_chars)
 
         try:
             target = self.manager.resolve_file_path(normalized_path)
@@ -193,70 +166,6 @@ class FileManagerTool:
             "truncated": truncated,
         }
 
-    def _read_skill_file(
-        self,
-        skill_name: str,
-        file_path: str,
-        offset: int | None = None,
-        limit: int | None = None,
-        max_chars: int = 20000,
-    ) -> dict[str, Any]:
-        """读取技能目录内的文件（支持用户 skills 和内置插件 skills）。"""
-        try:
-            from engine.skills_manager import get_skill_by_name
-            from engine.plugin_manager import discover_plugins
-            entry = get_skill_by_name(skill_name)
-            if entry is None:
-                # 查找内置插件 skill
-                plugin_dir = None
-                for plugin in discover_plugins():
-                    if plugin.kind == "skills" and plugin.name == skill_name:
-                        plugin_dir = plugin.target_path
-                        break
-                if plugin_dir is None:
-                    return self._error_response(f"技能不存在: {skill_name}", file_path)
-                skill_path = Path(plugin_dir)
-            else:
-                skill_path = entry.skill_path
-            target = (skill_path / file_path).resolve()
-            if not str(target).startswith(str(skill_path.resolve())):
-                return self._error_response("非法的文件路径（越界）", file_path)
-            if not target.exists() or not target.is_file():
-                return self._error_response(f"技能文件不存在: {file_path}", file_path)
-            content = target.read_text(encoding="utf-8", errors="replace")
-            lines = content.splitlines(keepends=True)
-            total_lines = len(lines)
-            if offset is not None or limit is not None:
-                start = max(0, (offset or 1) - 1)
-                end = min(total_lines, start + limit) if limit else total_lines
-                lines = lines[start:end]
-                line_offset = start
-            else:
-                line_offset = 0
-            content = "".join(lines)
-            truncated = len(content) > max_chars
-            if truncated:
-                content = content[:max_chars]
-            output_lines = [f"技能: {skill_name}", f"路径: {target}", f"行数: {total_lines}", ""]
-            if truncated:
-                output_lines.append(f"内容已截断（超过 {max_chars} 字符限制）")
-                output_lines.append("")
-            for i, line in enumerate(lines[:1000], start=line_offset + 1):
-                output_lines.append(f"{i:4d}| {line.rstrip()}")
-            if len(lines) > 1000:
-                output_lines.append(f"\n... 还有 {len(lines) - 1000} 行 ...")
-            return {
-                "success": True,
-                "error": "",
-                "output": "\n".join(output_lines),
-                "content": content,
-                "file_path": str(target),
-                "skill": skill_name,
-                "truncated": truncated,
-            }
-        except Exception as exc:
-            return self._error_response(f"读取技能文件失败: {exc}", file_path)
-
     def execute_write_file(
         self,
         *,
@@ -334,10 +243,9 @@ class FileManagerTool:
         *,
         file_path: str,
         edit_type: str,
-        new_content: str,
-        start_line: int | None = None,
-        end_line: int | None = None,
+        new_content: str = "",
         search_text: str | None = None,
+        replacements: list[dict[str, str]] | None = None,
         use_regex: bool = False,
         occurrence: int = -1,
         skip_confirmation: bool = False,
@@ -362,17 +270,7 @@ class FileManagerTool:
         except Exception as exc:
             return self._error_response(f"读取失败: {exc}", normalized_path)
         _original_content = "".join(lines)
-        if edit_type == "line_range":
-            if start_line is None or end_line is None:
-                return self._error_response("line_range 需要 start_line 和 end_line 参数", normalized_path)
-            start = max(0, start_line - 1)
-            end = min(len(lines), end_line)
-            new_lines = new_content.split("\n")
-            if new_lines and not new_lines[-1]:
-                new_lines = new_lines[:-1]
-            new_lines = [line + "\n" for line in new_lines]
-            lines = lines[:start] + new_lines + lines[end:]
-        elif edit_type == "search_replace":
+        if edit_type == "search_replace":
             if search_text is None:
                 return self._error_response("search_replace 需要 search_text 参数", normalized_path)
             content = "".join(lines)
@@ -401,16 +299,35 @@ class FileManagerTool:
             if lines and not lines[-1]:
                 lines = lines[:-1]
             lines = [line + "\n" for line in lines]
-        elif edit_type == "insert_line":
-            if start_line is None:
-                return self._error_response("insert_line 需要 start_line 参数", normalized_path)
-            insert_pos = start_line - 1
-            insert_pos = max(0, min(insert_pos, len(lines)))
-            new_lines = new_content.split("\n")
-            if new_lines and not new_lines[-1]:
-                new_lines = new_lines[:-1]
-            new_lines = [line + "\n" for line in new_lines]
-            lines = lines[:insert_pos] + new_lines + lines[insert_pos:]
+        elif edit_type == "multi_replace":
+            if not replacements or not isinstance(replacements, list):
+                return self._error_response("multi_replace 需要 replacements 参数", normalized_path)
+            content = "".join(lines)
+            applied: list[tuple[int, str, str]] = []
+            for idx, rep in enumerate(replacements):
+                old = rep.get("old_text", "")
+                new = rep.get("new_text", "")
+                if not old:
+                    return self._error_response(f"第 {idx + 1} 条 replacement 的 old_text 为空", normalized_path)
+                if old not in content:
+                    return self._error_response(f"第 {idx + 1} 条 replacement 的 old_text 在文件中未找到", normalized_path)
+                count = content.count(old)
+                if count > 1:
+                    return self._error_response(f"第 {idx + 1} 条 replacement 的 old_text 出现 {count} 次，无法唯一定位", normalized_path)
+                pos = content.index(old)
+                applied.append((pos, old, new))
+            applied.sort(key=lambda x: x[0])
+            for i in range(1, len(applied)):
+                prev_end = applied[i - 1][0] + len(applied[i - 1][1])
+                if applied[i][0] < prev_end:
+                    return self._error_response(f"第 {i} 条和第 {i + 1} 条 replacement 的 old_text 区域重叠", normalized_path)
+            new_content_str = content
+            for pos, old, new in reversed(applied):
+                new_content_str = new_content_str[:pos] + new + new_content_str[pos + len(old):]
+            lines = new_content_str.split("\n")
+            if lines and not lines[-1]:
+                lines = lines[:-1]
+            lines = [line + "\n" for line in lines]
         else:
             return self._error_response(f"未知的 edit_type: {edit_type}", normalized_path)
         new_content_str = "".join(lines)

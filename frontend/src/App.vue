@@ -53,6 +53,18 @@
       @skip="showOnboarding = false"
       @save="handleOnboardingSave"
     />
+    <EnvCheckModal
+      v-if="showEnvCheck"
+      :visible="showEnvCheck"
+      :missing="missingRuntimes"
+      @skip="showEnvCheck = false"
+      @all-installed="onEnvAllInstalled"
+    />
+    <ConnectionLostModal
+      v-if="lostConnection"
+      @restart="onRestartApp"
+      @retry="onRetryConnection"
+    />
   </div>
 </template>
 
@@ -67,6 +79,8 @@ import { initPaths } from '@/utils/paths'
 import TitleBarMenu, { type MenuDef } from '@/components/TitleBarMenu.vue'
 import BackendBootSplash from '@/components/BackendBootSplash.vue'
 import OnboardingModal from '@/components/OnboardingModal.vue'
+import EnvCheckModal from '@/components/EnvCheckModal.vue'
+import ConnectionLostModal from '@/components/ConnectionLostModal.vue'
 
 const { sidebarOpen, toggleSidebar } = useSidebar()
 
@@ -75,11 +89,13 @@ const workspaceStore = useWorkspaceStore()
 const BACKEND_PORT = 30000
 modelStore.setBackendPort(BACKEND_PORT)
 
-const { ready: backendReady, error: bootError, start: startBackendBoot } = useBackendBoot(BACKEND_PORT)
+const { ready: backendReady, error: bootError, lostConnection, start: startBackendBoot } = useBackendBoot(BACKEND_PORT)
 
 const isMaximized = ref(false)
 let appInitialized = false
 const showOnboarding = ref(false)
+const showEnvCheck = ref(false)
+const missingRuntimes = ref<string[]>([])
 
 async function initAppData() {
   if (appInitialized) return
@@ -91,6 +107,22 @@ async function initAppData() {
   }
   await initPaths().catch(() => {})
   workspaceStore.initWorkDir().catch(() => {})
+  // 检查环境缺失
+  try {
+    const res = await fetch(`http://localhost:${BACKEND_PORT}/api/dev-env/missing`)
+    const data = await res.json()
+    if (data.missing && data.missing.length > 0) {
+      missingRuntimes.value = data.missing
+      showEnvCheck.value = true
+    }
+  } catch {
+    // 后端未就绪，忽略
+  }
+}
+
+function onEnvAllInstalled() {
+  showEnvCheck.value = false
+  missingRuntimes.value = []
 }
 
 async function handleOnboardingSave(data: { model: string; baseUrl: string; apiKey: string }) {
@@ -112,6 +144,15 @@ async function handleOnboardingSave(data: { model: string; baseUrl: string; apiK
 
 function onBootRetry() {
   window.electronAPI?.ensureBackend?.()
+  startBackendBoot()
+}
+
+function onRestartApp() {
+  window.electronAPI?.relaunch?.()
+}
+
+function onRetryConnection() {
+  window.electronAPI?.forceRestartBackend?.()
   startBackendBoot()
 }
 
@@ -427,7 +468,7 @@ body {
   top: 0;
   left: 0;
   right: 0;
-  z-index: 1000;
+  z-index: 1100;
   height: 40px;
   display: flex;
   align-items: center;

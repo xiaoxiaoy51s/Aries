@@ -76,8 +76,8 @@ const folderRefPattern = /##((?:[A-Za-z]:\\[^\s\n#]*|\/[^\s\n#]*)[\\/])##/g
 const codeReviewPattern = /^@code_review(?:\s+(?:unstaged|staged|branch|commit|full))?/
 const agentModePattern = /^@(ask|explore|plan)/
 const agentModeLabels: Record<string, string> = { ask: '问答', explore: '探索', plan: '规划' }
-// 技能引用：@skill:<folder_name>
-const skillRefPattern = /@skill:([A-Za-z0-9._-]+)/g
+// 技能引用：@skill:<folder_name>、@self:<folder_name>、@system:<folder_name>
+const skillRefPattern = /@(?:skill|self|system):([A-Za-z0-9._-]+)/g
 // 子 Agent 引用：@subagent:<name>
 const subagentRefPattern = /@subagent:([A-Za-z0-9._-]+)/g
 
@@ -98,7 +98,8 @@ function renderContent() {
     matches.push({ type: 'plain-file', value: m[1], index: m.index || 0, end: (m.index || 0) + m[0].length })
   }
   for (const m of text.matchAll(skillRefPattern)) {
-    matches.push({ type: 'skill', value: m[1], index: m.index || 0, end: (m.index || 0) + m[0].length })
+    // value 存完整引用（含前缀），如 "self:docx"；区间覆盖完整匹配
+    matches.push({ type: 'skill', value: m[0].slice(1), index: m.index || 0, end: (m.index || 0) + m[0].length })
   }
   for (const m of text.matchAll(subagentRefPattern)) {
     matches.push({ type: 'subagent', value: m[1], index: m.index || 0, end: (m.index || 0) + m[0].length })

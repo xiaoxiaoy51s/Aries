@@ -18,6 +18,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import httpx
@@ -305,6 +306,17 @@ def _build_core_tool_definitions() -> list[dict[str, Any]]:
         return []
 
 
+def _build_env_section() -> str:
+    """构建用户目录/技能目录说明，与主 Agent system prompt 对齐。"""
+    home = Path.home()
+    return (
+        "# 用户目录\n"
+        f"用户根目录（PATHHOME）：`{home}`\n"
+        f"用户技能目录：`{home / '.Aries' / 'skills'}`\n"
+        f"系统技能目录：`{home / '.Aries' / 'plugins' / 'skills'}`\n"
+    )
+
+
 def _build_subagent_system_prompt(
     *,
     subagent_name: str,
@@ -323,6 +335,9 @@ def _build_subagent_system_prompt(
     )
     if user_system_prompt.strip():
         parts.append(f"# 详细职责\n{user_system_prompt.strip()}\n")
+
+    # 注入用户目录/技能目录信息，确保子 Agent 能定位 SKILL.md
+    parts.append(_build_env_section())
 
     # 注入项目记忆（agent.md + rules.md），让子 Agent 了解项目约定和代码结构
     if work_dir and work_dir.strip():
@@ -1173,6 +1188,9 @@ async def run_subagent_direct(
     ]
     if entry.system_prompt.strip():
         system_parts.append(f"# 详细职责\n{entry.system_prompt.strip()}\n")
+
+    # 注入用户目录/技能目录信息，确保子 Agent 能定位 SKILL.md
+    system_parts.append(_build_env_section())
 
     # 注入项目记忆
     if work_dir and work_dir.strip():

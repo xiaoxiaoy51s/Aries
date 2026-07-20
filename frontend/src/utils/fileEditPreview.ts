@@ -25,10 +25,33 @@ export interface FileEditPreviewData {
   iconSrc: string
   added: number
   removed: number
+  /** 删除文件模式：展示为垃圾桶 + 文件名 */
+  isDelete?: boolean
+  /** 原始内容（用于 diff 面板） */
+  original: string
+  /** 修改后内容（用于 diff 面板） */
+  modified: string
   /** 折叠时最多 3 行 */
   lines: DiffPreviewLine[]
   /** 展开时完整 diff */
   allLines: DiffPreviewLine[]
+}
+
+/** 根据 diffLines 重建原始/修改后文本 */
+function reconstructFromDiff(diffLines: DiffPreviewLine[]): { original: string; modified: string } {
+  const original: string[] = []
+  const modified: string[] = []
+  for (const line of diffLines) {
+    if (line.type === 'context') {
+      original.push(line.text)
+      modified.push(line.text)
+    } else if (line.type === 'remove') {
+      original.push(line.text)
+    } else if (line.type === 'add') {
+      modified.push(line.text)
+    }
+  }
+  return { original: original.join('\n'), modified: modified.join('\n') }
 }
 
 export function isFileEditTool(toolName: string): boolean {
@@ -135,12 +158,15 @@ function buildPreview(
   const stats = countDiffStats(diffLines)
   const nonEmpty = diffLines.filter((l) => l.text !== '')
   const fileName = basename(filePath)
+  const { original, modified } = reconstructFromDiff(nonEmpty)
   return {
     filePath,
     fileName,
     iconSrc: iconSrcForFile(fileName),
     added: stats.added,
     removed: stats.removed,
+    original,
+    modified,
     lines: takePreviewLines(nonEmpty),
     allLines: nonEmpty,
   }
@@ -153,6 +179,23 @@ export function buildFileEditPreview(
   const normalizedArgs = normalizeToolArgs(args)
   if (!normalizedArgs || !isFileEditTool(toolName)) return null
 
+  if (toolName === 'delete_file') {
+    const filePath = String(normalizedArgs.file_path ?? '').trim()
+    if (!filePath) return null
+    return {
+      filePath,
+      fileName: basename(filePath),
+      iconSrc: iconSrcForFile(basename(filePath)),
+      added: 0,
+      removed: 0,
+      isDelete: true,
+      original: '',
+      modified: '',
+      lines: [],
+      allLines: [],
+    }
+  }
+
   if (toolName === 'write_file') {
     if (normalizedArgs.memory) return null
     const filePath = String(normalizedArgs.file_path ?? '').trim()
@@ -163,14 +206,17 @@ export function buildFileEditPreview(
       type: 'add',
       text,
     }))
+    const nonEmpty = diffLines.filter((l) => l.text !== '')
     return {
       filePath,
       fileName: basename(filePath),
       iconSrc: iconSrcForFile(basename(filePath)),
       added: countLines(content),
       removed: 0,
-      lines: takePreviewLines(diffLines),
-      allLines: diffLines.filter((l) => l.text !== ''),
+      original: '',
+      modified: nonEmpty.map((l) => l.text).join('\n'),
+      lines: takePreviewLines(nonEmpty),
+      allLines: nonEmpty,
     }
   }
 
@@ -198,14 +244,17 @@ export function buildFileEditPreview(
       editType === 'line_range' && startLine > 0 && endLine >= startLine
         ? endLine - startLine + 1
         : 0
+    const nonEmpty = diffLines.filter((l) => l.text !== '')
     return {
       filePath,
       fileName: basename(filePath),
       iconSrc: iconSrcForFile(basename(filePath)),
       added: countLines(newContent),
       removed,
-      lines: takePreviewLines(diffLines),
-      allLines: diffLines.filter((l) => l.text !== ''),
+      original: '',
+      modified: nonEmpty.map((l) => l.text).join('\n'),
+      lines: takePreviewLines(nonEmpty),
+      allLines: nonEmpty,
     }
   }
 

@@ -72,7 +72,7 @@ class UserFileManager:
         return [file_info for file_info in all_files if query_lower in file_info["name"].lower()]
 
     def resolve_file_path(self, file_path: str, use_today: bool = False) -> Path:
-        candidate = Path(file_path)
+        candidate = Path(file_path).expanduser()
 
         if candidate.is_absolute():
             target = candidate.resolve()

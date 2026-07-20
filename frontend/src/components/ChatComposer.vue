@@ -1045,10 +1045,11 @@ async function loadSkillItems() {
       label: s.name,
       description: s.description || '无描述',
       badge: s.enabled
-        ? (s.group === 'system' ? '系统' : '个人')
+        ? (s.group === 'system' || s.group === 'builtin' ? '系统' : '个人')
         : '未启用',
       disabled: !s.enabled,
-    }))
+      group: s.group || 'personal',
+    })) as PluginItem[] & { group?: string }[]
   } catch (e) {
     console.error('加载技能列表失败', e)
     skillItems.value = []
@@ -1353,7 +1354,9 @@ function applySkill(skill: PluginItem) {
   const lines = (props.modelValue || '').split('\n')
   const cleaned = lines.join('\n')
   const sep = cleaned && !cleaned.endsWith('\n') && !cleaned.endsWith(' ') ? ' ' : ''
-  plainTextProxy.value = `${cleaned}${sep}@skill:${skill.id} `
+  const skillGroup = (skill as any).group
+  const prefix = skillGroup === 'system' || skillGroup === 'builtin' ? '@system:' : '@self:'
+  plainTextProxy.value = `${cleaned}${sep}${prefix}${skill.id} `
   nextTick(() => composerRef.value?.focus?.())
 }
 

@@ -8,6 +8,7 @@
           :expanded="isExpanded"
           :error="error"
           @click="toggleExpand"
+          @view-diff="onViewFileDiff"
         />
       </div>
       <div v-if="isExpanded && status === 'running' && !pendingConfirmation && !result && !error" class="file-edit-running">
@@ -672,6 +673,18 @@ async function stopService() {
     console.error('Stop service failed', e)
   }
 }
+
+function onViewFileDiff() {
+  const data = fileEditPreview.value
+  if (!data) return
+  window.dispatchEvent(new CustomEvent('aries:view-file-diff', {
+    detail: {
+      path: data.filePath,
+      original: data.original,
+      modified: data.modified,
+    },
+  }))
+}
 </script>
 
 <style scoped>
@@ -704,12 +717,12 @@ async function stopService() {
   margin: 2px 0;
   overflow: hidden;
   border: none;
-  border-left: 2px solid #cbd5e1;
-  padding-left: 8px;
+  padding-left: 0;
 }
 
 .tool-block--confirm {
-  border-left-color: #f59e0b;
+  border-left: 2px solid #f59e0b;
+  padding-left: 8px;
 }
 
 .tool-block--expanded {

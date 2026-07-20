@@ -416,12 +416,6 @@ def _execute_sync(tool: str, work_dir: str, session_id: str | None, invocation_i
         if tool == "create_scheduled_task":
             return _handle_create_scheduled_task(kwargs, session_id=session_id)
 
-        # 多策略编辑工具（#4）
-        if tool in ("multi_replace_string", "apply_patch"):
-            from engine.edit_tools import EditTools
-            et = EditTools(work_dir=work_dir)
-            return et.execute(tool, kwargs)
-
         fm = _get_file_manager(work_dir)
 
         if tool == "read_file":

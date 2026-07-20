@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from utils.env_config import (
     get_env_runtime,
+    get_missing_runtimes,
     save_env_config,
 )
 from utils.runtime_manager import (
@@ -72,6 +73,16 @@ async def detect_env() -> dict[str, Any]:
         "node": _build_runtime_info("node"),
         "python": _build_runtime_info("python"),
         "git": _build_runtime_info("git"),
+    }
+
+
+@router.get("/missing")
+async def missing_env() -> dict[str, Any]:
+    """返回 env.json 中缺失的运行时列表（启动时前端检查用）"""
+    missing = get_missing_runtimes()
+    return {
+        "missing": missing,
+        "all_installed": len(missing) == 0,
     }
 
 

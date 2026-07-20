@@ -111,8 +111,8 @@ const codeReviewAnyPattern = /@code_review(?:\s+(?:unstaged|staged|branch|commit
 const agentModePattern = /^@(ask|explore|plan)/
 const agentModeAnyPattern = /@(ask|explore|plan)/g
 const agentModeLabels: Record<string, string> = { ask: '问答', explore: '探索', plan: '规划' }
-// 技能引用：@skill:<folder_name>，folder_name 由字母/数字/-/_/. 组成
-const skillRefPattern = /@skill:([A-Za-z0-9._-]+)/g
+// 技能引用：@skill:<folder_name>、@self:<folder_name>、@system:<folder_name>
+const skillRefPattern = /@(?:skill|self|system):([A-Za-z0-9._-]+)/g
 // 子 Agent 引用：@subagent:<name>
 const subagentRefPattern = /@subagent:([A-Za-z0-9._-]+)/g
 
@@ -182,8 +182,8 @@ function renderText(text: string) {
     matches.push({ type: 'plain-file', value: m[1], index: m.index || 0, end: (m.index || 0) + m[0].length })
   }
   for (const m of text.matchAll(skillRefPattern)) {
-    // value 存 folder_name；区间覆盖 "@skill:xxx"
-    matches.push({ type: 'skill', value: m[1], index: m.index || 0, end: (m.index || 0) + m[0].length })
+    // value 存 "prefix:folder_name"（如 "skill:docx"），区间覆盖完整匹配
+    matches.push({ type: 'skill', value: m[0].slice(1), index: m.index || 0, end: (m.index || 0) + m[0].length })
   }
   for (const m of text.matchAll(subagentRefPattern)) {
     matches.push({ type: 'subagent', value: m[1], index: m.index || 0, end: (m.index || 0) + m[0].length })
@@ -279,15 +279,17 @@ function createAgentModeTag(marker: string) {
   return tag
 }
 
-function createSkillTag(folderName: string) {
-  // 找到对应技能的 label / icon（若 props.skillItems 提供）
+function createSkillTag(ref: string) {
+  // ref 格式为 "prefix:folder_name"（如 "skill:docx"），去掉前缀后查找 label
+  const colonIdx = ref.indexOf(':')
+  const folderName = colonIdx >= 0 ? ref.slice(colonIdx + 1) : ref
   const skill = (props.skillItems || []).find((s) => s.id === folderName)
   const label = skill?.label || folderName
 
   const tag = document.createElement('span')
   tag.className = 'skill-tag'
   tag.contentEditable = 'false'
-  tag.dataset.ref = folderName
+  tag.dataset.ref = ref
 
   const name = document.createElement('span')
   name.className = 'skill-tag-name'
@@ -472,7 +474,7 @@ function extractNodeText(node: ChildNode): string {
   const el = node as HTMLElement
   if (el.tagName === 'BR') return '\n'
   if (el.classList.contains('skill-tag')) {
-    return `@skill:${el.dataset.ref || ''}`
+    return `@${el.dataset.ref || 'skill:'}`
   }
   if (el.classList.contains('subagent-tag')) {
     return `@subagent:${el.dataset.ref || ''}`

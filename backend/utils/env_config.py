@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -143,43 +144,95 @@ def get_env_runtime(runtime: str) -> dict[str, Any] | None:
     return config.get(runtime)
 
 
-def ensure_bundled_node_in_env() -> str:
-    """释放内置 Node 并写入 env.json，确保子进程能用到 ~/.Aries 内的 Node。"""
-    from utils.bundled_node import (
-        DEFAULT_BUNDLED_NODE_VERSION,
-        ensure_bundled_node_installed,
-        get_default_node_exe,
+def _detect_and_save_runtime(runtime: str) -> None:
+    """检测系统环境，如果 env.json 中没有有效配置则写入。
+
+    检测顺序：系统已安装 -> 内置版本。都没有则留空。
+    """
+    # 已有有效配置则跳过
+    saved = get_env_runtime(runtime)
+    if saved and saved.get("path") and Path(saved["path"]).is_file():
+        return
+
+    from utils.runtime_manager import (
+        detect_system_git,
+        detect_system_node,
+        detect_system_python,
+        _list_builtin_versions,
     )
 
-    ensure_bundled_node_installed()
-    node_exe = get_default_node_exe()
-    if not node_exe.is_file():
-        return ""
+    # 1. 检测系统
+    if runtime == "node":
+        system = detect_system_node()
+    elif runtime == "python":
+        system = detect_system_python()
+        # 打包后端自身即 Python
+        if not system.get("installed") and sys.executable:
+            ver = sys.version.split("\n")[0].replace("Python ", "").strip()
+            system = {"installed": True, "version": ver, "path": sys.executable}
+    else:
+        system = detect_system_git()
 
-    path_str = str(node_exe)
-    saved = get_env_runtime("node")
-    should_write = (
-        not saved
-        or not saved.get("path")
-        or not Path(saved["path"]).is_file()
-        or saved.get("source") in (None, "", "builtin")
-    )
-    if should_write:
-        save_env_config(
-            "node",
-            {
-                "path": path_str,
+    if system.get("installed") and system.get("path"):
+        save_env_config(runtime, {
+            "path": system["path"],
+            "version": system.get("version", ""),
+            "source": "system",
+        })
+        print(f"[EnvConfig] 检测到系统 {runtime}: {system['path']}")
+        return
+
+    # 2. 检查内置版本
+    builtins = _list_builtin_versions(runtime)
+    if builtins:
+        latest = builtins[-1]
+        save_env_config(runtime, {
+            "path": latest["path"],
+            "version": latest["version"],
+            "source": "builtin",
+        })
+        print(f"[EnvConfig] 使用内置 {runtime}: {latest['path']}")
+        return
+
+    # 3. Node 特殊：检查安装包内置的 staged node
+    if runtime == "node":
+        from utils.bundled_node import (
+            DEFAULT_BUNDLED_NODE_VERSION,
+            ensure_bundled_node_installed,
+            get_default_node_exe,
+        )
+        ensure_bundled_node_installed()
+        node_exe = get_default_node_exe()
+        if node_exe.is_file():
+            save_env_config("node", {
+                "path": str(node_exe),
                 "version": DEFAULT_BUNDLED_NODE_VERSION,
                 "source": "builtin",
-            },
-        )
-        print(f"[EnvConfig] 已写入内置 Node 路径到 env.json: {path_str}")
-    return path_str
+            })
+            print(f"[EnvConfig] 释放并使用内置 Node: {node_exe}")
+            return
+
+    print(f"[EnvConfig] 未检测到 {runtime}，需要在设置中安装")
+
+
+def get_missing_runtimes() -> list[str]:
+    """返回 env.json 中缺失（无有效 path）的运行时列表。"""
+    config = load_env_config()
+    missing = []
+    for runtime in ("node", "python", "git"):
+        info = config.get(runtime)
+        if not info or not info.get("path") or not Path(info["path"]).is_file():
+            missing.append(runtime)
+    return missing
 
 
 def init_runtime_env() -> dict[str, str]:
-    """启动时：释放内置 Node → 写入 env.json → 前置 PATH。"""
-    ensure_bundled_node_in_env()
+    """启动时：检测系统环境 -> 写入 env.json -> 前置 PATH。"""
+    for rt in ("node", "python", "git"):
+        try:
+            _detect_and_save_runtime(rt)
+        except Exception as e:
+            print(f"[EnvConfig] 检测 {rt} 失败: {e}")
     return apply_env_to_path()
 
 

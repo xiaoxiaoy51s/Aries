@@ -22,7 +22,7 @@ ASK_SYSTEM_PROMPT = """\
 
 ## 核心规则（强制）
 - **严格只读**：禁止调用任何会修改文件、执行状态变更命令或写入数据的工具。
-- 禁止使用的工具：edit_file、write_file、delete_file、multi_replace_string、apply_patch、cli_executor（执行命令）、create_scheduled_task、stop_command。
+- 禁止使用的工具：edit_file、write_file、delete_file、cli_executor（执行命令）、create_scheduled_task、stop_command。
 - 允许使用的工具：read_file、search_file、list_files、check_command_status、send_message_to_user、send_file_to_user。
 - 只回答问题，不主动执行任务；如果问题需要修改代码才能解决，说明需要做什么改动，但不要实际去改。
 - 引用代码时给出文件路径和行号。
@@ -54,7 +54,7 @@ EXPLORE_SYSTEM_PROMPT = """\
 
 ## 核心规则（强制）
 - **严格只读**：禁止调用任何会修改文件、执行状态变更命令或写入数据的工具。
-- 禁止使用的工具：edit_file、write_file、delete_file、multi_replace_string、apply_patch、cli_executor（执行命令）、create_scheduled_task、stop_command。
+- 禁止使用的工具：edit_file、write_file、delete_file、cli_executor（执行命令）、create_scheduled_task、stop_command。
 - 允许使用的工具：read_file、search_file、list_files、check_command_status。
 - **速度优先**：从宽到窄搜索，并行调用无依赖的工具；找到足够上下文就停止，不做穷举式扫描。
 - 独立的并行搜索（多个 grep、多个 read）尽量同时发出。
@@ -88,7 +88,7 @@ PLAN_SYSTEM_PROMPT = """\
 你当前处于「规划」模式。你的唯一职责是研究代码库、与用户澄清需求、输出详细可执行的计划。**你绝不能开始实现。**
 
 ## 核心规则（强制）
-- **禁止修改代码**：禁止调用 edit_file、write_file、delete_file、multi_replace_string、apply_patch 等任何修改文件的工具。
+- **禁止修改代码**：禁止调用 edit_file、write_file、delete_file 等任何修改文件的工具。
 - **禁止执行修改状态的命令**：禁止使用 cli_executor 跑构建、安装依赖、git push/reset/force push 等会改变系统状态的命令。cli_executor 仅可用于只读命令（如 `git status`、`git diff`、`ls`），且必须是只读的。
 - **禁止创建定时任务或执行副作用操作**：禁止 create_scheduled_task。
 - 允许使用的工具：read_file、search_file、list_files、check_command_status、todo_write（用于制定任务清单）、send_message_to_user、send_file_to_user。
@@ -162,7 +162,6 @@ AGENT_MODES = {
         },
         "forbidden_tools": {
             "edit_file", "write_file", "delete_file",
-            "multi_replace_string", "apply_patch",
             "cli_executor", "create_scheduled_task", "stop_command",
             "delegate_to_subagent",
         },
@@ -177,7 +176,6 @@ AGENT_MODES = {
         },
         "forbidden_tools": {
             "edit_file", "write_file", "delete_file",
-            "multi_replace_string", "apply_patch",
             "cli_executor", "create_scheduled_task", "stop_command",
             "delegate_to_subagent", "todo_write", "send_message_to_user", "send_file_to_user",
         },
@@ -192,7 +190,6 @@ AGENT_MODES = {
         },
         "forbidden_tools": {
             "edit_file", "write_file", "delete_file",
-            "multi_replace_string", "apply_patch",
             "create_scheduled_task", "delegate_to_subagent",
         },
     },

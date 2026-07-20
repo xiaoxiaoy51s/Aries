@@ -33,7 +33,7 @@ GROUP_DESCRIPTION_MAX_CHARS = 300
 BUILTIN_TOOL_CATEGORIES: dict[str, list[str]] = {
     "文件操作": [
         "read_file", "write_file", "edit_file", "list_files", "search_file",
-        "multi_replace_string", "apply_patch", "delete_file",
+        "delete_file",
     ],
     "命令执行": [
         "cli_executor", "run_command",
@@ -46,7 +46,7 @@ BUILTIN_TOOL_CATEGORIES: dict[str, list[str]] = {
 
 # 类别描述模板
 CATEGORY_DESCRIPTIONS: dict[str, str] = {
-    "文件操作": "读取、写入、编辑、搜索文件的工具集合。包括精确替换、批量替换、补丁等编辑策略。",
+    "文件操作": "读取、写入、编辑、搜索文件的工具集合。包括精确替换和批量替换两种编辑策略。",
     "命令执行": "执行本地 CLI 命令、运行脚本、安装依赖等。",
     "记忆与任务": "管理 Agent 记忆、读取技能文件、创建定时任务、委派子 Agent 等。",
     "MCP": "MCP 插件提供的工具。",

@@ -2,17 +2,13 @@
   "type": "function",
   "function": {
     "name": "read_file",
-    "description": "读取文件内容，支持行号范围读取和截断保护。\n\n【两种模式】\n- 普通模式：传 file_path（相对路径默认在工作目录，或绝对路径）\n- 技能文件模式：传 skill_name + file_path。file_path 为技能目录内的相对路径（如 SKILL.md、reference.md）。禁止自行拼接技能绝对路径。\n\n【读取技能文档示例】read_file(skill_name=\"playwright_cli\", file_path=\"SKILL.md\")\n\n【文档解析】支持读取 PDF（.pdf）、Word（.docx）、Excel（.xlsx/.xlsm）文档，自动抽取全部文本内容。大文档会按 max_chars 截断，可用 offset/limit 翻页继续读取。\n\n编码固定 utf-8。大文件建议先用 offset + limit 读取片段。",
+    "description": "读取文件内容，支持行号范围读取和截断保护。【用法】传 file_path（相对路径默认在工作目录，或绝对路径）即可读取。读取技能 SKILL.md：从下方「# 用户目录」获取技能绝对路径，如read_file(file_path=\"{PATHHOME}/.Aries/skills/docx/SKILL.md\")。【文档解析】支持读取 PDF（.pdf）、Word（.docx）、Excel（.xlsx/.xlsm）文档，自动抽取全部文本内容。大文档会按 max_chars 截断，可用 offset/limit 翻页继续读取。编码固定 utf-8。大文件建议先用 offset + limit 读取片段。",
     "parameters": {
       "type": "object",
       "properties": {
         "file_path": {
           "type": "string",
-          "description": "文件路径。普通模式下为相对/绝对路径；技能模式下为技能目录内的相对路径。"
-        },
-        "skill_name": {
-          "type": "string",
-          "description": "技能目录名（如 playwright_cli、web_search）。传入时切换为技能文件模式，file_path 相对于该技能目录。"
+          "description": "文件路径。支持相对路径（默认在工作目录）或绝对路径。读取技能文件请传技能 SKILL.md 的绝对路径。"
         },
         "offset": {
           "type": "integer",

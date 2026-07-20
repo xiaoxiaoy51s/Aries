@@ -584,6 +584,14 @@ ipcMain.on('backend:ensure', () => {
   void startBackend()
 })
 
+// IPC: 后端卡死时强制 kill 并重启（不重启整个 Electron）
+ipcMain.on('backend:force-restart', () => {
+  console.log('[Backend] force-restart requested')
+  killBackend({ forceAll: true })
+  backendStartInProgress = false
+  setTimeout(() => void startBackend(), 500)
+})
+
 // IPC: 窗口控制
 function getSenderWindow(event) {
   const webContents = event.sender

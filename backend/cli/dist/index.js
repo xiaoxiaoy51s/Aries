@@ -1,4 +1,4 @@
-// MIMO CLI Server - VS Code 风格 CLI 后端
+// Aries CLI Server - VS Code 风格 CLI 后端
 // 提供 HTTP API + WebSocket 终端，由 Python 后端自动启动
 import * as http from 'http';
 import * as url from 'url';
@@ -291,7 +291,7 @@ if (parentPid) {
 }
 // ---- Start ----
 server.listen(port, host, () => {
-    printBannerHeader('MIMO CLI Server', 0);
+    printBannerHeader('Aries CLI Server', 0);
     printBannerLine('Port', `${port}`);
     printBannerLine('Host', host);
     printBannerLine('PID', `${process.pid}`);

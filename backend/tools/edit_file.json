@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "edit_file",
-    "description": "编辑本地文件的特定部分。适合修改代码文件、配置文件等文本文件。支持按行号范围编辑或关键词替换。编码固定 utf-8。\n\n【编辑方式】\n- line_range: 指定行号范围 [start_line, end_line]，替换这些行的内容\n- search_replace: 搜索特定文本并替换\n- insert_line: 在指定行号前插入内容",
+    "description": "编辑本地文件的特定部分。支持两种模式：search_replace（精确搜索替换）和 multi_replace（批量替换）。编码固定 utf-8。",
     "parameters": {
       "type": "object",
       "properties": {
@@ -12,37 +12,47 @@
         },
         "edit_type": {
           "type": "string",
-          "description": "编辑方式：line_range（按行号范围替换）、search_replace（搜索替换）、insert_line（插入行）。",
-          "enum": ["line_range", "search_replace", "insert_line"]
-        },
-        "new_content": {
-          "type": "string",
-          "description": "新的内容或替换内容。"
-        },
-        "start_line": {
-          "type": "integer",
-          "description": "起始行号（从 1 开始）。用于 line_range 或 insert_line。"
-        },
-        "end_line": {
-          "type": "integer",
-          "description": "结束行号（包含）。仅用于 line_range。"
+          "description": "编辑方式：search_replace（搜索替换）、multi_replace（批量替换）。",
+          "enum": ["search_replace", "multi_replace"]
         },
         "search_text": {
           "type": "string",
-          "description": "要搜索的文本。用于 search_replace。"
+          "description": "要搜索的原始文本。用于 search_replace 模式。搜索文本必须包含 3-5 行上下文（前后各几行未改动代码），确保在文件中唯一。"
+        },
+        "new_content": {
+          "type": "string",
+          "description": "替换后的文本。用于 search_replace 模式。"
+        },
+        "replacements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "old_text": {
+                "type": "string",
+                "description": "要替换的原始文本（含上下文，确保唯一）。"
+              },
+              "new_text": {
+                "type": "string",
+                "description": "替换后的文本。"
+              }
+            },
+            "required": ["old_text", "new_text"]
+          },
+          "description": "批量替换列表。用于 multi_replace 模式。每条 old_text 需包含足够上下文确保唯一，各条之间不能重叠。所有替换原子性执行：要么全部成功，要么全部回滚。"
         },
         "use_regex": {
           "type": "boolean",
-          "description": "是否将 search_text 作为正则表达式。默认 false。",
+          "description": "是否将 search_text 作为正则表达式。仅 search_replace 模式。默认 false。",
           "default": false
         },
         "occurrence": {
           "type": "integer",
-          "description": "替换第几次出现（1=第一次，-1=最后一次）。默认 -1（替换所有）。",
+          "description": "替换第几次出现（1=第一次，-1=所有）。仅 search_replace 模式。默认 -1。",
           "default": -1
         }
       },
-      "required": ["file_path", "edit_type", "new_content"],
+      "required": ["file_path", "edit_type"],
       "additionalProperties": false
     }
   }

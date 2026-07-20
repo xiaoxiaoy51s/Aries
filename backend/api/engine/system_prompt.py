@@ -100,8 +100,7 @@ def build_agent_system_prompt_parts(
         "\n"
         "# Skill 使用规范\n"
         "在使用 skill 前，必须阅读 SKILL.md，了解技能的用途和使用方法。不要直接上来就调用工具，md 文件中有更详细的使用说明。\n"
-        "读取技能文档：调用 read_file，传 skill_name（技能目录名）+ file_path（如 \"SKILL.md\"）。\n"
-        "禁止自行拼接技能绝对路径，禁止使用 ~ 开头的路径。\n"
+        "读取技能文档：调用 read_file(file_path=\"...\") 传技能 SKILL.md 的绝对路径。技能路径见下方「# 用户目录」。\n"
         "\n"
         + CODING_BEHAVIOR_RULES
         + "\n\n"
@@ -123,6 +122,11 @@ def build_agent_system_prompt_parts(
         f"工作目录：`{wd}`\n"
         f"临时脚本目录：`{tmp_dir}`\n"
         f"⚠️ 所有生成的文件都应保存到工作目录：`{target_note}` 下！\n"
+        "\n"
+        "# 用户目录\n"
+        f"用户根目录（PATHHOME）：`{Path.home()}`\n"
+        f"用户技能目录：`{Path.home() / '.Aries' / 'skills'}`\n"
+        f"系统技能目录：`{Path.home() / '.Aries' / 'plugins' / 'skills'}`\n"
     )
 
     base = static + runtime

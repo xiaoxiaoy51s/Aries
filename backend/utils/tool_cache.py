@@ -32,8 +32,6 @@ _TOOL_ALIASES: dict[str, str] = {
 _NON_CACHEABLE_TOOLS: frozenset[str] = frozenset({
     "write_file",
     "edit_file",
-    "apply_patch",
-    "multi_replace_string",
     "delete_file",
     "cli_executor",
     "stop_command",
@@ -98,8 +96,7 @@ def is_cache_busting_tool(tool_name: str, args: dict[str, Any] | None = None) ->
             return False
         return True
     if name in {
-        "write_file", "edit_file", "apply_patch", "multi_replace_string",
-        "delete_file",
+        "write_file", "edit_file", "delete_file",
     }:
         return True
     return any(name.startswith(p) for p in _NON_CACHEABLE_PREFIXES)
@@ -148,30 +145,6 @@ def _resolve_path(work_dir: str | None, raw: str) -> Path | None:
             return None
 
 
-def _resolve_skill_file_path(skill_name: str, file_path: str) -> Path | None:
-    try:
-        from engine.skills_manager import get_skill_by_name
-        from engine.plugin_manager import discover_plugins
-
-        skill_path: Path | None = None
-        entry = get_skill_by_name(skill_name)
-        if entry is not None:
-            skill_path = entry.skill_path
-        else:
-            for plugin in discover_plugins():
-                if plugin.kind == "skills" and plugin.name == skill_name:
-                    skill_path = Path(plugin.target_path)
-                    break
-        if skill_path is None:
-            return None
-        target = (skill_path / file_path).resolve()
-        if not str(target).startswith(str(skill_path.resolve())):
-            return None
-        return target if target.is_file() else None
-    except Exception:
-        return None
-
-
 def get_path_mtime_fingerprint(
     tool_name: str,
     args: dict[str, Any],
@@ -181,11 +154,7 @@ def get_path_mtime_fingerprint(
     name = _canonical_tool_name(tool_name)
 
     if name == "read_file":
-        skill = (args.get("skill_name") or "").strip()
-        file_path = (args.get("file_path") or args.get("path") or "").strip()
-        if skill and file_path:
-            return _file_stat_token(_resolve_skill_file_path(skill, file_path))
-        return _file_stat_token(_resolve_path(work_dir, file_path))
+        return _file_stat_token(_resolve_path(work_dir, (args.get("file_path") or args.get("path") or "").strip()))
 
     if name in ("search_file", "list_files"):
         raw = (

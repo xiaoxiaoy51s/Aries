@@ -11,24 +11,28 @@ def _normalize(p: str) -> str:
     return Path(p).resolve().as_posix().rstrip("/")
 
 
-# 默认白名单路径：用户工作目录
-DEFAULT_WHITELIST_PATH = str((Path.home() / ".Aries" / "work_dir").resolve())
+# 默认白名单路径：用户工作目录 + 技能目录
+DEFAULT_WHITELIST_PATHS = [
+    str((Path.home() / ".Aries" / "work_dir").resolve()),
+    str((Path.home() / ".Aries" / "skills").resolve()),
+    str((Path.home() / ".Aries" / "plugins" / "skills").resolve()),
+]
 
 
 def init_default_whitelist():
-    """初始化默认白名单（用户工作目录）。"""
+    """初始化默认白名单。"""
     conn = get_connection()
-    # 检查是否已存在
-    existing = conn.execute(
-        "SELECT id FROM path_permissions WHERE path = ?",
-        (_normalize(DEFAULT_WHITELIST_PATH),)
-    ).fetchone()
-    if not existing:
-        conn.execute(
-            "INSERT INTO path_permissions (path, type) VALUES (?, 'whitelist')",
-            (_normalize(DEFAULT_WHITELIST_PATH),)
-        )
-        conn.commit()
+    for wp in DEFAULT_WHITELIST_PATHS:
+        existing = conn.execute(
+            "SELECT id FROM path_permissions WHERE path = ?",
+            (_normalize(wp),)
+        ).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO path_permissions (path, type) VALUES (?, 'whitelist')",
+                (_normalize(wp),)
+            )
+    conn.commit()
 
 
 def _path_matches(rule_path: str, target_path: str) -> bool:

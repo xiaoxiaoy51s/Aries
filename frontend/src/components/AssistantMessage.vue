@@ -168,33 +168,6 @@
       </div>
     </template>
 
-    <!-- 产物区域：文件变更列表（流式输出完成后才显示） -->
-    <div v-if="!isLoading && props.artifacts && props.artifacts.length > 0" class="artifacts-section" :class="{ 'is-open': showArtifacts }">
-      <div class="artifacts-header" @click="showArtifacts = !showArtifacts">
-        <svg class="artifacts-icon" :class="{ expanded: showArtifacts }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-          <path d="m9 18 6-6-6-6"/>
-        </svg>
-        <svg t="1782211062629" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="2784" width="14" height="14"><path d="M490.23 221.699l-47.125-49.852c-13.802-14.603-32.937-22.868-52.943-22.868H186.101c-40.402 0-73.153 33.035-73.153 73.786v548.08c0 40.75 32.751 73.786 73.153 73.786h653.697c40.398 0 73.15-33.037 73.15-73.786V318.351c0-40.75-32.751-73.784-73.15-73.784H543.174c-20.006 0-39.137-8.266-52.944-22.868l-47.125-49.852a73.533 73.533 0 0 0-5.56-5.293 266.288 266.288 0 0 0-15.423-0.463c-144.821-0.001-262.221 117.399-262.221 262.218z m444.469-20.93c0 111.124-90.084 201.208-201.208 201.208s-201.208-90.084-201.208-201.208 90.084-201.208 201.208-201.208 201.208 90.084 201.208 201.208z" fill="#FFC134" p-id="2790"></path><path d="M201.956 407.379c0 111.124 90.084 201.208 201.208 201.208s201.208-90.084 201.208-201.208-90.084-201.208-201.208-201.208-201.208 90.084-201.208 201.208z m322.447-20.931c0 77.429-62.768 140.197-140.197 140.197s-140.197-62.768-140.197-140.197 62.768-140.197 140.197-140.197 140.197 62.769 140.197 140.197z" fill="#FFC634" p-id="2791"></path><path d="M384.206 386.448m-140.197 0a140.197 140.197 0 1 0 280.394 0 140.197 140.197 0 1 0-280.394 0Z" fill="#FFCB34" p-id="2792"></path><path d="M390.162 166.979c14.982 0 29.511 6.281 39.862 17.233l47.127 49.854c17.127 18.113 41.191 28.501 66.023 28.501h296.624c30.41 0 55.15 25.025 55.15 55.784v452.494c0 30.761-24.74 55.786-55.15 55.786H186.101c-30.411 0-55.153-25.026-55.153-55.786v-548.08c0-30.761 24.742-55.786 55.153-55.786h204.061m0-18H186.101c-40.402 0-73.153 33.035-73.153 73.786v548.08c0 40.75 32.751 73.786 73.153 73.786h653.697c40.398 0 73.15-33.037 73.15-73.786V318.351c0-40.75-32.751-73.784-73.15-73.784H543.175c-20.007 0-39.137-8.266-52.944-22.868l-47.125-49.852c-13.803-14.604-32.938-22.868-52.944-22.868z" fill="#FFA820" p-id="2793"></path></svg>
-        <span class="artifacts-title">变更</span>
-        <span class="artifacts-count">{{ groupedArtifacts.length }} 个文件</span>
-        <span class="artifacts-summary">
-          <span v-if="artifactStats.added" class="sum-badge sum-created">+{{ artifactStats.added }}</span>
-          <span v-if="artifactStats.removed" class="sum-badge sum-deleted">-{{ artifactStats.removed }}</span>
-        </span>
-      </div>
-      <div v-show="showArtifacts" class="artifacts-list">
-        <div v-for="(item, idx) in groupedArtifacts" :key="idx" class="artifact-item" :class="['op-' + artifactRows[idx].op]">
-          <div class="artifact-row" @click="emit('view-artifact', item.indices[0])">
-              <img class="artifact-file-icon" :src="getFileIconUrl(getFileName(item.file_path))" width="15" height="15" alt="" />
-              <span class="artifact-path" :title="item.file_path">{{ getFileName(item.file_path) }}</span>
-              <span v-if="artifactRows[idx].diff" class="artifact-diffstat">
-                <span v-if="artifactRows[idx].diff!.added" class="diff-add">+{{ artifactRows[idx].diff!.added }}</span><span v-if="artifactRows[idx].diff!.added && artifactRows[idx].diff!.removed" class="diff-sep"> </span><span v-if="artifactRows[idx].diff!.removed" class="diff-del">-{{ artifactRows[idx].diff!.removed }}</span>
-              </span>
-            </div>
-        </div>
-      </div>
-    </div>
-
     <!-- 加载动画（流式输出中） -->
     <div v-if="isLoading" class="loading-dots">
       <span></span>
@@ -202,8 +175,8 @@
       <span></span>
     </div>
 
-    <!-- 统一复制按钮：渲染在最后（文字之后；若有产物则在产物之后） -->
-    <div v-if="showCopyAction" class="message-actions" :class="{ 'has-artifacts': hasArtifacts }">
+    <!-- 统一复制按钮：渲染在最后 -->
+    <div v-if="showCopyAction" class="message-actions">
       <button class="action-btn" @click="copyFullContent" title="复制">
         <svg v-if="copiedAll" t="1780846687143" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="6050" width="12" height="12"><path d="M896 288a32 32 0 0 0-54.656-22.592L418.656 688.096 184.992 396l-0.112 0.08a31.872 31.872 0 1 0-49.76 39.824l-0.112 0.096 256 320 0.112-0.08a31.872 31.872 0 0 0 47.52 2.688l447.952-447.952c5.824-5.808 9.408-13.808 9.408-22.656z" fill="#231815" p-id="6051"></path></svg>
         <svg v-else t="1780846643473" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="5009" width="12" height="12"><path d="M761.344 867.328H157.696v-604.16h603.648v604.16zM209.92 814.592h498.688V315.904H209.92v498.688z" fill="#000000" p-id="5010"></path><path d="M875.52 745.984h-52.736V220.672H297.984V168.448H875.52z" fill="#000000" p-id="5011"></path></svg>
@@ -216,14 +189,12 @@
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import ToolBlock from './ToolBlock.vue'
-import { FILE_EDIT_TOOL_NAMES } from '@/utils/fileEditPreview'
-
 interface BlockGroup {
   type: 'work' | 'normal'
   items: MessageBlock[]
 }
 
-import { getIconForFile, DEFAULT_FILE } from 'vscode-icons-js'
+import { FILE_EDIT_TOOL_NAMES } from '@/utils/fileEditPreview'
 import {
   streamDurationTick,
   startStreamDuration,
@@ -232,19 +203,6 @@ import {
   getStreamDurationMs,
 } from '@/utils/streamDurationStore'
 import { formatTokenInOutLabels } from '@/utils/runMetadata'
-
-const FILE_ICON_CDN = './file-icons'
-
-function getFileIconUrl(fileName: string): string {
-  const iconName = getIconForFile(fileName) || DEFAULT_FILE
-  return `${FILE_ICON_CDN}/${iconName}`
-}
-
-function getFileName(filePath: string): string {
-  if (!filePath) return ''
-  const parts = filePath.replace(/\\/g, '/').split('/')
-  return parts[parts.length - 1] || filePath
-}
 
 interface ToolInfo {
   name: string
@@ -300,14 +258,6 @@ const props = withDefaults(defineProps<{
   reasoning?: string[]
   tools?: ToolInfo[]
   blocks?: MessageBlock[]
-  artifacts?: Array<{
-    file_path: string
-    operation: string
-    previous_content: string
-    new_content: string
-    tool_name: string
-    tool_call_id: string
-  }>
   isLoading?: boolean
   textColor?: string
   fontSize?: number
@@ -319,21 +269,13 @@ const props = withDefaults(defineProps<{
   reasoning: () => [],
   tools: () => [],
   blocks: () => [],
-  artifacts: () => [],
   isLoading: false,
   textColor: '#1a1a1a',
   fontSize: 15,
   meta: () => ({})
 })
 
-const emit = defineEmits<{
-  (e: 'view-artifact', artifactIndex: number): void
-}>()
-
 const showReasoning = ref(false)
-
-// ---------- 产物区域 ----------
-const showArtifacts = ref(false)
 
 // ---------- 统一复制按钮 ----------
 const copiedAll = ref(false)
@@ -346,8 +288,6 @@ const hasCopyableText = computed(() => {
   }
   return !!props.content
 })
-
-const hasArtifacts = computed(() => !props.isLoading && !!props.artifacts && props.artifacts.length > 0)
 
 // 复制按钮只在流式结束后、且有可复制内容时显示
 const showCopyAction = computed(() => !props.isLoading && hasCopyableText.value)
@@ -389,117 +329,6 @@ function copyFullContent() {
 
 onBeforeUnmount(() => {
   if (copyResetTimer) clearTimeout(copyResetTimer)
-})
-
-// ---------- 产物：变更类型与 diff 统计 ----------
-// 统一判断变更类型，兼容 create/modify/delete 及 write_file/edit 等工具名
-type OpType = 'created' | 'modified' | 'deleted'
-
-function getOpType(item: { operation?: string; previous_content?: string; new_content?: string }): OpType {
-  const op = (item.operation || '').toLowerCase()
-  if (op === 'create' || op === 'created' || op === 'add' || op === 'added' || op === 'new') return 'created'
-  if (op === 'delete' || op === 'deleted' || op === 'remove' || op === 'removed') return 'deleted'
-  // 兜底：用内容推断（新建时 previous 为空；删除时 new 为空）
-  const prev = (item.previous_content ?? '').length
-  const next = (item.new_content ?? '').length
-  if (prev === 0 && next > 0) return 'created'
-  if (next === 0 && prev > 0) return 'deleted'
-  return 'modified'
-}
-
-// 计算单行变更的行级增删（基于 LCS）。
-// 关键修复：空内容按 0 行算（"".split('\n') 会得到 ['']，长度为 1，会导致新建文件误算出 -1）。
-function computeDiff(prev: string, next: string): { added: number; removed: number } | null {
-  // 空内容 → 0 行
-  const prevLines = prev ? prev.split('\n') : []
-  const nextLines = next ? next.split('\n') : []
-  const n = prevLines.length
-  const m = nextLines.length
-  if (n === 0 && m === 0) return null
-
-  // 新建 / 删除：直接是整篇行数，无需 LCS
-  if (n === 0) return { added: m, removed: 0 }
-  if (m === 0) return { added: 0, removed: n }
-
-  // 文件过大时退化为行数差，避免 O(n*m) 卡顿
-  if (n * m > 2_000_000) {
-    return { added: Math.max(0, m - n), removed: Math.max(0, n - m) }
-  }
-  // dp 求 LCS 长度
-  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = prevLines[i] === nextLines[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
-    }
-  }
-  const lcs = dp[0][0]
-  const removed = n - lcs
-  const added = m - lcs
-  if (added === 0 && removed === 0) return null
-  return { added, removed }
-}
-
-// 按 file_path 分组去重：同一文件多次编辑合并为一条
-// 使用第一条的 previous_content 和最后一条的 new_content 计算整体 diff
-// 保留所有原始索引，以便 view 操作
-const groupedArtifacts = computed(() => {
-  const artifacts = props.artifacts || []
-  const map = new Map<string, {
-    file_path: string
-    operation: string
-    previous_content: string
-    new_content: string
-    tool_name: string
-    tool_call_id: string
-    indices: number[]
-  }>()
-
-  for (let i = 0; i < artifacts.length; i++) {
-    const item = artifacts[i]
-    const key = item.file_path
-    if (map.has(key)) {
-      const existing = map.get(key)!
-      // 更新：用最新的 new_content，保留最早的 previous_content
-      existing.new_content = item.new_content
-      existing.operation = item.operation
-      existing.tool_name = item.tool_name
-      existing.tool_call_id = item.tool_call_id
-      existing.indices.push(i)
-    } else {
-      map.set(key, {
-        file_path: item.file_path,
-        operation: item.operation,
-        previous_content: item.previous_content,
-        new_content: item.new_content,
-        tool_name: item.tool_name,
-        tool_call_id: item.tool_call_id,
-        indices: [i],
-      })
-    }
-  }
-
-  return Array.from(map.values())
-})
-
-// 预计算每个分组产物的类型 + diff
-const artifactRows = computed(() => {
-  return groupedArtifacts.value.map((item) => {
-    const op = getOpType(item)
-    const diff = computeDiff(item.previous_content ?? '', item.new_content ?? '')
-    return { op, diff }
-  })
-})
-
-// 头部汇总统计：各行 diff 的 added / removed 分别求和
-const artifactStats = computed(() => {
-  let added = 0, removed = 0
-  for (const row of artifactRows.value) {
-    if (row.diff) {
-      added += row.diff.added
-      removed += row.diff.removed
-    }
-  }
-  return { added, removed }
 })
 
 // ---------- 实时计时（sessionId + messageId 全局 store，切换目录/卸载组件不重置） ----------
@@ -751,8 +580,6 @@ function onMessageClick(e: MouseEvent) {
 
 .work-content {
   margin-top: 5px;
-  padding-left: 12px;
-  border-left: 2px solid rgba(0, 0, 0, 0.06);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -821,8 +648,6 @@ function onMessageClick(e: MouseEvent) {
 
 .reasoning-content {
   margin-top: 5px;
-  padding-left: 12px;
-  border-left: 2px solid rgba(0, 0, 0, 0.06);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -963,7 +788,7 @@ function onMessageClick(e: MouseEvent) {
 }
 
 .error-block {
-  display: inline-flex;
+  display: flex;
   align-items: flex-start;
   gap: 4px;
   background: #fee2e2;
@@ -972,8 +797,7 @@ function onMessageClick(e: MouseEvent) {
   padding: 3px 8px;
   margin: 2px 0;
   color: #b91c1c;
-  width: fit-content;
-  max-width: min(420px, 55%);
+  width: 100%;
   line-height: 1.3;
 }
 
@@ -1037,145 +861,11 @@ function onMessageClick(e: MouseEvent) {
   }
 }
 
-/* 产物区域 */
-.artifacts-section {
-  margin-top: 8px;
-  border: 1px solid var(--border, rgba(0,0,0,0.08));
-  border-radius: 8px;
-  overflow: hidden;
-  background: var(--bg-panel, #fff);
-}
-
-.artifacts-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 10px;
-  cursor: pointer;
-  user-select: none;
-  color: var(--text-secondary, #6b7280);
-  font-size: 12px;
-  background: var(--bg-secondary, rgba(0,0,0,0.02));
-  border-bottom: 1px solid transparent;
-  transition: background 0.1s, border-color 0.1s;
-}
-
-/* 展开时 header 与列表之间加一条分隔线 */
-.artifacts-section.is-open .artifacts-header {
-  border-bottom-color: var(--border, rgba(0,0,0,0.06));
-}
-
-.artifacts-header:hover {
-  background: var(--bg-tertiary, rgba(0,0,0,0.04));
-}
-
-.artifacts-icon {
-  transition: transform 0.18s;
-  flex-shrink: 0;
-  opacity: 0.7;
-}
-
-.artifacts-icon.expanded {
-  transform: rotate(90deg);
-}
-
-.artifacts-title {
-  font-weight: 500;
-}
-
-.artifacts-count {
-  color: var(--text-muted, #aaa);
-  font-size: 11px;
-}
-
-/* 头部汇总徽标 +/~/- */
-.artifacts-summary {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-}
-
-.sum-badge {
-  font-size: 10px;
-  font-weight: 600;
-  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
-  padding: 1px 5px;
-  border-radius: 3px;
-  line-height: 1.4;
-}
-
-.sum-created { background: rgba(34,197,94,0.14); color: #16a34a; }
-.sum-modified { background: rgba(245,158,11,0.14); color: #d97706; }
-.sum-deleted { background: rgba(239,68,68,0.14); color: #dc2626; }
-
-.artifacts-list {
-  padding: 2px 0;
-}
-
-.artifact-item {
-  border-top: 1px solid var(--border, rgba(0,0,0,0.04));
-}
-
-.artifact-item:first-child {
-  border-top: none;
-}
-
-.artifact-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 10px;
-  cursor: pointer;
-  user-select: none;
-  font-size: 12px;
-  transition: background 0.1s;
-}
-
-.artifact-row:hover {
-  background: var(--bg-secondary, rgba(0,0,0,0.03));
-}
-
-.artifact-file-icon {
-  flex-shrink: 0;
-  width: 14px;
-  height: 14px;
-  object-fit: contain;
-}
-
-.artifact-path {
-  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
-  color: var(--text-secondary, #555);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-}
-
-/* diff stat：+N 绿 / -M 红，靠右 */
-.artifact-diffstat {
-  flex-shrink: 0;
-  font-size: 10px;
-  font-weight: 600;
-  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
-  white-space: nowrap;
-}
-
-.diff-add { color: #16a34a; }
-.diff-del { color: #dc2626; }
-.diff-sep { display: inline-block; width: 4px; }
-
-/* 统一复制按钮：始终位于消息最底部（产物之后） */
+/* 统一复制按钮：始终位于消息最底部 */
 .message-actions {
   display: flex;
   justify-content: flex-start;
   margin-top: 8px;
-}
-
-/* 有产物时，复制按钮紧跟在产物卡片下方，去掉额外间距，视觉上更贴合 */
-.message-actions.has-artifacts {
-  margin-top: 6px;
 }
 
 .action-btn {

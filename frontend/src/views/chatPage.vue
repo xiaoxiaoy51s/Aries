@@ -3,6 +3,36 @@
     <div class="chat-content">
     <!-- 空状态 -->
     <div v-if="!hasActiveChat" class="chat-empty">
+      <div class="chat-empty-actions">
+        <button
+          type="button"
+          class="chat-header-icon-btn"
+          :class="{ active: bottomConsoleOpen }"
+          :title="bottomConsoleOpen ? '收起控制台' : '展开控制台'"
+          :aria-label="bottomConsoleOpen ? '收起控制台' : '展开控制台'"
+          :aria-expanded="bottomConsoleOpen"
+          @click="toggleBottomConsole"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="m7 9 3 3-3 3"/>
+            <path d="M13 15h4"/>
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="chat-header-icon-btn"
+          :class="{ active: rightPanelVisible }"
+          :title="rightPanelVisible ? '收起面板' : '展开面板'"
+          :aria-label="rightPanelVisible ? '收起面板' : '展开面板'"
+          @click="toggleRightPanel"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <path d="M15 3v18"/>
+          </svg>
+        </button>
+      </div>
       <h1 class="welcome-title">我们要在 Aries 里构建什么？</h1>
       <ChatComposer
         ref="emptyComposerRef"
@@ -135,14 +165,12 @@
               :reasoning="msg.reasoning || []"
               :tools="msg.tools || []"
               :blocks="msg.blocks || []"
-              :artifacts="msg.artifacts || []"
               :is-loading="msg.isLoading"
               :text-color="textColor"
               :font-size="fontSize"
               :meta="msg.meta"
               :message-id="msg.messageId"
               :chat-session-id="currentSessionId || ''"
-              @view-artifact="(idx: number) => viewArtifact(index, idx)"
             />
           </div>
         </div>
@@ -187,22 +215,22 @@
         />
       </ChatComposer>
       </div>
+    </div>
 
-      <div v-show="bottomConsoleOpen" class="bottom-console-dock">
+    <div v-show="bottomConsoleOpen" class="bottom-console-dock">
+      <div
+        class="bottom-console-panel"
+        :style="{ height: `${bottomConsoleHeight}px` }"
+      >
         <div
-          class="bottom-console-panel"
-          :style="{ height: `${bottomConsoleHeight}px` }"
-        >
-          <div
-            class="bottom-console-resize-handle"
-            title="拖动调整高度"
-            @pointerdown="startConsoleResize"
-            @pointermove="onConsoleResize"
-            @pointerup="stopConsoleResize"
-            @pointercancel="stopConsoleResize"
-          />
-          <ConsolePanel :visible="bottomConsoleOpen" @close="closeBottomConsole" />
-        </div>
+          class="bottom-console-resize-handle"
+          title="拖动调整高度"
+          @pointerdown="startConsoleResize"
+          @pointermove="onConsoleResize"
+          @pointerup="stopConsoleResize"
+          @pointercancel="stopConsoleResize"
+        />
+        <ConsolePanel :visible="bottomConsoleOpen" @close="closeBottomConsole" />
       </div>
     </div>
     </div>
@@ -2225,18 +2253,6 @@ async function tryResumeSession(sessionId: string) {
 }
 
 let inlineDiffCounter = 0
-function viewArtifact(msgIdx: number, artifactIdx: number) {
-  const msg = messages.value[msgIdx]
-  if (!msg?.artifacts?.[artifactIdx]) return
-  const artifact = msg.artifacts[artifactIdx]
-  inlineDiffData.value = {
-    path: artifact.file_path,
-    original: artifact.previous_content,
-    modified: artifact.new_content,
-    key: ++inlineDiffCounter,
-  }
-  rightPanelVisible.value = true
-}
 
 // 加载消息快照（JSONL 优先；无事件时用 DB reasoning_content 拆段）
 function applyMessageSnapshotEvents(
@@ -2370,6 +2386,18 @@ function onAddToChat(e: Event) {
   }
 }
 
+function onViewFileDiff(e: Event) {
+  const detail = (e as CustomEvent).detail as { path?: string; original?: string; modified?: string }
+  if (!detail?.path) return
+  inlineDiffData.value = {
+    path: detail.path,
+    original: detail.original || '',
+    modified: detail.modified || '',
+    key: ++inlineDiffCounter,
+  }
+  rightPanelVisible.value = true
+}
+
 onMounted(() => {
   setLogEventBatchHandler(applyLogEventBatch)
   bindSubagentLogBatch(messages, () => {
@@ -2386,6 +2414,7 @@ onMounted(() => {
   window.addEventListener('aries:open-url', onOpenUrlFromMessage)
   window.addEventListener('aries:toast', onToast)
   window.addEventListener('aries:add-to-chat', onAddToChat)
+  window.addEventListener('aries:view-file-diff', onViewFileDiff)
   window.addEventListener('aries:select-work-dir', onSelectWorkDir)
   window.addEventListener('aries:emergency-stop', onEmergencyStopEvent)
   window.addEventListener('aries:refresh-sessions', onRefreshSessions)
@@ -2457,6 +2486,7 @@ onUnmounted(() => {
   window.removeEventListener('aries:open-url', onOpenUrlFromMessage)
   window.removeEventListener('aries:toast', onToast)
   window.removeEventListener('aries:add-to-chat', onAddToChat)
+  window.removeEventListener('aries:view-file-diff', onViewFileDiff)
   window.removeEventListener('aries:select-work-dir', onSelectWorkDir)
   window.removeEventListener('aries:emergency-stop', onEmergencyStopEvent)
   window.removeEventListener('aries:refresh-sessions', onRefreshSessions)
@@ -2978,6 +3008,17 @@ function scheduleScrollToBottom(force = false) {
   justify-content: center;
   padding: 64px 48px 80px;
   gap: 56px;
+  position: relative;
+}
+
+.chat-empty-actions {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  z-index: 2;
 }
 
 .welcome-title {

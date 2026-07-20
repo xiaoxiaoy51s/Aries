@@ -246,10 +246,12 @@ def build_skills_context_from_entries(relevant_skills: list[SkillEntry]) -> str:
         return ""
     lines = [
         "【相关本地技能】",
-        "以下技能与当前请求相关。读取技能文档请用 read_file(skill_name=\"<目录名>\", file_path=\"SKILL.md\")，不要拼接绝对路径。",
+        "以下技能与当前请求相关。读取技能文档请用 read_file(file_path=\"<技能目录>/SKILL.md\")，技能路径见下方「# 用户目录」。",
     ]
     for entry in relevant_skills:
-        lines.append(f"- {entry.name}: {entry.description or '无描述'}")
+        tag = entry.to_api_dict().get("group", "personal")
+        src = "[个人]" if tag == "personal" else "[系统]"
+        lines.append(f"- {src} {entry.name}: {entry.description or '无描述'}")
     return "\n".join(lines).strip()
 
 
@@ -258,7 +260,7 @@ CORE_TOOL_NAMES = {
     "cli_executor",
     "check_command_status", "stop_command",
     "create_scheduled_task",
-    "multi_replace_string", "apply_patch",
+
     "delete_file",
     "todo_write",
     "send_file_to_user",

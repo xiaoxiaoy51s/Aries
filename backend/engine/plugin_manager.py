@@ -412,7 +412,7 @@ def build_plugins_context() -> str:
         lines.append(f"- {label}: {', '.join(names)}")
 
     lines.append(
-        "如需了解某个插件的具体用法，请用 read_file(skill_name=\"<插件目录名>\", file_path=\"SKILL.md\")，不要拼接绝对路径。"
+        "如需了解某个插件的具体用法，请用 read_file(file_path=\"<插件目录>/SKILL.md\") 传绝对路径。"
     )
     return "\n".join(lines)
 
