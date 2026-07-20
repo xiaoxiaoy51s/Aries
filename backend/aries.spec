@@ -99,12 +99,8 @@ a = Analysis(
         'PySide2',
         'PySide6',
         'wx',
-        'win32com',
-        'win32api',
         'win32gui',
-        'win32con',
-        'pythoncom',
-        'pywintypes',
+        'win32com',
     ],
     noarchive=False,
 )

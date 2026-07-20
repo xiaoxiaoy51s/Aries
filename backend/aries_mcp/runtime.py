@@ -538,54 +538,61 @@ class McpConnectionPool:
         timeout = _timeout_seconds(server)
         sse_read_timeout = _sse_read_timeout_seconds(server)
 
-        if transport == "stdio":
-            from mcp.client.stdio import stdio_client
+        try:
+            if transport == "stdio":
+                from mcp.client.stdio import stdio_client
 
-            server_params = _stdio_server_params(server)
-            read, write = await stack.enter_async_context(stdio_client(server_params))
-        elif transport == "sse":
-            from mcp.client.sse import sse_client
+                server_params = _stdio_server_params(server)
+                read, write = await stack.enter_async_context(stdio_client(server_params))
+            elif transport == "sse":
+                from mcp.client.sse import sse_client
 
-            read, write = await stack.enter_async_context(
-                sse_client(
-                    _http_server_url(server),
-                    headers=build_mcp_http_headers(server),
-                    timeout=timeout,
-                    sse_read_timeout=sse_read_timeout,
+                read, write = await stack.enter_async_context(
+                    sse_client(
+                        _http_server_url(server),
+                        headers=build_mcp_http_headers(server),
+                        timeout=timeout,
+                        sse_read_timeout=sse_read_timeout,
+                    )
                 )
-            )
-        else:
-            from mcp.client.streamable_http import streamablehttp_client
+            else:
+                from mcp.client.streamable_http import streamablehttp_client
 
-            read, write, _ = await stack.enter_async_context(
-                streamablehttp_client(
-                    _http_server_url(server),
-                    headers=build_mcp_http_headers(server),
-                    timeout=timedelta(seconds=timeout),
-                    sse_read_timeout=timedelta(seconds=sse_read_timeout),
+                read, write, _ = await stack.enter_async_context(
+                    streamablehttp_client(
+                        _http_server_url(server),
+                        headers=build_mcp_http_headers(server),
+                        timeout=timedelta(seconds=timeout),
+                        sse_read_timeout=timedelta(seconds=sse_read_timeout),
+                    )
                 )
+
+            session = await stack.enter_async_context(ClientSession(read, write))
+            # 用 anyio.fail_after 而非 asyncio.wait_for，避免与 anyio cancel scope 跨 task 冲突
+            from anyio import fail_after
+            with fail_after(timeout):
+                await session.initialize()
+                live_tools = await _list_all_tools(session, timeout)
+            _cache_server_tools(server_id, live_tools)
+            schemas = [_tool_schema_dict(tool) for tool in live_tools if getattr(tool, "name", None)]
+            fingerprint = _catalog_fingerprint([s["name"] for s in schemas])
+
+            return _ServerConnection(
+                server_id=server_id,
+                server=server,
+                stack=stack,
+                session=session,
+                tools=schemas,
+                status="connected",
+                last_connected_at=_now_iso(),
+                catalog_fingerprint=fingerprint,
             )
-
-        session = await stack.enter_async_context(ClientSession(read, write))
-        # 用 anyio.fail_after 而非 asyncio.wait_for，避免与 anyio cancel scope 跨 task 冲突
-        from anyio import fail_after
-        with fail_after(timeout):
-            await session.initialize()
-            live_tools = await _list_all_tools(session, timeout)
-        _cache_server_tools(server_id, live_tools)
-        schemas = [_tool_schema_dict(tool) for tool in live_tools if getattr(tool, "name", None)]
-        fingerprint = _catalog_fingerprint([s["name"] for s in schemas])
-
-        return _ServerConnection(
-            server_id=server_id,
-            server=server,
-            stack=stack,
-            session=session,
-            tools=schemas,
-            status="connected",
-            last_connected_at=_now_iso(),
-            catalog_fingerprint=fingerprint,
-        )
+        except Exception:
+            # 连接过程中发生异常时，主动关闭 stack 中的上下文（如 stdio_client），
+            # 避免 AsyncExitStack 在 GC 回收时跨 task 清理触发 anyio
+            # "Attempted to exit cancel scope in a different task" 异常
+            await stack.aclose()
+            raise
 
     async def _disconnect_server(self, conn: _ServerConnection | None) -> None:
         if conn is None:

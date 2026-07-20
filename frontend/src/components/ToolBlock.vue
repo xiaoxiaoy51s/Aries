@@ -430,16 +430,6 @@ watch(
   { immediate: true },
 )
 
-watch(
-  () => [isMcpToolBlock.value, props.status] as const,
-  ([isMcp, status]) => {
-    if (isMcp && (status === 'running' || props.pendingConfirmation)) {
-      isExpanded.value = true
-    }
-  },
-  { immediate: true },
-)
-
 onMounted(() => {
   if (!isMcpToolBlock.value) return
   void ensureMcpServerSlugsLoaded().finally(() => {
