@@ -73,7 +73,6 @@
           :src="tab.currentUrl"
           :ref="(el) => setWebviewRef(tab.id, el as HTMLElement | null)"
           class="browser-webview"
-          allowpopups
           webpreferences="contextIsolation=no; nodeIntegration=no"
           @did-navigate="(e) => onNavigate(tab, e)"
           @did-navigate-in-page="(e) => onNavigateInPage(tab, e)"
@@ -391,8 +390,21 @@ function onNavigateInPage(tab: BrowserTab, e: any) {
 
 function onDomReady(tab: BrowserTab) {
   tab.pageRendered = true
+  const webview = webviewRefs.get(tab.id) as any
+  // 拦截 target="_blank" 链接，在当前 webview 中导航而非弹出 Electron 窗口
+  webview?.executeJavaScript?.(`
+    (function() {
+      document.addEventListener('click', function(e) {
+        var a = e.target.closest('a[target="_blank"], a[target="_new"]');
+        if (a && a.href) {
+          e.preventDefault();
+          e.stopPropagation();
+          window.location.href = a.href;
+        }
+      }, true);
+    })();
+  `, true).catch(() => {})
   if (tab.inspecting) {
-    const webview = webviewRefs.get(tab.id) as any
     webview?.executeJavaScript?.(INSPECT_SCRIPT, true).catch(() => {})
   }
 }
