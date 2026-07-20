@@ -12,28 +12,6 @@ from prompt import CODING_BEHAVIOR_RULES
 from prompt.edit_code_prompts import build_optimized_edit_prompt
 
 
-def _session_context_note(session_id: str | None) -> str:
-    """生成当前会话说明，供 system prompt 与工具默认行为使用。"""
-    sid = (session_id or "").strip()
-    if not sid:
-        return "当前 session_id：未知"
-
-    from db.scheduled_task import infer_platform
-
-    platform_name = infer_platform(sid)
-    platform_labels = {"wechat": "微信", "qq": "QQ", "feishu": "飞书"}
-    if platform_name:
-        label = platform_labels.get(platform_name, platform_name)
-        return (
-            f"当前 session_id：`{sid}`\n"
-            f"消息来源：{label}（用户从此平台发来消息；"
-            f"创建定时任务时若用户未指定会话，默认写入{label}会话；"
-            f"是否向用户发送消息/文件请调用 send_message_to_user / send_file_to_user 并指定 platform（微信/QQ/飞书），系统不会自动推送）"
-        )
-    return (
-        f"当前 session_id：`{sid}`\n"
-        "消息来源：网页聊天（创建定时任务时若用户未指定推送平台，默认在当前网页会话中继续）"
-    )
 
 
 _SUBAGENT_USAGE_RULES = (
@@ -55,15 +33,14 @@ _SUBAGENT_USAGE_RULES = (
 def build_agent_system_prompt_parts(
     skills_context: str,
     work_dir: str | None = None,
-    session_id: str | None = None,
     mcp_context: str = "",
     subagents_context: str = "",
 ) -> dict[str, str]:
     """构建 Agent 模式的系统提示词，并按"功能模块"分块返回。
 
     返回 dict:
-        static: 身份/输出规范/编码规则（不含日期、session、work_dir，利于 prefix cache）
-        runtime: 日期、session、工作目录
+        static: 身份/输出规范/编码规则（不含日期、work_dir，利于 prefix cache）
+        runtime: 日期、工作目录
         base: static + runtime（兼容旧 breakdown）
         rules: 用户 rules.md + AI 项目记忆（agent.md）
         skills: 已安装本地 Skills 详情
@@ -74,18 +51,13 @@ def build_agent_system_prompt_parts(
     """
     from pathlib import Path
     today_str = datetime.now().strftime("%Y-%m-%d")
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     if work_dir and work_dir.strip():
         wd = str(Path(work_dir).expanduser().resolve())
-        tmp_dir = str(Path(wd) / ".Aries_tmp")
-        target_note = wd
     else:
         wd_path = Path.home() / ".Aries" / "work_dir"
         wd_path.mkdir(parents=True, exist_ok=True)
         wd = str(wd_path)
-        tmp_dir = str(Path.home() / ".Aries" / "tmp")
-        target_note = wd
 
     static = (
         "# 身份\n"
@@ -93,7 +65,7 @@ def build_agent_system_prompt_parts(
         f"当前操作系统：{platform.system()}。\n"
         "\n"
         "# 输出规范\n"
-        "- 工具轮：输出「分析+计划」，再调用工具\n"
+        "- 工具轮：输出「分析+计划」，再调用工具（分析+计划是必需的工作输出，不属于可跳过的过渡词）\n"
         "- 最终轮：直接输出精炼总结\n"
         "- 批量调用：无依赖的工具可同一轮调用\n"
         "- 所有工具失败时：2次尝试内停止，告知障碍，禁止伪造结果\n"
@@ -104,29 +76,20 @@ def build_agent_system_prompt_parts(
         "\n"
         + CODING_BEHAVIOR_RULES
         + "\n\n"
-        + build_optimized_edit_prompt(
-            has_replace_string=True,
-            has_multi_replace=True,
-            has_apply_patch=True,
-        )
-    )
-
-    runtime = (
-        f"# 运行时\n"
-        f"当前时间：{now_str}（用户本地时间）。创建定时任务等涉及时间的操作请以此为准。\n"
-        "\n"
-        "# 当前会话\n"
-        f"{_session_context_note(session_id)}\n"
-        "\n"
-        "# 工作目录\n"
-        f"工作目录：`{wd}`\n"
-        f"临时脚本目录：`{tmp_dir}`\n"
-        f"⚠️ 所有生成的文件都应保存到工作目录：`{target_note}` 下！\n"
-        "\n"
+        + build_optimized_edit_prompt()
+        + "\n\n"
         "# 用户目录\n"
         f"用户根目录（PATHHOME）：`{Path.home()}`\n"
         f"用户技能目录：`{Path.home() / '.Aries' / 'skills'}`\n"
         f"系统技能目录：`{Path.home() / '.Aries' / 'plugins' / 'skills'}`\n"
+    )
+
+    runtime = (
+        f"# 运行时间\n"
+        f"当前日期：{today_str}。需要精确时间时，请通过 `cli_executor` 工具执行 `date` 命令查询系统时间。创建定时任务等涉及时间的操作请以查询结果为准。\n"
+        "\n"
+        "# 工作目录\n"
+        f"工作目录：`{wd}`\n"
     )
 
     base = static + runtime
@@ -155,7 +118,7 @@ def build_agent_system_prompt_parts(
     except Exception:
         pass
 
-    full = base + rules + subagents_section + plugins_section + skills_section + mcp_section
+    full = base + subagents_section + plugins_section + skills_section + mcp_section + rules
 
     return {
         "static": static,
@@ -173,7 +136,6 @@ def build_agent_system_prompt_parts(
 def build_agent_system_prompt(
     skills_context: str,
     work_dir: str | None = None,
-    session_id: str | None = None,
     mcp_context: str = "",
     subagents_context: str = "",
 ) -> str:
@@ -181,7 +143,6 @@ def build_agent_system_prompt(
     return build_agent_system_prompt_parts(
         skills_context=skills_context,
         work_dir=work_dir,
-        session_id=session_id,
         mcp_context=mcp_context,
         subagents_context=subagents_context,
     )["full"]

@@ -280,7 +280,6 @@ def get_session_context_usage(session_id: str, refresh: bool = False):
     prompt_parts = build_agent_system_prompt_parts(
         skills_context,
         work_dir=work_dir,
-        session_id=session_id,
         mcp_context=mcp_context,
         subagents_context=subagents_context,
     )

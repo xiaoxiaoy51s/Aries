@@ -45,7 +45,6 @@ ROLE_GUIDE = """# Role 约束说明
 任何你想让 AI 知道的项目级约束。
 示例：
 - 不要修改 config.json 中的 API key
-- 生成的临时脚本放在 .Aries_tmp/ 目录
 - 提交信息用英文，遵循 Conventional Commits
 
 ---

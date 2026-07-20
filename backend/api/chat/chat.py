@@ -237,7 +237,6 @@ async def stream_chat(request: ChatRequest) -> dict:
     system_prompt = build_agent_system_prompt(
         skills_context,
         work_dir=effective_work_dir,
-        session_id=session_id,
         mcp_context=mcp_context,
         subagents_context=subagents_context,
     )
@@ -439,7 +438,7 @@ async def stream_chat_sse(request: ChatRequest, http_request: Request):
     if agent_mode_name:
         tool_definitions = filter_tools_for_agent(tool_definitions, agent_mode_name)
     system_prompt = build_agent_system_prompt(
-        skills_context, work_dir=effective_work_dir, session_id=session_id,
+        skills_context, work_dir=effective_work_dir,
         mcp_context=mcp_context, subagents_context=subagents_context,
     )
     if code_review_mode:
@@ -541,7 +540,6 @@ async def chat_completions(request: ChatRequest, http_request: Request):
     system_prompt = build_agent_system_prompt(
         skills_context,
         work_dir=effective_work_dir,
-        session_id=session_id,
         mcp_context=mcp_context,
         subagents_context=subagents_context,
     )
@@ -712,7 +710,7 @@ async def temp_chat(req, http_request: Request):
     effective_work_dir = (_meta.get("work_dir") or req.work_dir or "").strip() or None
     system_prompt = build_agent_system_prompt(
         skills_context, work_dir=effective_work_dir,
-        session_id=req.session_id, mcp_context=mcp_context,
+        mcp_context=mcp_context,
         subagents_context=subagents_context,
     )
 

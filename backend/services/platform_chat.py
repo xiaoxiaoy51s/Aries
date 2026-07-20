@@ -55,24 +55,6 @@ def _load_platform_config(platform: str) -> dict:
         return {}
 
 
-def _platform_system_extra(platform: str) -> str:
-    # 优先使用用户在 bot_config.json 中配置的自定义系统提示词
-    pconf = _load_platform_config(platform)
-    custom = (pconf.get("system_prompt") or "").strip()
-    if custom:
-        return "\n" + custom
-    # 回退到默认文案
-    names = {"qq": "QQ", "wechat": "微信", "feishu": "飞书"}
-    label = names.get(platform, platform)
-    return (
-        f" You are chatting via {label}. Please answer in a concise and helpful way."
-        " Use Chinese unless the user asks otherwise."
-        " You are in AGENT mode: you MUST use available tools (web search, cli, skills) to complete tasks."
-        " Do NOT say you are in plain text mode or cannot use tools."
-        " When the user asks to create/save a file, use tools to write it to the work directory."
-    )
-
-
 async def _cancel_platform_task(platform: str) -> None:
     """取消指定平台正在进行的对话任务。"""
     prev_task = _platform_tasks.get(platform)
@@ -133,21 +115,28 @@ async def run_agent_in_session(
     system_prompt = build_agent_system_prompt(
         skills_context,
         work_dir=work_dir,
-        session_id=session_id,
         mcp_context=mcp_context,
         subagents_context=subagents_context,
     )
 
-    # 平台会话追加额外提示
+    # 平台信息注入到 user message（不污染 system prompt，利于缓存命中）
+    platform_label = None
     if platform and platform in PLATFORMS:
-        system_prompt += _platform_system_extra(platform)
+        platform_label = platform
     elif session_id in (session_id_for("wechat"), session_id_for("qq"), session_id_for("feishu")):
-        detected = (
+        platform_label = (
             "wechat" if session_id == session_id_for("wechat")
             else "qq" if session_id == session_id_for("qq")
             else "feishu"
         )
-        system_prompt += _platform_system_extra(detected)
+    user_text = text
+    if platform_label:
+        names = {"qq": "QQ", "wechat": "微信", "feishu": "飞书"}
+        label = names.get(platform_label, platform_label)
+        user_text = (
+            f"[消息来源：{label}（创建定时任务时默认写入{label}会话；"
+            f"发送消息/文件请调用 send_message_to_user / send_file_to_user 并指定 platform）]\n{text}"
+        )
 
     from db.chat import build_agent_reasoning_context
 
@@ -162,7 +151,7 @@ async def run_agent_in_session(
     if reasoning_ctx:
         messages.append(reasoning_ctx)
     messages.extend(history)
-    messages.append({"role": "user", "content": text})
+    messages.append({"role": "user", "content": user_text})
 
     request = SimpleNamespace(
         baseUrl=base_url, apiKey=api_key, model=model,

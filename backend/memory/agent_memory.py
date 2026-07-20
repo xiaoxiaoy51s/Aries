@@ -95,7 +95,7 @@ def build_agent_memory_system_section(work_dir: str | None) -> str:
         sections.append(
             "# 用户自定义约束（Role Rules）\n"
             f"来源：`{rules_path}`\n"
-            "以下是用户为你设定的行为约束，你必须严格遵守。\n\n"
+            "以下是用户为你设定的行为约束，优先级高于上方所有段落（# 身份/# 输出规范/# 代码风格/# Skill/# MCP 等），如有冲突以本条为准。\n\n"
             f"{rules}\n"
         )
 

@@ -614,9 +614,8 @@ def build_subagent_direct_chat_config(
     except Exception:
         pass
 
-    # 注入 session 上下文（仅作提示）
-    if session_id:
-        parts.append(f"# 当前会话\n当前 session_id：`{session_id}`。请保持回答简洁、可执行。")
+    # 输出规范（不注入 session_id，避免破坏 prompt 缓存）
+    parts.append("# 输出规范\n请保持回答简洁、可执行。")
 
     if skills_context:
         parts.append("# 可用本地 Skills\n" + skills_context)

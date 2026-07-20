@@ -316,7 +316,7 @@ async def stream_agent_mode(
 
         skills_context, tool_definitions, mcp_context, subagents_context = get_agent_skills_and_tools()
         prompt_parts = build_agent_system_prompt_parts(
-            skills_context, work_dir=work_dir, session_id=session_id,
+            skills_context, work_dir=work_dir,
             mcp_context=mcp_context, subagents_context=subagents_context,
         )
         agent_ctx = ""
