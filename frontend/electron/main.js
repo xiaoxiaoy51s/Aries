@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, screen, dialog, Tray, nativeImage, shell } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, screen, dialog, Tray, nativeImage, shell, powerMonitor, session } = require('electron')
 const path = require('path')
 const { spawn, spawnSync } = require('child_process')
 const http = require('http')
@@ -791,6 +791,29 @@ if (gotSingleInstanceLock) {
     void startBackend()
     createTray()
     createWindow()
+
+    // 系统休眠/唤醒后，Chromium 到后端的 keep-alive 连接会变成死连接，但 socket 池
+    // 仍会复用它 -> 渲染层 fetch 卡住/报错，表现为「后端正常但前端不可达，只能重启整个应用」。
+    // 唤醒时：清掉连接池 + 探活后端（卡死则重启）+ 通知渲染层立即重新探活。
+    powerMonitor.on('resume', async () => {
+      console.log('[powerMonitor] system resumed, resetting backend connection')
+      try {
+        await session.defaultSession.closeAllConnections()
+      } catch (e) {
+        console.error('[powerMonitor] closeAllConnections error:', e)
+      }
+      // 后端事件循环在长时间 suspend 后偶发 wedge：用 Node 探活，失败则强制重启
+      const alive = await waitBackendReady(3000)
+      if (!alive) {
+        console.log('[powerMonitor] backend not responding after resume, force-restarting')
+        killBackend({ forceAll: true })
+        backendStartInProgress = false
+        setTimeout(() => void startBackend(), 500)
+      }
+      for (const win of windows) {
+        if (!win.isDestroyed()) win.webContents.send('backend:resume')
+      }
+    })
   })
 
   app.on('second-instance', () => {

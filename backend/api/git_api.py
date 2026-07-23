@@ -4,11 +4,14 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel
+
+from utils.doc_parser import extract_text, is_supported_document
 
 router = APIRouter(prefix="/git", tags=["git"])
 
@@ -518,7 +521,7 @@ async def git_remote_branches(work_dir: str | None = None) -> dict[str, Any]:
 _IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico"}
 _BINARY_EXTS = {
     "png", "jpg", "jpeg", "gif", "bmp", "webp", "ico",
-    "pdf", "zip", "tar", "gz", "rar", "7z",
+    "zip", "tar", "gz", "rar", "7z",
     "exe", "dll", "so", "dylib", "class", "pyc",
     "mp3", "mp4", "wav", "flac", "ogg", "mov", "avi", "mkv",
     "ttf", "otf", "woff", "woff2",
@@ -602,6 +605,46 @@ async def git_show_file(
             "size": size,
             "ext": ext,
         }
+    # Office 文档：用 doc_parser 从文件提取文本
+    if is_supported_document(Path(file_path)):
+        if ref and ref.upper() == "WORKTREE":
+            full = Path(wd) / file_path
+            try:
+                text = extract_text(full)
+                return {
+                    "exists": True,
+                    "is_image": False,
+                    "is_binary": False,
+                    "content": text,
+                    "size": size,
+                    "ext": ext,
+                    "is_document": True,
+                }
+            except Exception:
+                # 解析失败，走二进制回退
+                pass
+        else:
+            # git ref 中的 Office 文件：写临时文件后用 doc_parser 解析
+            try:
+                with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                    tmp.write(data)
+                    tmp_path = tmp.name
+                try:
+                    text = extract_text(tmp_path)
+                    return {
+                        "exists": True,
+                        "is_image": False,
+                        "is_binary": False,
+                        "content": text,
+                        "size": size,
+                        "ext": ext,
+                        "is_document": True,
+                    }
+                finally:
+                    Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
     if is_binary:
         return {
             "exists": True,

@@ -19,7 +19,6 @@ from .system_prompt import (
     get_agent_skills_and_tools,
 )
 from .stream_constants import (
-    MAX_TOOL_ROUNDS,
     REPEAT_TOOL_LIMIT,
     LLM_CONNECT_TIMEOUT_SECONDS,
     LLM_READ_TIMEOUT_SECONDS,
@@ -48,7 +47,6 @@ __all__ = [
     "build_agent_system_prompt",
     "get_agent_skills_and_tools",
     # stream
-    "MAX_TOOL_ROUNDS",
     "REPEAT_TOOL_LIMIT",
     "LLM_CONNECT_TIMEOUT_SECONDS",
     "LLM_READ_TIMEOUT_SECONDS",

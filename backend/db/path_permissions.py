@@ -1,4 +1,11 @@
-"""路径权限管理：白名单（完全放行）/ 黑名单（直接拒绝）/ 其余走原有确认流程。"""
+"""路径权限管理。
+
+Reasonix 风格优先级：deny(黑名单) > allow(白名单) > 默认(走确认流程)
+
+- whitelist（白名单）：完全放行，不弹确认
+- blacklist（黑名单）：直接拒绝，不弹确认
+- 不匹配：按 approval_mode 走确认流程
+"""
 
 from pathlib import Path
 from typing import Optional

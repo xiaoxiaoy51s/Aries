@@ -118,7 +118,7 @@ def apply_env_to_path() -> dict[str, str]:
 
     # 收集要前置的目录（exe 所在目录）
     dirs_to_prepend: list[str] = []
-    for runtime in ("node", "python", "git"):
+    for runtime in ("node", "python", "git", "officecli"):
         info = config.get(runtime)
         if not info or not info.get("path"):
             continue
@@ -157,6 +157,7 @@ def _detect_and_save_runtime(runtime: str) -> None:
     from utils.runtime_manager import (
         detect_system_git,
         detect_system_node,
+        detect_system_officecli,
         detect_system_python,
         _list_builtin_versions,
     )
@@ -170,6 +171,8 @@ def _detect_and_save_runtime(runtime: str) -> None:
         if not system.get("installed") and sys.executable:
             ver = sys.version.split("\n")[0].replace("Python ", "").strip()
             system = {"installed": True, "version": ver, "path": sys.executable}
+    elif runtime == "officecli":
+        system = detect_system_officecli()
     else:
         system = detect_system_git()
 
@@ -219,7 +222,7 @@ def get_missing_runtimes() -> list[str]:
     """返回 env.json 中缺失（无有效 path）的运行时列表。"""
     config = load_env_config()
     missing = []
-    for runtime in ("node", "python", "git"):
+    for runtime in ("node", "python", "git", "officecli"):
         info = config.get(runtime)
         if not info or not info.get("path") or not Path(info["path"]).is_file():
             missing.append(runtime)
@@ -228,7 +231,7 @@ def get_missing_runtimes() -> list[str]:
 
 def init_runtime_env() -> dict[str, str]:
     """启动时：检测系统环境 -> 写入 env.json -> 前置 PATH。"""
-    for rt in ("node", "python", "git"):
+    for rt in ("node", "python", "git", "officecli"):
         try:
             _detect_and_save_runtime(rt)
         except Exception as e:

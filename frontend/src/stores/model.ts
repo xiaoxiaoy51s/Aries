@@ -18,6 +18,8 @@ export interface ModelItem {
   baseUrl: string
   model: string
   isActive: boolean
+  context_window: number
+  max_tool_rounds: number
 }
 
 // 把 API 返回的模型项转为前端展示项
@@ -29,6 +31,8 @@ function toViewModel(m: ApiModelItem): ModelItem {
     baseUrl: m.baseUrl,
     model: m.model,
     isActive: m.isActive,
+    context_window: m.context_window ?? 200000,
+    max_tool_rounds: m.max_tool_rounds ?? 100,
   }
 }
 
@@ -76,7 +80,9 @@ export const useModelStore = defineStore('model', () => {
         baseUrl: model.baseUrl,
         model: model.model,
         isActive: model.isActive,
-      })
+        context_window: model.context_window,
+        max_tool_rounds: model.max_tool_rounds,
+      } as any)
       await loadModels()
       return created.id
     } catch (e) {
@@ -92,7 +98,9 @@ export const useModelStore = defineStore('model', () => {
         baseUrl: updates.baseUrl,
         model: updates.model,
         isActive: updates.isActive,
-      })
+        context_window: updates.context_window,
+        max_tool_rounds: updates.max_tool_rounds,
+      } as any)
       await loadModels()
       return true
     } catch (e) {

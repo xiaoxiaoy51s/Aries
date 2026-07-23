@@ -80,48 +80,6 @@ def get_latest_assistant_message(session_id: str) -> dict | None:
     }
 
 
-def get_chat_context_messages(
-    session_id: str,
-    message_limit: int = 28,
-    reasoning_rounds: int = 3,
-    max_assistant_len: int = 800,
-) -> list[dict]:
-    """获取最近 message_limit 条消息 + reasoning_rounds 轮深度思考，
-    按对话顺序合并为 LLM 调用上下文（reasoning 以 system 消息置于最前）。
-
-    说明：
-    - 消息按时间正序返回（最旧在前、最新在后）。
-    - 当 assistant 单条 content 超过 max_assistant_len 时会被截断，避免上下文过长。
-    - 仅保留 role in {user, assistant} 的消息，过滤掉空内容。
-    """
-    messages = get_recent_messages(session_id, limit=message_limit)
-    reasoning_list = get_recent_agent_reasoning(session_id, rounds=reasoning_rounds)
-
-    result: list[dict] = []
-    if reasoning_list:
-        parts = [f"【第{i}轮工作记录】\n{text}" for i, text in enumerate(reasoning_list, 1)]
-        result.append({
-            "role": "system",
-            "content": (
-                "以下是你在本对话中最近的工作进展记录（用户不可见，供你接续任务时参考，避免重复劳动或迷失进度）：\n\n"
-                + "\n\n".join(parts)
-            ),
-        })
-
-    for msg in messages:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-        if role not in ("user", "assistant"):
-            continue
-        if not content or not content.strip():
-            continue
-        if role == "assistant" and len(content) > max_assistant_len:
-            content = content[:max_assistant_len] + "\n...(内容已截断)"
-        result.append({"role": role, "content": content})
-
-    return result
-
-
 def get_recent_messages(session_id: str, limit: int = 20) -> list[dict]:
     return get_messages_after_id(session_id, after_id=0, limit=limit)
 
@@ -261,7 +219,7 @@ def _build_llm_messages_from_db(db_messages: list[dict]) -> list[dict]:
 
 
 def compact_session_if_needed(session_id: str, force: bool = False) -> dict | None:
-    from memory.compaction import make_memory_record, should_compact, split_messages_for_compaction, build_session_summary_with_llm
+    from memory.compaction import make_memory_record, should_compact, split_messages_for_compaction, build_session_summary_with_llm, save_session_summary
 
     boundary = get_latest_memory_boundary(session_id)
     db_messages = get_messages_after_id(session_id, after_id=boundary, limit=200)
@@ -293,12 +251,20 @@ def compact_session_if_needed(session_id: str, force: bool = False) -> dict | No
             if seen >= compact_until_count:
                 break
 
+    # Reasonix 风格：压缩前归档原始消息
+    try:
+        from memory.compaction import save_compaction_archive
+        save_compaction_archive(session_id, db_messages, compact_until_id)
+    except Exception:
+        pass
+
     # 优先用 LLM 生成摘要，失败时 make_memory_record 内部回退到确定性规则
     memory = None
     try:
         from models.model_manager import resolve_active_model_config
         import asyncio
-        base_url, api_key, model = resolve_active_model_config()
+        _cfg = resolve_active_model_config()
+        base_url, api_key, model = _cfg["baseUrl"], _cfg["apiKey"], _cfg["model"]
         if base_url and api_key and model:
             llm_summary = None
             try:
@@ -329,16 +295,25 @@ def compact_session_if_needed(session_id: str, force: bool = False) -> dict | No
         memory = make_memory_record(session_id, to_compact)
 
     memory["source_until_message_id"] = compact_until_id
-    memory_id = save_session_memory(memory)
-    memory["id"] = memory_id
-    # 标记被压缩的 assistant 消息
+
+    # 保存摘要到文件（替代 DB session_memories 表）
+    save_session_summary(
+        session_id=session_id,
+        summary=memory.get("summary", ""),
+        source_until_message_id=compact_until_id,
+        source_message_count=memory.get("source_message_count", 0),
+        source_tokens=memory.get("source_token_estimate", 0),
+        summary_tokens=memory.get("summary_token_estimate", 0),
+    )
+
+    # 标记被压缩的消息
     mark_messages_compacted(session_id, compact_until_id)
     return memory
 
 
 def _apply_background_compaction(session_id: str, result) -> bool:
     """应用后台压缩结果到 DB。返回是否成功应用。"""
-    from memory.compaction import CompactionResult
+    from memory.compaction import CompactionResult, save_session_summary
 
     if not result or not getattr(result, "summary", ""):
         return False
@@ -366,17 +341,24 @@ def _apply_background_compaction(session_id: str, result) -> bool:
             if seen >= compact_until_count:
                 break
 
-    memory = {
-        "session_id": session_id,
-        "summary": result.summary,
-        "source_message_count": result.source_messages,
-        "source_token_estimate": result.source_tokens,
-        "summary_token_estimate": result.summary_tokens,
-        "source_until_message_id": compact_until_id,
-        "created_at": result.created_at,
-    }
-    save_session_memory(memory)
-    # 标记被压缩的 assistant 消息
+    # Reasonix 风格：应用前归档原始消息
+    try:
+        from memory.compaction import save_compaction_archive
+        save_compaction_archive(session_id, db_messages, compact_until_id)
+    except Exception:
+        pass
+
+    # 保存摘要到文件（替代 DB session_memories 表）
+    save_session_summary(
+        session_id=session_id,
+        summary=result.summary,
+        source_until_message_id=compact_until_id,
+        source_message_count=result.source_messages,
+        source_tokens=result.source_tokens,
+        summary_tokens=result.summary_tokens,
+    )
+
+    # 标记被压缩的消息
     mark_messages_compacted(session_id, compact_until_id)
     return True
 
@@ -387,7 +369,7 @@ def get_memory_aware_context_messages(
     model: str = "",
 ) -> tuple[list[dict], dict]:
     from memory.context_loader import build_context_messages
-    from memory.compaction import get_compactor
+    from memory.compaction import get_compactor, get_session_summaries
 
     # 1. 优先消费后台压缩结果（异步生成，不阻塞请求）
     compactor = get_compactor()
@@ -399,13 +381,12 @@ def get_memory_aware_context_messages(
         compact_session_if_needed(session_id)
 
     boundary = get_latest_memory_boundary(session_id)
-    db_messages = get_messages_after_id(session_id, after_id=boundary, limit=120)
-    memories = get_session_memories(session_id, limit=3)
-    reasoning_list = get_recent_agent_reasoning(session_id, rounds=3)
+    db_messages = get_messages_after_id(session_id, after_id=boundary, limit=500)
+    # 从文件读取摘要（替代 DB get_session_memories）
+    memories = get_session_summaries(session_id, limit=3)
     return build_context_messages(
         db_messages=db_messages,
         memories=memories,
-        reasoning_list=reasoning_list,
         current_user_text=current_user_text,
         model=model,
     )
@@ -524,71 +505,30 @@ def mark_messages_compacted(session_id: str, up_to_message_id: int) -> int:
 
 
 def get_latest_memory_boundary(session_id: str) -> int:
+    """获取最新的压缩边界 ID。
+
+    从 chat_messages.compacted 标记和文件摘要中取最大值。
+    替代旧的 session_memories 表查询。
+    """
+    # 1. 从 chat_messages.compacted 取最大 ID
     conn = get_connection()
     row = conn.execute(
-        """
-        SELECT COALESCE(MAX(source_until_message_id), 0)
-        FROM session_memories
-        WHERE session_id = ?
-        """,
+        "SELECT COALESCE(MAX(id), 0) FROM chat_messages WHERE session_id = ? AND compacted = 1",
         (session_id,),
     ).fetchone()
-    return int(row[0] or 0) if row else 0
+    db_max = int(row[0] or 0) if row else 0
 
+    # 2. 从文件摘要取 source_until_message_id
+    try:
+        from memory.compaction import get_latest_archive_boundary
+        file_max = get_latest_archive_boundary(session_id)
+    except Exception:
+        file_max = 0
 
-def get_session_memories(session_id: str, limit: int = 3) -> list[dict]:
-    conn = get_connection()
-    rows = conn.execute(
-        """
-        SELECT id, session_id, summary, source_message_count, source_token_estimate,
-               summary_token_estimate, source_until_message_id, created_at
-        FROM session_memories
-        WHERE session_id = ?
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (session_id, limit),
-    ).fetchall()
-    result = []
-    for row in rows:
-        result.append({
-            "id": row[0],
-            "session_id": row[1],
-            "summary": row[2],
-            "source_message_count": row[3],
-            "source_token_estimate": row[4],
-            "summary_token_estimate": row[5],
-            "source_until_message_id": row[6],
-            "created_at": row[7],
-        })
-    result.reverse()
-    return result
-
-
-def save_session_memory(memory: dict) -> int:
-    conn = get_connection()
-    cursor = conn.execute(
-        """
-        INSERT INTO session_memories (
-            session_id, summary, source_message_count, source_token_estimate,
-            summary_token_estimate, source_until_message_id
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            memory.get("session_id", ""),
-            memory.get("summary", ""),
-            memory.get("source_message_count", 0),
-            memory.get("source_token_estimate", 0),
-            memory.get("summary_token_estimate", 0),
-            memory.get("source_until_message_id"),
-        ),
-    )
-    conn.commit()
-    return int(cursor.lastrowid)
+    return max(db_max, file_max)
 
 
 def delete_session(session_id: str) -> None:
     conn = get_connection()
     conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
-    conn.execute("DELETE FROM session_memories WHERE session_id = ?", (session_id,))
     conn.commit()

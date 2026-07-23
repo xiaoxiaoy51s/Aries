@@ -11,6 +11,8 @@ export interface ModelItem {
   baseUrl: string
   model: string
   isActive: boolean
+  context_window?: number
+  max_tool_rounds?: number
 }
 
 export async function getConfig() {

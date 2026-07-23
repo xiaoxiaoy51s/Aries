@@ -17,6 +17,8 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from utils.doc_parser import extract_text, is_supported_document
+
 router = APIRouter(prefix="/files", tags=["files"])
 
 # 图片扩展名（可通过浏览器 <img> 直接预览）
@@ -114,6 +116,21 @@ async def read_file(
             }
         except Exception as e:
             return {"content": "", "error": str(e)}
+
+    # Office 文档 / PDF：用 doc_parser 抽取文本，返回文本内容
+    if is_supported_document(target):
+        try:
+            text = extract_text(target)
+            return {
+                "content": text,
+                "is_document": True,
+                "size": target.stat().st_size,
+            }
+        except ValueError as e:
+            # 抽取失败时作为二进制文件显示
+            pass
+        except Exception:
+            pass
 
     # 其他二进制文件：不返回内容
     if ext in BINARY_EXTENSIONS:

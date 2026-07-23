@@ -1,28 +1,27 @@
-"""Todo 任务清单管理：持久化存储与格式化。"""
-from utils.todo_store import (
-    get_todos,
-    update_todos as _store_update_todos,
-    clear_todos as _store_clear_todos,
-)
+"""Todo 任务清单管理（Reasonix 风格）。
+
+todo 是纯上下文状态，每次 todo_write 发送完整清单替换上一次。
+不持久化文件，不合并。
+"""
+from utils.todo_store import get_todos, update_todos as _store_update, clear_todos as _store_clear
 
 _TODO_PREFIX = "# 当前任务清单"
 
 
-def update_todos(session_id: str, todos: list[dict], merge: bool = False) -> list[dict]:
-    """更新 session 的任务清单并持久化。"""
-    return _store_update_todos(session_id, todos, merge=merge)
+def update_todos(session_id: str, todos: list[dict]) -> list[dict]:
+    """更新 session 的任务清单（整体替换）。"""
+    return _store_update(session_id, todos)
 
 
 def clear_todos(session_id: str) -> bool:
     """清空指定 session 的任务清单。"""
-    return _store_clear_todos(session_id)
+    return _store_clear(session_id)
 
 
 def format_todos_for_context(todos: list[dict]) -> str:
     """将任务清单格式化为 system 消息文本。"""
     if not todos:
         return ""
-    # 按状态排序：in_progress > pending > completed
     order = {"in_progress": 0, "pending": 1, "completed": 2}
     sorted_todos = sorted(todos, key=lambda t: (order.get(t.get("status", "pending"), 1), t.get("id", "")))
     lines = ["# 当前任务清单", ""]

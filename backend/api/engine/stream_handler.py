@@ -26,7 +26,6 @@ from utils.prompt_cache import (
 from db.chat import save_message, update_message
 
 from .stream_constants import (
-    MAX_TOOL_ROUNDS,
     REPEAT_TOOL_LIMIT,
     LLM_CONNECT_TIMEOUT_SECONDS,
     LLM_READ_TIMEOUT_SECONDS,
@@ -351,8 +350,18 @@ async def stream_agent_mode(
         # context usage breakdown
         from utils.token_counter import build_context_usage_breakdown
         model_name = effective_model
+        # system_prompt_base 只含 base + mcp + subagents + plugins，
+        # rules 和 skills 单独计入，避免与 full system_prompt 重复计算
+        sp_base = (
+            prompt_parts.get("base", "")
+            + (prompt_parts.get("mcp") or "")
+            + (prompt_parts.get("subagents") or "")
+            + (prompt_parts.get("plugins") or "")
+        )
+        if agent_ctx:
+            sp_base += agent_ctx
         context_breakdown = build_context_usage_breakdown(
-            system_prompt_base=system_prompt,
+            system_prompt_base=sp_base,
             tool_definitions=tool_definitions,
             rules_text=prompt_parts["rules"],
             skills_text=prompt_parts["skills"],
@@ -460,28 +469,19 @@ async def stream_agent_mode(
             if start_computer_use_esc_listener(_on_esc):
                 _esc_listener_started = True
 
+        # 从模型配置解析上下文窗口和工具轮次上限
+        effective_context_window = request.context_window or 200_000
+        effective_max_rounds = request.max_tool_rounds or 100
+
         async with httpx.AsyncClient(timeout=llm_timeout, trust_env=False, proxy=llm_proxy) as client:
             last_tool_name: str = ""
             repeat_count: int = 0
             _pending_images: list[str] = []
 
-            for round_no in range(1, MAX_TOOL_ROUNDS + 1):
+            for round_no in range(1, effective_max_rounds + 1):
                 if await _should_stop_stream(cancel_event, disconnect_check):
                     cancelled = True
                     break
-
-                # 接近工具轮次上限时提醒（MAX_TOOL_ROUNDS 默认 100）
-                if round_no == MAX_TOOL_ROUNDS - 1:
-                    current_messages.append({
-                        "role": "system",
-                        "content": (
-                            f"【系统提醒】你当前已接近本地工具调用上限（{MAX_TOOL_ROUNDS} 轮）。"
-                            "本轮请不要再发起新的工具调用，而是总结截至目前已完成的任务内容、"
-                            "已修改的文件、已验证的结果，以及剩余未完成的工作。"
-                            "用精炼的语言向用户汇报进度，并告知用户如需要继续可发送「继续」。"
-                        )
-                    })
-                    yield f"event: stream_event\ndata: {json.dumps({'hint': '工具调用即将达到上限，正在整理执行进度…'}, ensure_ascii=False)}\n\n"
 
                 payload = prepare_llm_payload(
                     model=effective_model,
@@ -506,6 +506,22 @@ async def stream_agent_mode(
                 if logger:
                     api = (logger.get_run_metadata().get("token_usage") or {}).get("api_usage") or {}
                     if api.get("prompt_tokens") or api.get("completion_tokens"):
+                        # 用 current_messages 重新计算 conversation breakdown，
+                        # 包含工具调用循环中追加的 assistant tool_calls、tool 结果、截图等
+                        from utils.token_counter import estimate_messages_tokens
+                        conv_msgs = [m for m in current_messages if m.get("role") != "system"]
+                        conv_tokens = estimate_messages_tokens(conv_msgs)
+                        context_breakdown["breakdown"]["conversation"] = conv_tokens
+                        real_pt = int(api.get("prompt_tokens") or 0)
+                        if real_pt:
+                            context_breakdown["estimated_tokens"] = real_pt
+                            context_breakdown["from_api_prompt_tokens"] = real_pt
+                            cw = effective_context_window
+                            context_breakdown["context_window"] = cw
+                            context_breakdown["usage_percent"] = round((real_pt / cw) * 100, 1) if cw > 0 else 0.0
+                        else:
+                            context_breakdown["estimated_tokens"] = sum(context_breakdown["breakdown"].values())
+                        logger.set_token_usage({"context": context_breakdown})
                         logger.emit_run_metadata_snapshot()
                         yield f"event: stream_event\ndata: {json.dumps({'meta': logger.get_run_metadata()}, ensure_ascii=False)}\n\n"
                         async for ev in _drain_sse_queue():
@@ -540,7 +556,7 @@ async def stream_agent_mode(
                     try:
                         from memory.compaction import get_compactor
                         compactor = get_compactor()
-                        compactor.maybe_trigger_compaction(session_id, current_messages, context_window=200_000, is_warm=True)
+                        compactor.maybe_trigger_compaction(session_id, current_messages, context_window=effective_context_window, is_warm=True)
                     except Exception:
                         pass
                     _pop_limit_hint_message(current_messages)
@@ -836,31 +852,22 @@ async def stream_agent_mode(
                     purge_todo_messages(current_messages)
                     current_messages.append({"role": "system", "content": format_todos_for_context(_todos)})
 
-                # 实时上下文压缩
+                # 实时上下文检查（接近窗口上限时记录日志，不压缩以避免破坏 cache prefix）
                 try:
-                    from memory.compaction import should_compact, split_messages_for_compaction, build_session_summary
+                    from memory.compaction import should_compact
                     from utils.token_counter import estimate_message_tokens
-                    if should_compact(current_messages):
-                        to_compact, to_keep = split_messages_for_compaction(current_messages)
-                        if to_compact and len(to_compact) > 4:
-                            summary = build_session_summary(to_compact)
-                            system_msgs = [m for m in current_messages if m.get("role") == "system"]
-                            compacted = system_msgs + [{"role": "system", "content": f"## 之前的对话摘要\n\n{summary}\n\n---\n以上是之前对话的摘要，以下是最近的对话内容："}] + to_keep
-                            old_count = len(current_messages)
-                            old_tokens = sum(estimate_message_tokens(m) for m in current_messages)
-                            current_messages[:] = compacted
-                            new_tokens = sum(estimate_message_tokens(m) for m in current_messages)
-                            if logger:
-                                logger.write_info_event("context_compacted",
-                                    f"工具循环中压缩上下文：{old_count} → {len(current_messages)} 条消息，约 {old_tokens} → {new_tokens} tokens",
-                                    details=json.dumps({"old_count": old_count, "new_count": len(current_messages), "old_tokens": old_tokens, "new_tokens": new_tokens}, ensure_ascii=False))
-                            yield f"event: stream_event\ndata: {json.dumps({'hint': '上下文已自动压缩，继续执行…'}, ensure_ascii=False)}\n\n"
+                    if should_compact(current_messages, max_history_tokens=int(effective_context_window * 0.7)):
+                        total_tok = sum(estimate_message_tokens(m) for m in current_messages)
+                        if logger:
+                            logger.write_info_event("context_approaching_limit",
+                                f"工具循环中上下文接近窗口上限：{len(current_messages)} 条消息，约 {total_tok} tokens",
+                                details=json.dumps({"message_count": len(current_messages), "tokens": total_tok}, ensure_ascii=False))
                 except Exception:
                     pass
             else:
                 _pop_limit_hint_message(current_messages)
                 if logger:
-                    logger.write_error_event("step_limit_exceeded", f"工具调用达到上限（{MAX_TOOL_ROUNDS} 轮），已在前一轮引导 AI 总结进度。")
+                    logger.write_error_event("step_limit_exceeded", f"工具调用达到上限（{effective_max_rounds} 轮）")
     finally:
         # 停止 ESC 热键监听，并关闭 codex-computer-use.exe（与 SSE 流生命周期对齐）
         if _esc_listener_started:

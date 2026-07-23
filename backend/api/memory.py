@@ -79,9 +79,10 @@ async def polish_rules(req: PolishRulesRequest) -> dict:
     if not req.content.strip():
         return {"success": False, "error": "内容为空", "content": ""}
 
-    base_url, api_key, model = resolve_active_model_config(
+    _cfg = resolve_active_model_config(
         base_url=req.baseUrl, api_key=req.apiKey, model=req.model
     )
+    base_url, api_key, model = _cfg["baseUrl"], _cfg["apiKey"], _cfg["model"]
     if not base_url or not api_key or not model:
         raise HTTPException(status_code=400, detail="未配置模型 API，请先在设置中配置 baseUrl、apiKey 和 model")
 

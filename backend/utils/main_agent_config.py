@@ -76,16 +76,12 @@ def get_main_agent_allowed_mcps() -> list[str]:
 
 
 def is_skill_allowed_for_main_agent(folder_name: str) -> bool:
-    """检查技能是否在主 Agent 的允许列表中。空列表表示全部允许（向后兼容）。"""
+    """检查技能是否在主 Agent 的允许列表中。空列表表示无权限。"""
     allowed = get_main_agent_allowed_skills()
-    if not allowed:
-        return True
     return folder_name in allowed
 
 
 def is_mcp_allowed_for_main_agent(mcp_id: str) -> bool:
-    """检查 MCP 是否在主 Agent 的允许列表中。空列表表示全部允许（向后兼容）。"""
+    """检查 MCP 是否在主 Agent 的允许列表中。空列表表示无权限。"""
     allowed = get_main_agent_allowed_mcps()
-    if not allowed:
-        return True
     return mcp_id in allowed

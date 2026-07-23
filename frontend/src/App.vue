@@ -89,7 +89,7 @@ const workspaceStore = useWorkspaceStore()
 const BACKEND_PORT = 30000
 modelStore.setBackendPort(BACKEND_PORT)
 
-const { ready: backendReady, error: bootError, lostConnection, start: startBackendBoot } = useBackendBoot(BACKEND_PORT)
+const { ready: backendReady, error: bootError, lostConnection, start: startBackendBoot, probe: probeBackend } = useBackendBoot(BACKEND_PORT)
 
 const isMaximized = ref(false)
 let appInitialized = false
@@ -165,6 +165,9 @@ watch(backendReady, (ready) => {
 
 onMounted(async () => {
   startBackendBoot()
+
+  // 系统休眠唤醒后，主进程清完失效连接池后会发 backend:resume，这里立即重新探活
+  window.electronAPI?.onBackendResume?.(() => { void probeBackend() })
 
   isMaximized.value = !!(await window.electronAPI?.windowIsMaximized?.())
   window.electronAPI?.onWindowMaximizedChange?.((value: boolean) => {

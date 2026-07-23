@@ -18,7 +18,7 @@ _SUBAGENT_USAGE_RULES = (
     "\n"
     "# Subagent 使用规范\n"
     "下方「Available Subagents」列出了系统中可委派的子 Agent。每个 Subagent 拥有独立上下文与能力组合，适合复杂、多步、可被打包成角色的任务。\n"
-    "- 你也可以基于检索结果生成新的 Subagent 配置文件（写到 agent 配置目录下的 <name>.json）。\n"
+    "- 你也可以基于检索结果生成新的 Subagent 配置文件（写到 agent 配置目录下的 <name>.md）。\n"
     "\n"
     "# Subagent 调用约束\n"
     "- 通过 `delegate_to_subagent` 工具委派任务。委派时 task 必须详尽，子 Agent 看不到当前对话历史。\n"
@@ -112,13 +112,18 @@ def build_agent_system_prompt_parts(
     plugins_section = ""
     try:
         from engine.plugin_manager import build_plugins_context
-        plugins_ctx = build_plugins_context()
+        from utils.main_agent_config import get_main_agent_allowed_skills, get_main_agent_allowed_mcps
+        plugins_ctx = build_plugins_context(
+            allowed_skills=get_main_agent_allowed_skills(),
+            allowed_mcps=get_main_agent_allowed_mcps(),
+        )
         if plugins_ctx:
             plugins_section = "\n" + plugins_ctx
     except Exception:
         pass
 
-    full = base + subagents_section + plugins_section + skills_section + mcp_section + rules
+    # 顺序：自身技能 > 子Agent > 插件 > MCP（让AI先看清自己能用的，再看到委派对象）
+    full = base + skills_section + mcp_section + subagents_section + plugins_section + rules
 
     return {
         "static": static,
@@ -163,7 +168,7 @@ def get_agent_skills_and_tools():
     skills_context = build_skills_context_from_entries(enabled_skills)
     tool_definitions = get_all_tool_definitions()
     mcp_context = build_mcp_prompt_context(
-        allowed_mcp_ids=get_main_agent_allowed_mcps() or None,
+        allowed_mcp_ids=get_main_agent_allowed_mcps(),
     )
     subagents_context = build_subagent_router_section()
 

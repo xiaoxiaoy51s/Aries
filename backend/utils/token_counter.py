@@ -1,5 +1,5 @@
 """
-Token 估算工具：参考 opencode (chars/4) 与 claude-code (rough estimation) 的实现。
+Token 估算工具：优先使用 tiktoken 真实 tokenizer，不可用时回退到字符级估算。
 
 提供消息级、字符串级的 token 估算，以及上下文窗口占用计算。
 """
@@ -8,7 +8,32 @@ from __future__ import annotations
 import json
 from typing import Any
 
-# 估算参考：英文约 4 字符/token，中文约 1.5 字符/token，混合取折中
+# ---------------------------------------------------------------------------
+# tiktoken 编码器（懒加载单例）
+# ---------------------------------------------------------------------------
+# 使用 cl100k_base 编码，对中英混合文本和代码的 token 计数接近 Claude / GPT-4
+# 的真实值，远比字符级估算准确。
+_encoder = None
+_encoder_tried = False
+
+
+def _get_encoder():
+    """懒加载 tiktoken cl100k_base 编码器，失败则返回 None。"""
+    global _encoder, _encoder_tried
+    if _encoder_tried:
+        return _encoder
+    _encoder_tried = True
+    try:
+        import tiktoken
+        _encoder = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        _encoder = None
+    return _encoder
+
+
+# ---------------------------------------------------------------------------
+# 字符级估算 fallback（tiktoken 不可用时使用）
+# ---------------------------------------------------------------------------
 CHARS_PER_TOKEN = 4
 CJK_CHARS_PER_TOKEN = 1.5
 
@@ -23,23 +48,22 @@ def _count_cjk_chars(text: str) -> int:
     count = 0
     for ch in text:
         cp = ord(ch)
-        # CJK 统一表意文字、扩展区、日文假名、韩文音节等
         if (
-            0x4E00 <= cp <= 0x9FFF       # CJK 统一表意文字
-            or 0x3400 <= cp <= 0x4DBF    # CJK 扩展 A
-            or 0x20000 <= cp <= 0x2A6DF  # CJK 扩展 B
-            or 0x3040 <= cp <= 0x30FF    # 日文假名
-            or 0xAC00 <= cp <= 0xD7AF    # 韩文音节
-            or 0xFF00 <= cp <= 0xFFEF    # 全角字符
+            0x4E00 <= cp <= 0x9FFF
+            or 0x3400 <= cp <= 0x4DBF
+            or 0x20000 <= cp <= 0x2A6DF
+            or 0x3040 <= cp <= 0x30FF
+            or 0xAC00 <= cp <= 0xD7AF
+            or 0xFF00 <= cp <= 0xFFEF
         ):
             count += 1
     return count
 
 
-def estimate_tokens(text: str) -> int:
-    """估算字符串的 token 数量。
+def _estimate_tokens_chars(text: str) -> int:
+    """字符级 token 估算（fallback）。
 
-    英文按 ~4 字符/token，CJK 字符按 ~1.5 字符/token（中文 1 字约 1-2 token）。
+    英文按 ~4 字符/token，CJK 字符按 ~1.5 字符/token。
     """
     if not text:
         return 0
@@ -48,6 +72,23 @@ def estimate_tokens(text: str) -> int:
     cjk_tokens = int(cjk_count / CJK_CHARS_PER_TOKEN) if cjk_count else 0
     non_cjk_tokens = non_cjk_len // CHARS_PER_TOKEN
     return max(0, cjk_tokens + non_cjk_tokens)
+
+
+def estimate_tokens(text: str) -> int:
+    """估算字符串的 token 数量。
+
+    优先使用 tiktoken cl100k_base 真实 tokenizer；
+    不可用时回退到字符级估算（英文 ~4 字符/token，CJK ~1.5 字符/token）。
+    """
+    if not text:
+        return 0
+    enc = _get_encoder()
+    if enc is not None:
+        try:
+            return len(enc.encode(text))
+        except Exception:
+            pass
+    return _estimate_tokens_chars(text)
 
 
 def estimate_message_tokens(message: dict[str, Any]) -> int:

@@ -20,6 +20,7 @@ from utils.runtime_manager import (
     RUNTIME_DOWNLOAD_INFO,
     detect_system_git,
     detect_system_node,
+    detect_system_officecli,
     detect_system_python,
     download_runtime,
     get_default_install_dir,
@@ -45,6 +46,8 @@ def _build_runtime_info(runtime: str) -> dict[str, Any]:
         if not system.get("installed") and sys.executable:
             ver = sys.version.split("\n")[0].replace("Python ", "").strip()
             system = {"installed": True, "version": ver, "path": sys.executable}
+    elif runtime == "officecli":
+        system = detect_system_officecli()
     else:
         system = detect_system_git()
 
@@ -73,6 +76,7 @@ async def detect_env() -> dict[str, Any]:
         "node": _build_runtime_info("node"),
         "python": _build_runtime_info("python"),
         "git": _build_runtime_info("git"),
+        "officecli": _build_runtime_info("officecli"),
     }
 
 
@@ -120,7 +124,15 @@ async def switch_env(req: SwitchRequest) -> dict[str, Any]:
     source = req.source
 
     if source == "system":
-        system_info = detect_system_node() if runtime == "node" else detect_system_python() if runtime == "python" else detect_system_git()
+        from utils.runtime_manager import detect_system_git, detect_system_node, detect_system_officecli, detect_system_python
+        if runtime == "node":
+            system_info = detect_system_node()
+        elif runtime == "python":
+            system_info = detect_system_python()
+        elif runtime == "officecli":
+            system_info = detect_system_officecli()
+        else:
+            system_info = detect_system_git()
         if not system_info["installed"]:
             return {"success": False, "error": "系统未安装该运行时"}
         save_env_config(runtime, {
@@ -142,6 +154,8 @@ async def switch_env(req: SwitchRequest) -> dict[str, Any]:
             exe = get_runtimes_root() / runtime / "versions" / version / "python.exe"
         elif runtime == "git":
             exe = get_runtimes_root() / runtime / "versions" / version / "cmd" / "git.exe"
+        elif runtime == "officecli":
+            exe = get_runtimes_root() / runtime / "versions" / version / "officecli-win-x64.exe"
         else:
             return {"success": False, "error": f"不支持的运行时: {runtime}"}
         if not exe.exists():

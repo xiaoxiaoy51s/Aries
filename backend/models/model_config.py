@@ -8,6 +8,8 @@ class ModelItem(BaseModel):
     baseUrl: str
     model: str
     isActive: bool = True
+    context_window: int = 200_000
+    max_tool_rounds: int = 100
 
 
 class ModelConfig(BaseModel):
@@ -25,6 +27,8 @@ class ModelCreate(BaseModel):
     baseUrl: str
     model: str
     isActive: bool = True
+    context_window: Optional[int] = None
+    max_tool_rounds: Optional[int] = None
 
 
 class ModelUpdate(BaseModel):
@@ -32,3 +36,5 @@ class ModelUpdate(BaseModel):
     baseUrl: Optional[str] = None
     model: Optional[str] = None
     isActive: Optional[bool] = None
+    context_window: Optional[int] = None
+    max_tool_rounds: Optional[int] = None

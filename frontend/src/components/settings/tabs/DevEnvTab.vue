@@ -1,6 +1,6 @@
 <template>
   <div class="settings-section">
-    <p class="section-desc">检测和管理 Node.js、Python、Git 运行时，可下载内置版本或切换系统 / 本地路径。</p>
+    <p class="section-desc">检测和管理 Node.js、Python、Git、OfficeCLI 运行时，可下载内置版本或切换系统 / 本地路径。</p>
 
     <div v-if="loading" class="path-empty">检测中...</div>
     <div v-else-if="detected" class="path-empty" style="color: #52c41a;">检测成功</div>
@@ -126,6 +126,48 @@
           type="button"
           class="dev-env-redetect-btn"
           :disabled="downloading.git"
+          @click="loadDevEnv"
+        >重新检测</button>
+      </div>
+    </div>
+
+    <!-- OfficeCLI -->
+    <div class="dev-env-card">
+      <div class="dev-env-card-main">
+        <div class="dev-env-card-header">
+          <div class="dev-env-icon officecli">
+            <svg width="40" height="40" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="5" width="26" height="22" rx="3" fill="#2b579a"/><path d="M8 11h16M8 16h16M8 21h10" stroke="#fff" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+          </div>
+          <div class="dev-env-info">
+            <span class="dev-env-name">OfficeCLI</span>
+            <span v-if="devEnv.officecli?.resolved?.source !== 'none'" class="dev-env-version">{{ devEnv.officecli?.resolved?.version }}</span>
+          </div>
+        </div>
+        <div class="dev-env-status">
+          <div v-if="devEnv.officecli?.resolved?.source !== 'none'" class="dev-env-status-row">
+            <span class="dev-env-badge" :class="devEnv.officecli?.resolved?.source">{{ sourceLabel(devEnv.officecli?.resolved?.source) }}</span>
+            <span class="dev-env-path">{{ devEnv.officecli?.resolved?.path }}</span>
+          </div>
+          <div v-else class="dev-env-status-row">
+            <span class="dev-env-badge none">未安装</span>
+          </div>
+        </div>
+      </div>
+      <div class="dev-env-actions">
+        <button
+          type="button"
+          class="dev-env-download-btn"
+          @click="openDownloadModal('officecli')"
+        >下载内置版本</button>
+        <button
+          type="button"
+          class="dev-env-switch-btn"
+          @click="openSwitchModal('officecli')"
+        >切换版本</button>
+        <button
+          type="button"
+          class="dev-env-redetect-btn"
+          :disabled="downloading.officecli"
           @click="loadDevEnv"
         >重新检测</button>
       </div>
@@ -273,21 +315,22 @@ interface DevEnvInfo {
   node: DevEnvRuntime | null
   python: DevEnvRuntime | null
   git: DevEnvRuntime | null
+  officecli: DevEnvRuntime | null
 }
 
-const devEnv = ref<DevEnvInfo>({ node: null, python: null, git: null })
+const devEnv = ref<DevEnvInfo>({ node: null, python: null, git: null, officecli: null })
 const loading = ref(false)
 const detected = ref(false)
-const downloading = reactive({ node: false, python: false, git: false })
-const switching = reactive({ node: false, python: false, git: false })
+const downloading = reactive({ node: false, python: false, git: false, officecli: false })
+const switching = reactive({ node: false, python: false, git: false, officecli: false })
 
 const downloadModalVisible = ref(false)
-const downloadModalRuntime = ref<'node' | 'python' | 'git'>('node')
+const downloadModalRuntime = ref<'node' | 'python' | 'git' | 'officecli'>('node')
 const downloadModalVersion = ref('')
 const downloadModalPath = ref('')
 
 const switchModalVisible = ref(false)
-const switchModalRuntime = ref<'node' | 'python' | 'git'>('node')
+const switchModalRuntime = ref<'node' | 'python' | 'git' | 'officecli'>('node')
 const switchSelected = ref('')
 const switchCustomPath = ref('')
 
@@ -295,6 +338,7 @@ const runtimeNames = {
   node: 'Node.js',
   python: 'Python',
   git: 'Git',
+  officecli: 'OfficeCLI',
 } as const
 
 function sourceLabel(source: 'system' | 'builtin' | 'env' | 'none' | undefined) {
@@ -391,10 +435,11 @@ async function selectCustomTarget(mode: 'file' | 'folder') {
   }
 }
 
-function getFileFilters(runtime: 'node' | 'python' | 'git') {
+function getFileFilters(runtime: 'node' | 'python' | 'git' | 'officecli') {
   if (runtime === 'node') return [{ name: 'Node.js', extensions: ['exe'] }]
   if (runtime === 'python') return [{ name: 'Python', extensions: ['exe'] }]
   if (runtime === 'git') return [{ name: 'Git', extensions: ['exe'] }]
+  if (runtime === 'officecli') return [{ name: 'OfficeCLI', extensions: ['exe'] }]
   return undefined
 }
 
@@ -407,6 +452,7 @@ async function loadDevEnv() {
       node: data.node ?? null,
       python: data.python ?? null,
       git: data.git ?? null,
+      officecli: data.officecli ?? null,
     }
     detected.value = true
   } catch {
@@ -463,6 +509,8 @@ async function confirmSwitch() {
         body.path = body.path.replace(/\\+$/, '') + '\\python.exe'
       } else if (runtime === 'git' && !body.path.toLowerCase().endsWith('git.exe')) {
         body.path = body.path.replace(/\\+$/, '') + '\\cmd\\git.exe'
+      } else if (runtime === 'officecli' && !body.path.toLowerCase().endsWith('.exe')) {
+        body.path = body.path.replace(/\\+$/, '') + '\\officecli-win-x64.exe'
       }
     }
     const res = await fetch(devEnvApi('/api/dev-env/switch'), {
@@ -571,6 +619,11 @@ onMounted(() => {
 .dev-env-icon.git {
   background: rgba(240, 80, 50, 0.15);
   color: #f05032;
+}
+
+.dev-env-icon.officecli {
+  background: rgba(43, 87, 154, 0.15);
+  color: #2b579a;
 }
 
 .dev-env-info {

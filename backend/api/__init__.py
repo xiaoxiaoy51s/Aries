@@ -20,5 +20,6 @@ from api.network_api import router as network_router
 from api.main_agent_api import router as main_agent_router
 from api.plugins_builtin import router as plugins_builtin_router
 from api.dev_env import router as dev_env_router
+from api.office_preview import router as office_preview_router
 from api.tools_api import router as tools_router
 from api.github_auth import router as github_router

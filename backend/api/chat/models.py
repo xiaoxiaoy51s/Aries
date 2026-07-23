@@ -52,6 +52,8 @@ class ChatRequest(BaseModel):
     max_tokens: Optional[int] = None
     stream: bool = True
     public_url: Optional[str] = None
+    context_window: Optional[int] = None
+    max_tool_rounds: Optional[int] = None
 
 
 class VisionRequest(BaseModel):

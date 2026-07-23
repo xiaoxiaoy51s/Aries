@@ -384,9 +384,35 @@ def get_plugin_mcp_configs() -> list[dict[str, Any]]:
 
 # ---------- 上下文 ----------
 
-def build_plugins_context() -> str:
-    """构建给 system prompt 的简短插件列表（不展开详情，避免污染上下文）。"""
+def build_plugins_context(
+    *,
+    allowed_skills: list[str] | None = None,
+    allowed_mcps: list[str] | None = None,
+) -> str:
+    """构建给 system prompt 的简短插件列表（不展开详情，避免污染上下文）。
+
+    Args:
+        allowed_skills: 主 Agent 允许的技能 folder_name 列表。
+            None = 不过滤（子 Agent 场景）；空列表 = 无技能。
+        allowed_mcps: 主 Agent 允许的 MCP ID 列表。
+            None = 不过滤；空列表 = 无 MCP。
+    """
     entries = get_enabled_plugins()
+    if not entries:
+        return ""
+
+    # 过滤技能和 MCP
+    filtered: list[PluginEntry] = []
+    for e in entries:
+        if e.kind == "skills":
+            if allowed_skills is not None and e.name not in allowed_skills:
+                continue
+        elif e.kind == "mcps":
+            if allowed_mcps is not None and e.name not in allowed_mcps:
+                continue
+        filtered.append(e)
+    entries = filtered
+
     if not entries:
         return ""
 
@@ -394,7 +420,7 @@ def build_plugins_context() -> str:
     for e in entries:
         by_kind.setdefault(e.kind, []).append(e)
 
-    lines = ["【内置插件（始终可用）】"]
+    lines = ["【内置插件】"]
 
     kind_labels = {
         "skills": "技能",
@@ -436,10 +462,19 @@ def _load_plugin_skill_module(skill_dir: Path):
     return module
 
 
-def get_plugin_skill_tool_definitions() -> list[dict[str, Any]]:
-    """加载所有已开启的 skills 类型插件的工具定义。"""
+def get_plugin_skill_tool_definitions(
+    allowed_skills: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """加载所有已开启的 skills 类型插件的工具定义。
+
+    Args:
+        allowed_skills: 允许的技能 folder_name 列表。
+            None = 不过滤（子 Agent 场景）；空列表 = 无技能。
+    """
     tools: list[dict[str, Any]] = []
     for skill_dir in get_plugin_skill_dirs():
+        if allowed_skills is not None and skill_dir.name not in allowed_skills:
+            continue
         try:
             module = _load_plugin_skill_module(skill_dir)
             if module is None:

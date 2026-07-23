@@ -910,7 +910,7 @@ def get_mcp_tool_definitions(
         force_refresh: 是否强制刷新连接池。
         allowed_mcp_ids: 主 Agent 允许的 MCP ID 列表。
             None = 不过滤（子 Agent 自行过滤）；
-            空列表 = 不限制，加载全部（与 is_mcp_allowed_for_main_agent 一致）。
+            空列表 = 无 MCP 权限，返回空。
     """
     pool = get_mcp_pool()
     if force_refresh:
@@ -920,7 +920,7 @@ def get_mcp_tool_definitions(
     if allowed_mcp_ids is None:
         return all_defs
     if not allowed_mcp_ids:
-        return all_defs
+        return []
 
     allowed_slugs = {_slug(m) for m in allowed_mcp_ids}
     result: list[dict[str, Any]] = []
@@ -963,7 +963,7 @@ def build_mcp_prompt_context(*, allowed_mcp_ids: list[str] | None = None) -> str
         return ""
 
     if allowed_mcp_ids is not None and len(allowed_mcp_ids) == 0:
-        allowed_mcp_ids = None
+        return ""
 
     lines = [
         "【MCP 插件】",

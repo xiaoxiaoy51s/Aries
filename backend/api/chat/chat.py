@@ -48,17 +48,23 @@ from services.chat_stream_manager import is_bg_running, set_bg_task
 
 
 def _resolve_chat_request(request: ChatRequest) -> ChatRequest:
-    base_url, api_key, model = resolve_active_model_config(
+    cfg = resolve_active_model_config(
         request.baseUrl,
         request.apiKey,
         request.model,
     )
-    if not base_url or not api_key:
+    if not cfg["baseUrl"] or not cfg["apiKey"]:
         raise HTTPException(
             status_code=400,
             detail="未配置模型 API，请先在设置中配置 baseUrl 和 apiKey",
         )
-    return request.model_copy(update={"baseUrl": base_url, "apiKey": api_key, "model": model})
+    return request.model_copy(update={
+        "baseUrl": cfg["baseUrl"],
+        "apiKey": cfg["apiKey"],
+        "model": cfg["model"],
+        "context_window": request.context_window or cfg["context_window"],
+        "max_tool_rounds": request.max_tool_rounds or cfg["max_tool_rounds"],
+    })
 
 
 def _resolve_and_persist_work_dir(session_id: str, request_work_dir: str | None) -> str:
@@ -700,7 +706,8 @@ async def chat_completions(request: ChatRequest, http_request: Request):
 
 async def temp_chat(req, http_request: Request):
     """临时对话：加载 session 上下文 + 临时消息，流式返回，不存 DB。"""
-    base_url, api_key, model = resolve_active_model_config()
+    _cfg = resolve_active_model_config()
+    base_url, api_key, model = _cfg["baseUrl"], _cfg["apiKey"], _cfg["model"]
     if not base_url or not api_key:
         raise HTTPException(status_code=400, detail="未配置模型 API")
 

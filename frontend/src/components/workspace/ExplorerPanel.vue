@@ -85,6 +85,38 @@
           </p>
           <p class="binary-hint">无法在文本编辑器中预览</p>
         </div>
+        <!-- PDF 预览：Electron 用 webview，Web 用 iframe -->
+        <div v-else-if="previewType === 'pdf'" class="explorer-office-frame">
+          <webview
+            v-if="isElectron"
+            :src="pdfPreviewUrl"
+            class="office-iframe"
+            style="width:100%;height:100%;display:flex"
+            webpreferences="contextIsolation=no, nodeIntegration=no, nativeWindowOpen=no, plugins=yes"
+            allowpopups="false"
+          ></webview>
+          <iframe v-else :src="pdfPreviewUrl" class="office-iframe" title="PDF 预览"></iframe>
+        </div>
+        <!-- Office 文档预览：Electron 用 webview，Web 用 iframe -->
+        <div v-else-if="previewType === 'office'" class="explorer-office-frame">
+          <div v-if="!officePreviewUrl" class="explorer-loading">启动 Office 预览...</div>
+          <webview
+            v-else-if="isElectron"
+            ref="officeWebviewRef"
+            :src="officePreviewUrl"
+            class="office-iframe"
+            style="width:100%;height:100%;display:flex"
+            webpreferences="contextIsolation=no, nodeIntegration=no, nativeWindowOpen=no"
+            allowpopups="false"
+            @dom-ready="onOfficeWebviewDomReady"
+          ></webview>
+          <iframe
+            v-else
+            :src="officePreviewUrl"
+            class="office-iframe"
+            title="Office 预览"
+          ></iframe>
+        </div>
         <!-- 浮动添加到对话按钮 -->
         <div v-if="showAddBtn" class="add-to-chat-float" :style="addBtnStyle">
           <button class="add-to-chat-btn" @click="addSelectionToChat">
@@ -304,9 +336,34 @@ let contentSearchTimer: ReturnType<typeof setTimeout> | null = null
 const isContentSearch = computed(() => searchQuery.value.trimStart().startsWith('%'))
 
 // 非文本文件预览状态
-const previewType = ref<'text' | 'image' | 'binary'>('text')
+const previewType = ref<'text' | 'image' | 'binary' | 'pdf' | 'office'>('text')
 const previewImageSrc = ref<string>('')
 const previewBinaryInfo = ref<{ ext: string; size: number } | null>(null)
+const officePreviewUrl = ref<string | null>(null)
+const officeWebviewRef = ref<any>(null)
+let officeResizeObserver: ResizeObserver | null = null
+let officeAutoFitTimer: ReturnType<typeof setTimeout> | null = null
+
+const isElectron = computed(() => typeof window !== 'undefined' && !!(window as any).electronAPI)
+
+const OFFICE_EXTS = new Set(['docx', 'xlsx', 'pptx'])
+const PDF_EXTS = new Set(['pdf'])
+
+const pdfPreviewUrl = computed(() => {
+  if (!selectedPath.value || !workDir.value) return ''
+  // Electron 环境：用 file:// 协议直接加载本地 PDF，不走后端 API
+  // 参考 AionUi PDFViewer + buildPdfSrc 的实现
+  if (isElectron.value) {
+    const normalized = selectedPath.value.replace(/\\/g, '/')
+    const absPath = `${workDir.value.replace(/\\/g, '/')}/${normalized}`
+    // Windows file:// 格式：file:///d:/path/to/file.pdf（三斜杠 + 盘符 + 冒号）
+    return `file:///${absPath}`
+  }
+  return `${modelStore.getBaseUrl()}/api/office/raw?work_dir=${encodeURIComponent(workDir.value)}&path=${encodeURIComponent(selectedPath.value)}`
+})
+
+/** 当前预览的 office 文件路径，用于卸载时停止 watch */
+let currentOfficeFilePath: string | null = null
 
 // 右键菜单
 const contextMenu = ref({ open: false, x: 0, y: 0, node: null as TreeNode | null })
@@ -472,6 +529,117 @@ async function onSelectFile(path: string) {
   await loadFileContent()
 }
 
+function getExt(path: string): string {
+  const i = path.lastIndexOf('.')
+  return i >= 0 ? path.slice(i + 1).toLowerCase() : ''
+}
+
+async function startOfficePreview(fullPath: string) {
+  // 先关闭之前的预览
+  if (currentOfficeFilePath) {
+    await stopOfficePreview(currentOfficeFilePath)
+  }
+  currentOfficeFilePath = fullPath
+  try {
+    const res = await fetch(`${modelStore.getBaseUrl()}/api/office/preview/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_path: fullPath, workspace: workDir.value }),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      console.error('Office 预览启动失败', text)
+      loading.value = false
+      return
+    }
+    const data = await res.json()
+    officePreviewUrl.value = data.url
+  } catch (e: any) {
+    console.error('Office 预览启动失败', e)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function stopOfficePreview(filePath: string | null) {
+  if (!filePath) return
+  try {
+    await fetch(`${modelStore.getBaseUrl()}/api/office/preview/stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_path: filePath }),
+    })
+  } catch {
+    // ignore
+  }
+  currentOfficeFilePath = null
+}
+
+function onOfficeWebviewDomReady() {
+  // AionUi WebviewHost 方案：用 setZoomFactor 缩放 + ResizeObserver 动态像素尺寸
+  // 不注入 CSS / 不用 transform: scale，保留 officecli 页面自身滚动布局
+  const wv = officeWebviewRef.value as any
+  if (!wv) return
+
+  // 1. 用 ResizeObserver 动态设置 webview 的 width/height 为绝对像素值
+  //    CSS height:100% 对 webview 自定义元素无效，必须用像素值
+  const container = wv.parentElement
+  if (container && 'ResizeObserver' in window) {
+    const syncSize = () => {
+      const rect = container.getBoundingClientRect()
+      wv.style.width = rect.width + 'px'
+      wv.style.height = rect.height + 'px'
+    }
+    syncSize()
+    if (officeResizeObserver) officeResizeObserver.disconnect()
+    officeResizeObserver = new ResizeObserver(syncSize)
+    officeResizeObserver.observe(container)
+  }
+
+  // 2. 自动适配缩放：测量 officecli 页面内容宽度，计算 zoomFactor
+  const autoFit = () => {
+    if (!wv.executeJavaScript || !wv.setZoomFactor) return
+    wv
+      .executeJavaScript(
+        `(function(){
+          // 测量页面主内容区域宽度（officecli 用 #main-stage 或 .main）
+          var stage = document.querySelector('#main-stage') || document.querySelector('.main') || document.body;
+          var stageW = Math.max(stage.scrollWidth || 0, stage.offsetWidth || 0, document.documentElement.scrollWidth || 0);
+          var innerW = window.innerWidth || document.documentElement.clientWidth || 0;
+          return JSON.stringify({ stageWidth: stageW, innerWidth: innerW });
+        })()`
+      )
+      .then((result) => {
+        try {
+          const { stageWidth, innerWidth } = JSON.parse(result)
+          if (!stageWidth || stageWidth <= 0) return
+          // 用 webview 实际渲染宽度（等于容器宽度）
+          const containerRect = wv.parentElement.getBoundingClientRect()
+          const contentWidth = containerRect.width
+          if (contentWidth <= 0) return
+          const zoom = contentWidth / stageWidth
+          // 限制缩放范围 [0.5, 2]
+          const clamped = Math.max(0.5, Math.min(2, zoom))
+          wv.setZoomFactor(clamped)
+          console.log('[OfficePreview] autoFit:', { stageWidth, contentWidth, zoom: clamped })
+        } catch {}
+      })
+      .catch(() => {})
+  }
+
+  // 延迟执行 autoFit（等 officecli 页面渲染完成）
+  if (officeAutoFitTimer) clearTimeout(officeAutoFitTimer)
+  officeAutoFitTimer = setTimeout(autoFit, 300)
+  // 多次重试（officecli 异步加载内容）
+  const timers = [600, 1200, 2000, 3500]
+  timers.forEach((ms) => setTimeout(autoFit, ms))
+
+  // 3. 页面加载完成后再次适配
+  if (wv.addEventListener) {
+    try { wv.addEventListener('did-finish-load', autoFit) } catch {}
+  }
+}
+
 async function onToggleFolder(node: TreeNode) {
   if (!node.isDir) return
   // 如果正在加载，忽略重复点击
@@ -493,6 +661,42 @@ async function onToggleFolder(node: TreeNode) {
 async function loadFileContent() {
   if (!selectedPath.value || !workDir.value || !editorContainerRef.value) return
   loading.value = true
+
+  // 切换文件时先停掉旧的 office 预览进程
+  if (currentOfficeFilePath) {
+    await stopOfficePreview(currentOfficeFilePath)
+    officePreviewUrl.value = null
+  }
+
+  // 先检查扩展名：office/pdf 文件不走 /files/read 文本抽取
+  const ext = getExt(selectedPath.value)
+
+  if (PDF_EXTS.has(ext)) {
+    // PDF：直接 iframe 嵌入原始文件
+    previewType.value = 'pdf'
+    officePreviewUrl.value = null
+    if (currentModel) {
+      currentModel.dispose()
+      currentModel = null
+    }
+    loading.value = false
+    return
+  }
+
+  if (OFFICE_EXTS.has(ext)) {
+    // Office 文档：通过 officecli watch 预览
+    previewType.value = 'office'
+    officePreviewUrl.value = null
+    if (currentModel) {
+      currentModel.dispose()
+      currentModel = null
+    }
+    // 拼接完整文件路径（work_dir + 相对路径）
+    const fullPath = `${workDir.value}\\${selectedPath.value.replace(/\//g, '\\')}`
+    await startOfficePreview(fullPath)
+    return
+  }
+
   try {
     const res = await fetch(`${modelStore.getBaseUrl()}/files/read?work_dir=${encodeURIComponent(workDir.value)}&path=${encodeURIComponent(selectedPath.value)}`)
     if (!res.ok) return
@@ -813,7 +1017,16 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  stopOfficePreview(currentOfficeFilePath)
   disposeEditor()
+  if (officeResizeObserver) {
+    officeResizeObserver.disconnect()
+    officeResizeObserver = null
+  }
+  if (officeAutoFitTimer) {
+    clearTimeout(officeAutoFitTimer)
+    officeAutoFitTimer = null
+  }
   document.removeEventListener('keydown', onKeydown)
   document.removeEventListener('click', closeContextMenu)
 })
@@ -1229,6 +1442,22 @@ async function refreshTree() {
   font-size: 12px;
   margin: 0;
   opacity: 0.7;
+}
+
+/* Office / PDF 预览 */
+.explorer-office-frame {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.office-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #fff;
+  display: block;
 }
 
 .add-to-chat-float {

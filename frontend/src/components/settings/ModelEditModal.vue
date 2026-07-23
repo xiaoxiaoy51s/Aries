@@ -56,6 +56,37 @@
               @click="copyApiKey"
             >{{ copied ? '已复制' : '复制' }}</button>
           </div>
+
+          <div class="advanced-section">
+            <button type="button" class="advanced-toggle" @click="showAdvanced = !showAdvanced">
+              <span>高级设置</span>
+              <span class="arrow" :class="{ expanded: showAdvanced }">&#9654;</span>
+            </button>
+            <div v-if="showAdvanced" class="advanced-fields">
+              <div class="field-row">
+                <label class="form-label">上下文长度</label>
+                <input
+                  v-model.number="form.context_window"
+                  type="number"
+                  class="form-input"
+                  placeholder="200000"
+                  min="1000"
+                />
+                <span class="field-hint">模型上下文窗口大小（token）</span>
+              </div>
+              <div class="field-row">
+                <label class="form-label">工具调用轮次</label>
+                <input
+                  v-model.number="form.max_tool_rounds"
+                  type="number"
+                  class="form-input"
+                  placeholder="100"
+                  min="1"
+                />
+                <span class="field-hint">单次对话中最大工具调用轮数</span>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="secondary-btn" @click="$emit('close')">取消</button>
@@ -78,9 +109,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{ close: []; save: [data: any] }>()
 
-const form = ref({ name: '', baseUrl: '', apiKey: '' })
+const form = ref({ name: '', baseUrl: '', apiKey: '', context_window: 200000, max_tool_rounds: 100 })
 const selectedProvider = ref('custom')
 const showApiKey = ref(false)
+const showAdvanced = ref(false)
 const copied = ref(false)
 
 function selectProvider(p: Provider) {
@@ -114,9 +146,14 @@ watch(() => props.visible, (val) => {
         name: props.model.name || props.model.model || '',
         baseUrl: props.model.baseUrl || '',
         apiKey: props.model.apiKey || '',
+        context_window: props.model.context_window ?? 200000,
+        max_tool_rounds: props.model.max_tool_rounds ?? 100,
       }
+      showAdvanced.value = !!(props.model.context_window && props.model.context_window !== 200000) ||
+        !!(props.model.max_tool_rounds && props.model.max_tool_rounds !== 100)
     } else {
-      form.value = { name: '', baseUrl: '', apiKey: '' }
+      form.value = { name: '', baseUrl: '', apiKey: '', context_window: 200000, max_tool_rounds: 100 }
+      showAdvanced.value = false
     }
     selectedProvider.value = detectProvider(form.value.name).id
   }
@@ -129,6 +166,8 @@ function onSave() {
     model: name,
     baseUrl: form.value.baseUrl,
     apiKey: form.value.apiKey,
+    context_window: form.value.context_window || 200000,
+    max_tool_rounds: form.value.max_tool_rounds || 100,
   })
 }
 </script>
@@ -313,6 +352,58 @@ function onSave() {
   gap: 8px;
   padding: 12px 20px;
   border-top: 1px solid var(--border);
+}
+
+.advanced-section {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: 4px;
+}
+
+.advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.advanced-toggle:hover { color: var(--text); }
+
+.advanced-toggle .arrow {
+  font-size: 9px;
+  transition: transform 0.15s;
+}
+
+.advanced-toggle .arrow.expanded {
+  transform: rotate(90deg);
+}
+
+.advanced-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+}
+
+.field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-row .form-label {
+  font-size: 12px;
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .primary-btn {

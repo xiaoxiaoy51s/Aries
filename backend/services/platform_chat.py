@@ -73,7 +73,8 @@ async def _cancel_platform_task(platform: str) -> None:
 
 
 async def run_agent_async(platform: str, text: str) -> str:
-    base_url, api_key, model = resolve_active_model_config()
+    _cfg = resolve_active_model_config()
+    base_url, api_key, model = _cfg["baseUrl"], _cfg["apiKey"], _cfg["model"]
     if not base_url or not api_key:
         return "（AI 未配置，请先在设置中填写 API Key 和 Base URL）"
 
@@ -95,7 +96,8 @@ async def run_agent_in_session(
     会自动加载该 session 的历史消息作为上下文，调用 stream_agent_mode 跑完整 agent 循环，
     并把 user / assistant 消息持久化到 chat_messages。
     """
-    base_url, api_key, model = resolve_active_model_config()
+    _cfg = resolve_active_model_config()
+    base_url, api_key, model = _cfg["baseUrl"], _cfg["apiKey"], _cfg["model"]
     if not base_url or not api_key:
         return "（AI 未配置，请先在设置中填写 API Key 和 Base URL）"
 

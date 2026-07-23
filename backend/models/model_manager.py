@@ -151,6 +151,8 @@ class ModelManager:
             baseUrl=_sanitize(data.baseUrl),
             model=data.model,
             isActive=data.isActive,
+            context_window=data.context_window or 200_000,
+            max_tool_rounds=data.max_tool_rounds or 100,
         )
         config.models.append(new_model)
         self.save_config(config)
@@ -197,15 +199,25 @@ def resolve_active_model_config(
     base_url: str = "",
     api_key: str = "",
     model: str = "",
-) -> tuple[str, str, str]:
+) -> dict:
     """解析最终使用的模型配置。
 
     优先级：传入参数 > 配置文件激活模型
+    返回 dict: {baseUrl, apiKey, model, context_window, max_tool_rounds}
     """
     active = model_manager.get_active_model()
     if not active:
-        return base_url, api_key, model
-    final_base_url = base_url or active.baseUrl or ""
-    final_api_key = api_key or active.apiKey or ""
-    final_model = model or active.model or ""
-    return final_base_url, final_api_key, final_model
+        return {
+            "baseUrl": base_url,
+            "apiKey": api_key,
+            "model": model,
+            "context_window": 200_000,
+            "max_tool_rounds": 100,
+        }
+    return {
+        "baseUrl": base_url or active.baseUrl or "",
+        "apiKey": api_key or active.apiKey or "",
+        "model": model or active.model or "",
+        "context_window": active.context_window or 200_000,
+        "max_tool_rounds": active.max_tool_rounds or 100,
+    }

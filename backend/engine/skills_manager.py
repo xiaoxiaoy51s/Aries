@@ -44,14 +44,15 @@ class SkillEntry:
 
 
 def _yaml_load(content: str) -> dict[str, Any]:
-    lines = content.strip().splitlines()
-    result: dict[str, Any] = {}
-    for line in lines:
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        result[key.strip()] = value.strip().strip("\"'")
-    return result
+    """用真正的 YAML 解析器替代简易 key-value 切分。"""
+    import yaml
+    try:
+        parsed = yaml.safe_load(content)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    return {}
 
 
 def parse_skill_frontmatter(content: str) -> tuple[dict[str, Any], str]:
@@ -336,7 +337,7 @@ def get_all_tool_definitions() -> list[dict]:
     # 加载内置插件技能（skills 类型：web_search 等带 Python 代码的技能）
     try:
         from engine.plugin_manager import get_plugin_skill_tool_definitions
-        plugin_skill_tools = get_plugin_skill_tool_definitions()
+        plugin_skill_tools = get_plugin_skill_tool_definitions(allowed_skills=allowed_skills)
         if plugin_skill_tools:
             existing_names = {
                 t.get("function", {}).get("name") for t in tools if isinstance(t, dict)

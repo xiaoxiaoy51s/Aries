@@ -45,6 +45,46 @@
       <p class="binary-hint">无法在文本编辑器中预览差异</p>
     </div>
 
+    <!-- PDF：Electron 用 webview，Web 用 iframe -->
+    <div v-else-if="previewType === 'pdf'" class="diff-office-frame">
+      <webview
+        v-if="isElectron"
+        :src="pdfPreviewUrl"
+        class="office-iframe"
+        style="width:100%;height:100%;display:flex"
+        webpreferences="contextIsolation=no, nodeIntegration=no, nativeWindowOpen=no, plugins=yes"
+        allowpopups="false"
+      ></webview>
+      <iframe
+        v-else
+        :src="pdfPreviewUrl"
+        class="office-iframe"
+        title="PDF 预览"
+      ></iframe>
+    </div>
+
+    <!-- Office 文档：Electron 用 webview，Web 模式用 iframe 嵌入 officecli 预览 -->
+    <div v-else-if="previewType === 'office'" class="diff-office-frame">
+      <div v-if="!officePreviewUrl" class="diff-loading">启动 Office 预览...</div>
+      <webview
+        v-else-if="isElectron"
+        ref="officeWebviewRef"
+        :src="officePreviewUrl"
+        class="office-iframe"
+        style="width:100%;height:100%;display:flex"
+        webpreferences="contextIsolation=no, nodeIntegration=no, nativeWindowOpen=no"
+        allowpopups="false"
+        @dom-ready="onOfficeWebviewDomReady"
+        @did-fail-load="onOfficeWebviewFailLoad"
+      ></webview>
+      <iframe
+        v-else
+        :src="officePreviewUrl"
+        class="office-iframe"
+        title="Office 预览"
+      ></iframe>
+    </div>
+
     <div v-if="loading" class="diff-loading">加载中...</div>
     <div v-else-if="!selectedPath" class="diff-empty">从 Git 面板选择文件查看差异</div>
   </div>
@@ -75,10 +115,16 @@ const diffContainerRef = ref<HTMLElement | null>(null)
 const selectedPath = ref<string | null>(props.filePath || null)
 const inlineMode = ref(false)
 
-// 预览类型：text → Monaco diff；image → 单图（修改后）；binary → 提示
-const previewType = ref<'text' | 'image' | 'binary'>('text')
+// 预览类型：text → Monaco diff；image → 单图（修改后）；binary → 提示；pdf → PDF 内嵌；office → iframe 嵌入（docx/xlsx/pptx）
+const previewType = ref<'text' | 'image' | 'binary' | 'pdf' | 'office'>('text')
 const imageModifiedSrc = ref<string>('')
 const binaryInfo = ref<{ ext: string; size: number } | null>(null)
+const officePreviewUrl = ref<string | null>(null)
+const officeWebviewRef = ref<any>(null)
+let officeResizeObserver: ResizeObserver | null = null
+let officeAutoFitTimer: ReturnType<typeof setTimeout> | null = null
+
+const isElectron = computed(() => typeof window !== 'undefined' && !!(window as any).electronAPI)
 
 let editor: any = null
 let monacoPromise: Promise<any> | null = null
@@ -86,12 +132,15 @@ let currentOriginalModel: any = null
 let currentModifiedModel: any = null
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico'])
+const OFFICE_EXTS = new Set(['docx', 'xlsx', 'pptx'])
+const PDF_EXTS = new Set(['pdf'])
 const BINARY_EXTS = new Set([
-  'pdf', 'zip', 'tar', 'gz', 'rar', '7z',
+  'zip', 'tar', 'gz', 'rar', '7z',
   'exe', 'dll', 'so', 'dylib', 'class', 'pyc',
   'mp3', 'mp4', 'wav', 'flac', 'ogg', 'mov', 'avi', 'mkv',
   'ttf', 'otf', 'woff', 'woff2',
   'db', 'sqlite',
+  'doc', 'xls', 'ppt', 'odt', 'ods', 'odp',
 ])
 
 function getExt(path: string): string {
@@ -118,6 +167,17 @@ function getRelativeFilePath(path: string): string {
 
 const canOpenExternally = computed(() => !!(selectedPath.value && workDir.value))
 
+const pdfPreviewUrl = computed(() => {
+  if (!selectedPath.value || !workDir.value) return ''
+  // Electron 环境：用 file:// 协议直接加载本地 PDF，不走后端 API
+  if (isElectron.value) {
+    const normalized = selectedPath.value.replace(/\\/g, '/')
+    const absPath = `${workDir.value.replace(/\\/g, '/')}/${normalized}`
+    return `file:///${absPath}`
+  }
+  return `${modelStore.getBaseUrl()}/api/office/raw?work_dir=${encodeURIComponent(workDir.value)}&path=${encodeURIComponent(selectedPath.value)}`
+})
+
 async function openFileInVSCode() {
   if (!selectedPath.value || !workDir.value) return
   const path = getRelativeFilePath(selectedPath.value)
@@ -139,6 +199,114 @@ async function openFileInVSCode() {
       detail: { message: e.message || '打开 VSCode 失败', type: 'error' },
     }))
   }
+}
+
+/** 当前预览的 office 文件路径，用于卸载时停止 watch */
+let currentOfficeFilePath: string | null = null
+
+async function startOfficePreview(filePath: string) {
+  // 先关闭之前的预览
+  if (currentOfficeFilePath) {
+    await stopOfficePreview(currentOfficeFilePath)
+  }
+  currentOfficeFilePath = filePath
+  try {
+    const res = await fetch(`${modelStore.getBaseUrl()}/api/office/preview/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_path: filePath, workspace: workDir.value }),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      console.error('Office 预览启动失败', text)
+      return
+    }
+    const data = await res.json()
+    officePreviewUrl.value = data.url
+  } catch (e: any) {
+    console.error('Office 预览启动失败', e)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function stopOfficePreview(filePath: string | null) {
+  if (!filePath) return
+  try {
+    await fetch(`${modelStore.getBaseUrl()}/api/office/preview/stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_path: filePath }),
+    })
+  } catch {
+    // ignore
+  }
+  currentOfficeFilePath = null
+}
+
+function onOfficeWebviewDomReady() {
+  // AionUi WebviewHost 方案：用 setZoomFactor 缩放 + ResizeObserver 动态像素尺寸
+  // 不注入 CSS / 不用 transform: scale，保留 officecli 页面自身滚动布局
+  const wv = officeWebviewRef.value as any
+  if (!wv) return
+
+  // 1. 用 ResizeObserver 动态设置 webview 的 width/height 为绝对像素值
+  const container = wv.parentElement
+  if (container && 'ResizeObserver' in window) {
+    const syncSize = () => {
+      const rect = container.getBoundingClientRect()
+      wv.style.width = rect.width + 'px'
+      wv.style.height = rect.height + 'px'
+    }
+    syncSize()
+    if (officeResizeObserver) officeResizeObserver.disconnect()
+    officeResizeObserver = new ResizeObserver(syncSize)
+    officeResizeObserver.observe(container)
+  }
+
+  // 2. 自动适配缩放：测量 officecli 页面内容宽度，计算 zoomFactor
+  const autoFit = () => {
+    if (!wv.executeJavaScript || !wv.setZoomFactor) return
+    wv
+      .executeJavaScript(
+        `(function(){
+          var stage = document.querySelector('#main-stage') || document.querySelector('.main') || document.body;
+          var stageW = Math.max(stage.scrollWidth || 0, stage.offsetWidth || 0, document.documentElement.scrollWidth || 0);
+          var innerW = window.innerWidth || document.documentElement.clientWidth || 0;
+          return JSON.stringify({ stageWidth: stageW, innerWidth: innerW });
+        })()`
+      )
+      .then((result) => {
+        try {
+          const { stageWidth } = JSON.parse(result)
+          if (!stageWidth || stageWidth <= 0) return
+          const containerRect = wv.parentElement.getBoundingClientRect()
+          const contentWidth = containerRect.width
+          if (contentWidth <= 0) return
+          const zoom = contentWidth / stageWidth
+          const clamped = Math.max(0.5, Math.min(2, zoom))
+          wv.setZoomFactor(clamped)
+          console.log('[OfficePreview] autoFit:', { stageWidth, contentWidth, zoom: clamped })
+        } catch {}
+      })
+      .catch(() => {})
+  }
+
+  if (officeAutoFitTimer) clearTimeout(officeAutoFitTimer)
+  officeAutoFitTimer = setTimeout(autoFit, 300)
+  const timers = [600, 1200, 2000, 3500]
+  timers.forEach((ms) => setTimeout(autoFit, ms))
+
+  if (wv.addEventListener) {
+    try { wv.addEventListener('did-finish-load', autoFit) } catch {}
+  }
+}
+
+function onOfficeWebviewFailLoad(event: any) {
+  console.error('[OfficePreview] webview 加载失败', event)
+  window.dispatchEvent(new CustomEvent('aries:toast', {
+    detail: { message: 'Office 预览加载失败，请重试', type: 'error' },
+  }))
 }
 
 async function loadMonaco() {
@@ -185,10 +353,30 @@ async function loadDiff() {
   loading.value = true
   imageModifiedSrc.value = ''
   binaryInfo.value = null
+  officePreviewUrl.value = null
   try {
     const ext = getExt(selectedPath.value)
     const isImage = IMAGE_EXTS.has(ext)
-    const isBinary = BINARY_EXTS.has(ext) || isImage
+    const isPdf = PDF_EXTS.has(ext)
+    const isOfficeDoc = OFFICE_EXTS.has(ext)
+    const isBinary = BINARY_EXTS.has(ext) || isImage || isPdf || isOfficeDoc
+
+    if (isPdf) {
+      // PDF：直接内嵌 iframe，不走 git API
+      previewType.value = 'pdf'
+      disposeModels()
+      return
+    }
+
+    if (isOfficeDoc) {
+      // Office 文档：通过 officecli watch 预览
+      previewType.value = 'office'
+      officePreviewUrl.value = null
+      disposeModels()
+      // 异步启动 officecli 预览
+      startOfficePreview(selectedPath.value)
+      return
+    }
 
     if (isImage || isBinary) {
       if (hasInline) {
@@ -336,7 +524,16 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  stopOfficePreview(currentOfficeFilePath)
   disposeEditor()
+  if (officeResizeObserver) {
+    officeResizeObserver.disconnect()
+    officeResizeObserver = null
+  }
+  if (officeAutoFitTimer) {
+    clearTimeout(officeAutoFitTimer)
+    officeAutoFitTimer = null
+  }
 })
 </script>
 
@@ -512,5 +709,22 @@ onUnmounted(() => {
   color: var(--text-muted);
   font-size: 12px;
   pointer-events: none;
+}
+
+.diff-office-frame {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.office-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #fff;
+  display: block;
+  opacity: 1;
+  transition: opacity 150ms ease-in;
 }
 </style>

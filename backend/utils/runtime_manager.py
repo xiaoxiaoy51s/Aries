@@ -57,6 +57,12 @@ def _detect_command(command: str, version_args: list[str] | None = None) -> dict
         return {"installed": False}
 
 
+def detect_system_officecli() -> dict[str, Any]:
+    """检测系统 officecli（officecli --version / officecli-win-x64 --version）"""
+    result = _detect_command("officecli") or _detect_command("officecli-win-x64")
+    return result
+
+
 def detect_system_node() -> dict[str, Any]:
     """检测系统 Node.js（node --version）"""
     return _detect_command("node", ["-v"])
@@ -90,6 +96,8 @@ def _list_builtin_versions(runtime: str) -> list[dict[str, Any]]:
             exe = d / "python.exe"
         elif runtime == "git":
             exe = d / "cmd" / "git.exe"
+        elif runtime == "officecli":
+            exe = d / "officecli-win-x64.exe"
         else:
             continue
         if exe.exists():
@@ -101,6 +109,16 @@ def _list_builtin_versions(runtime: str) -> list[dict[str, Any]]:
 
 # 各运行时的推荐版本和下载 URL 模板（Windows x64）
 RUNTIME_DOWNLOAD_INFO = {
+    "officecli": {
+        "version": "1.0.140",
+        "versions": [
+            {"version": "1.0.140", "label": "officecli 1.0.140"},
+            {"version": "1.0.139", "label": "officecli 1.0.139"},
+        ],
+        "url_template": "https://github.com/iOfficeAI/OfficeCLI/releases/download/{version}/officecli-win-x64.exe",
+        "strip_root": False,
+        "single_exe": True,
+    },
     "node": {
         "version": "v20.17.0",
         "versions": [
@@ -182,6 +200,22 @@ def download_runtime(runtime: str, version: str | None = None, install_dir: str 
     url = info["url_template"].format(version=version_str)
 
     try:
+        # 单文件 exe：直接下载到目标目录
+        if info.get("single_exe"):
+            target_dir.mkdir(parents=True, exist_ok=True)
+            exe_path = target_dir / "officecli-win-x64.exe"
+            with httpx.stream("GET", url, follow_redirects=True, timeout=300) as resp:
+                resp.raise_for_status()
+                with open(exe_path, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=65536):
+                        f.write(chunk)
+            exe_path.chmod(0o755)
+            return {
+                "success": True,
+                "version": target_version,
+                "path": str(exe_path),
+            }
+
         # 下载到临时文件
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
             tmp_path = tmp.name
@@ -303,6 +337,10 @@ def resolve_runtime(runtime: str) -> dict[str, Any]:
         return {"source": "system", "version": sys.version, "path": sys.executable}
     elif runtime == "git":
         system = detect_system_git()
+        if system["installed"]:
+            return {"source": "system", "version": system.get("version", ""), "path": system["path"]}
+    elif runtime == "officecli":
+        system = detect_system_officecli()
         if system["installed"]:
             return {"source": "system", "version": system.get("version", ""), "path": system["path"]}
 

@@ -186,11 +186,10 @@ async def run_single_tool(
     if cached_result is not None:
         return cached_result, {}, False
 
-    # todo_write 拦截
+    # todo_write 拦截（Reasonix 风格：每次发送完整清单替换上一次）
     if tool_name == "todo_write":
         todo_args = args.get("todos", [])
-        merge_mode = bool(args.get("merge", False))
-        updated = update_todos(session_id, todo_args, merge=merge_mode)
+        updated = update_todos(session_id, todo_args)
         if updated and all(isinstance(t, dict) and t.get("status") == "completed" for t in updated):
             clear_todos(session_id)
             updated = []

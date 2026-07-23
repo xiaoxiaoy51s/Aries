@@ -2,11 +2,13 @@
 
 仅存储跨会话的全局偏好（目前仅 approval_mode）。
 不入 SQLite，使用 JSON 文件，原子写入，损坏自动备份回退。
+带修复日志（Reasonix repair-log.jsonl 风格）和配置快照。
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -15,8 +17,17 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
+_log = logging.getLogger(__name__)
+
 CONFIG_DIR = Path.home() / ".Aries" / "config"
 CONFIG_PATH = CONFIG_DIR / "setting.json"
+
+# 修复日志（Reasonix 风格：记录每次配置变更和损坏恢复）
+REPAIR_LOG_PATH = CONFIG_DIR / "repair-log.jsonl"
+
+# 快照保留数
+SNAPSHOT_DIR = CONFIG_DIR / "snapshots"
+SNAPSHOT_KEEP = 5
 
 # 三档批准模式
 APPROVAL_MODES = ("request", "review", "full")
@@ -33,6 +44,43 @@ _cache_mtime: float = 0.0
 
 def _ensure_dir() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _write_repair_log(event: str, detail: str = "") -> None:
+    """写入修复日志（REPAIR_LOG_PATH）。"""
+    try:
+        _ensure_dir()
+        record = {
+            "event": event,
+            "detail": detail,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        with open(REPAIR_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        _log.warning("写入修复日志失败: %s", exc)
+
+
+def _take_config_snapshot() -> None:
+    """每次成功更改配置时保留一份快照。"""
+    if not CONFIG_PATH.exists():
+        return
+    try:
+        _ensure_dir()
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        snapshot = SNAPSHOT_DIR / f"setting.{ts}.json"
+        shutil.copy2(CONFIG_PATH, snapshot)
+
+        # 清理旧快照，只保留 SNAPSHOT_KEEP 份
+        snapshots = sorted(SNAPSHOT_DIR.glob("setting.*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+        for old in snapshots[SNAPSHOT_KEEP:]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    except Exception as exc:
+        _log.warning("配置快照失败: %s", exc)
 
 
 def _atomic_write(data: dict[str, Any]) -> None:
@@ -44,6 +92,8 @@ def _atomic_write(data: dict[str, Any]) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, CONFIG_PATH)
+        # 写入成功后拍快照
+        _take_config_snapshot()
     finally:
         if os.path.exists(tmp):
             try:
@@ -53,7 +103,7 @@ def _atomic_write(data: dict[str, Any]) -> None:
 
 
 def _read_file() -> dict[str, Any]:
-    """从磁盘读取并用 DEFAULTS 兜底；解析失败时备份脏文件。"""
+    """从磁盘读取并用 DEFAULTS 兜底；解析失败时备份脏文件并记录修复日志。"""
     if not CONFIG_PATH.exists():
         return dict(DEFAULTS)
     try:
@@ -64,13 +114,18 @@ def _read_file() -> dict[str, Any]:
         merged = dict(DEFAULTS)
         merged.update(raw)
         return merged
-    except Exception:
+    except Exception as exc:
         # 损坏文件备份，避免再次解析失败导致功能不可用
+        detail = ""
         try:
             ts = time.strftime("%Y%m%d_%H%M%S")
-            shutil.copy2(CONFIG_PATH, CONFIG_PATH.with_suffix(f".bad.{ts}.json"))
+            backup = CONFIG_PATH.with_suffix(f".bad.{ts}.json")
+            shutil.copy2(CONFIG_PATH, backup)
+            detail = str(backup)
         except OSError:
             pass
+        _write_repair_log("config_corrupted", f"{exc} → backup: {detail}")
+        _log.warning("配置文件损坏，已备份到 %s，使用默认值: %s", detail, exc)
         return dict(DEFAULTS)
 
 
@@ -99,6 +154,7 @@ def update_setting(patch: dict[str, Any]) -> dict[str, Any]:
         current = _read_file()
         current.update(patch)
         _atomic_write(current)
+        _write_repair_log("config_updated", f"keys={list(patch.keys())}")
         try:
             _cache_mtime = CONFIG_PATH.stat().st_mtime
         except OSError:
@@ -124,10 +180,9 @@ def set_approval_mode(mode: str) -> dict[str, Any]:
     return {"success": True, "approval_mode": mode}
 
 
-# ---- 批准策略：与 danger_types 配合决定是否还需要弹确认 ---------------------
+# ---- 批准策略：deny > ask/review > auto/full 优先级（符合 Reasonix 设计） ----
 
 # 高风险标签：即使在 review 模式下也必须用户确认。
-# 与 cli_executor._check_dangerous_command / file_manager 现有 danger_types 对齐。
 _HIGH_RISK_TAGS = (
     "删除",
     "格式化",
@@ -153,6 +208,8 @@ def _is_high_risk(danger_types: list[str] | None) -> bool:
 def should_skip_confirmation(danger_types: list[str] | None) -> bool:
     """根据当前 approval_mode 与风险等级，判断能否跳过确认。
 
+    优先级（Reasonix 风格）：deny(硬拒绝) > ask/request(弹确认) > auto/review(有条件跳过) > full(全放行)
+
     返回 True 表示无需弹确认，直接放行。
     黑白名单的硬规则不经过此函数（在调用前已处理）。
     """
@@ -162,4 +219,3 @@ def should_skip_confirmation(danger_types: list[str] | None) -> bool:
     if mode == "review":
         return not _is_high_risk(danger_types)
     return False  # 'request' 与未知值一律保持原行为
-

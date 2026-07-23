@@ -92,7 +92,26 @@ export function useBackendBoot(port = 30000) {
     bootTimer = setInterval(() => void bootTick(), BOOT_PING_INTERVAL_MS)
   }
 
+  // 唤醒后由主进程触发：立即探活一次。
+  // 通了就复位 lostConnection（不闪启动页）；不通才走完整启动流程（显示启动页）。
+  async function probe() {
+    const ok = await ping()
+    if (ok) {
+      error.value = null
+      lostConnection.value = false
+      heartbeatFailCount = 0
+      if (!ready.value) {
+        ready.value = true
+        stopBootTimer()
+        startHeartbeat()
+      }
+    } else {
+      start()
+    }
+    return ok
+  }
+
   onUnmounted(stop)
 
-  return { ready, elapsed, error, lostConnection, start }
+  return { ready, elapsed, error, lostConnection, start, probe }
 }

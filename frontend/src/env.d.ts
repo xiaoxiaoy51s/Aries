@@ -45,6 +45,10 @@ interface Window {
     quitApp?: () => void
     /** 确保后端进程已启动（启动页重试） */
     ensureBackend?: () => void
+    /** 强制 kill 并重启后端进程（不重启 Electron） */
+    forceRestartBackend?: () => void
+    /** 系统从休眠/睡眠唤醒后，主进程通知渲染层重新探活后端 */
+    onBackendResume?: (callback: () => void) => void
 
     /** 窗口控制 */
     windowMinimize?: () => void

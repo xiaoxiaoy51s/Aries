@@ -47,6 +47,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** 强制 kill 并重启后端进程（不重启 Electron） */
   forceRestartBackend: () => ipcRenderer.send('backend:force-restart'),
 
+  /** 系统从休眠/睡眠唤醒后，主进程通知渲染层重新探活后端（复位连接丢失状态） */
+  onBackendResume: (callback) => ipcRenderer.on('backend:resume', () => callback()),
+
   /** 窗口控制 */
   windowMinimize: () => ipcRenderer.send('window:minimize'),
   windowMaximize: () => ipcRenderer.send('window:maximize'),

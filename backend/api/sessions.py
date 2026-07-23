@@ -286,7 +286,8 @@ def get_session_context_usage(session_id: str, refresh: bool = False):
     breakdown = build_context_usage_breakdown(
         system_prompt_base=prompt_parts["base"]
             + (prompt_parts.get("mcp") or "")
-            + (prompt_parts.get("subagents") or ""),
+            + (prompt_parts.get("subagents") or "")
+            + (prompt_parts.get("plugins") or ""),
         tool_definitions=tool_definitions,
         rules_text=prompt_parts["rules"],
         skills_text=prompt_parts["skills"],
@@ -298,16 +299,34 @@ def get_session_context_usage(session_id: str, refresh: bool = False):
         if token_info.get(k) is not None:
             breakdown[k] = token_info[k]
 
+    # 从模型配置获取 context_window
+    from models.model_manager import resolve_active_model_config
+    _model_cfg = resolve_active_model_config()
+    breakdown["context_window"] = _model_cfg["context_window"]
+
     # 如果有最近的 assistant 回复，尝试用 API 真实 prompt_tokens 校准上下文占用
     # 这比估算更接近模型实际看到的上下文 token 数
     latest_assistant = get_latest_assistant_message(session_id)
     if latest_assistant and latest_assistant.get("snapshot_path"):
-        real_prompt = _extract_real_prompt_tokens_from_jsonl(latest_assistant["snapshot_path"])
-        if real_prompt:
-            context_window = int(breakdown.get("context_window") or 200_000)
-            breakdown["estimated_tokens"] = real_prompt
-            breakdown["usage_percent"] = round((real_prompt / context_window) * 100, 1) if context_window > 0 else 0.0
-            breakdown["from_api_prompt_tokens"] = real_prompt
+        ctx_from_log = _extract_context_from_jsonl(latest_assistant["snapshot_path"])
+        if ctx_from_log:
+            context_window = _model_cfg["context_window"]
+            real_prompt = ctx_from_log.get("from_api_prompt_tokens") or ctx_from_log.get("estimated_tokens")
+            log_breakdown = ctx_from_log.get("breakdown")
+            if log_breakdown and isinstance(log_breakdown, dict):
+                # stream_handler 写入了完整的 breakdown（包含工具调用循环中的消息），直接使用
+                breakdown["breakdown"] = {**breakdown["breakdown"], **log_breakdown}
+                breakdown["estimated_tokens"] = ctx_from_log.get("estimated_tokens") or real_prompt or sum(breakdown["breakdown"].values())
+            elif real_prompt:
+                # fallback：只有 API 真实 prompt_tokens，反推 conversation
+                other_tokens = sum(
+                    v for k, v in breakdown["breakdown"].items() if k != "conversation"
+                )
+                breakdown["breakdown"]["conversation"] = max(0, real_prompt - other_tokens)
+                breakdown["estimated_tokens"] = real_prompt
+            if real_prompt:
+                breakdown["from_api_prompt_tokens"] = real_prompt
+            breakdown["usage_percent"] = round((breakdown["estimated_tokens"] / context_window) * 100, 1) if context_window > 0 else 0.0
 
     _context_usage_cache[session_id] = (now, breakdown)
     return breakdown
@@ -315,6 +334,18 @@ def get_session_context_usage(session_id: str, refresh: bool = False):
 
 def _extract_real_prompt_tokens_from_jsonl(snapshot_path: str) -> int | None:
     """从 assistant 消息的 JSONL 日志中提取最后一次 API 返回的真实 prompt_tokens。"""
+    result = _extract_context_from_jsonl(snapshot_path)
+    if result:
+        return result.get("estimated_tokens") or result.get("from_api_prompt_tokens")
+    return None
+
+
+def _extract_context_from_jsonl(snapshot_path: str) -> dict | None:
+    """从 JSONL 日志中提取最后一次 stream_handler 写入的 context breakdown。
+
+    stream_handler 在每轮 API 请求后会用 current_messages 重新计算 conversation
+    token 并写入 token_usage.context，这里读取最后的值以获得最准确的 breakdown。
+    """
     if not snapshot_path or not snapshot_path.endswith(".jsonl"):
         return None
     try:
@@ -323,6 +354,7 @@ def _extract_real_prompt_tokens_from_jsonl(snapshot_path: str) -> int | None:
         if not path.exists():
             return None
         real_prompt: int | None = None
+        context_breakdown: dict | None = None
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -337,13 +369,24 @@ def _extract_real_prompt_tokens_from_jsonl(snapshot_path: str) -> int | None:
                 token_usage = evt.get("token_usage")
                 if not isinstance(token_usage, dict):
                     continue
+                # 提取 API 真实 prompt_tokens
                 api_usage = token_usage.get("api_usage")
                 if isinstance(api_usage, dict) and api_usage.get("prompt_tokens"):
                     real_prompt = int(api_usage.get("prompt_tokens") or 0) or None
-                # 用 final run_metadata 覆盖中间快照，确保取完整值
-                if evt.get("type") == "run_metadata" and evt.get("final") and real_prompt:
+                # 提取 stream_handler 写入的 context breakdown
+                ctx = token_usage.get("context")
+                if isinstance(ctx, dict) and ctx.get("breakdown"):
+                    context_breakdown = ctx
+                # final run_metadata 时停止
+                if evt.get("type") == "run_metadata" and evt.get("final"):
                     break
-        return real_prompt
+        # 优先返回 stream_handler 写入的 context breakdown（最准确）
+        if context_breakdown:
+            return context_breakdown
+        # fallback：只有 prompt_tokens，没有完整 breakdown
+        if real_prompt:
+            return {"from_api_prompt_tokens": real_prompt, "estimated_tokens": real_prompt}
+        return None
     except Exception:
         return None
 
