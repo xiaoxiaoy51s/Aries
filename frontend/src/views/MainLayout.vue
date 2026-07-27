@@ -44,43 +44,6 @@
 
       <div class="sidebar-section history-section">
         <div class="history-scroll">
-          <div class="section-label sider-section-label team-section-label">
-            <span class="sider-section-title">团队</span>
-            <button type="button" class="team-add-btn" title="新建团队" data-testid="team-create-btn" @click.stop="openTeamCreate">+</button>
-          </div>
-          <div v-if="teams.length === 0" class="history-empty">暂无团队</div>
-          <div v-else class="history-session-group history-session-group--flat">
-            <div
-              v-for="t in teams"
-              :key="t.id"
-              class="history-session-row group"
-              :class="{ active: currentPage === 'team' && currentTeamId === t.id }"
-              :title="t.name"
-              @click="openTeam(t.id)"
-            >
-              <span class="history-session-leading">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-                  <circle cx="9" cy="7" r="4"/>
-                  <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-                  <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-                </svg>
-              </span>
-              <span class="history-session-title">{{ t.name }}</span>
-              <button
-                type="button"
-                class="history-session-more"
-                aria-label="删除团队"
-                title="删除团队"
-                @click.stop="onDeleteTeam(t.id, t.name)"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-
           <div class="section-label sider-section-label">
             <span class="sider-section-title">项目</span>
           </div>
@@ -229,11 +192,6 @@
             :session-id-to-load="sessionIdToLoad"
             @session-loaded="sessionIdToLoad = null"
           />
-          <TeamPage
-            v-else-if="currentPage === 'team' && currentTeamId"
-            :key="'team-' + currentTeamId"
-            :team-id="currentTeamId"
-          />
           <SkillsPage v-else-if="currentPage === 'skills'" :key="'skills'" />
           <AutomationPage v-else-if="currentPage === 'scheduled-tasks'" :key="'scheduled-tasks'" />
         </KeepAlive>
@@ -246,12 +204,6 @@
       :visible="showSettings"
       :initial-tab="settingsInitialTab"
       @close="showSettings = false"
-    />
-
-    <TeamCreateModal
-      :visible="showTeamCreate"
-      @close="showTeamCreate = false"
-      @created="onTeamCreated"
     />
 
     <!-- 搜索弹窗 -->
@@ -367,15 +319,12 @@ import { ref, onMounted, onUnmounted, nextTick, computed, KeepAlive } from 'vue'
 import ChatPage from './chatPage.vue'
 import SkillsPage from './SkillsPage.vue'
 import AutomationPage from './AutomationPage.vue'
-import TeamPage from './TeamPage.vue'
-import TeamCreateModal from '@/components/TeamCreateModal.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import { useUpdateStore } from '@/stores/update'
 import SearchDialog from '@/components/SearchDialog.vue'
 import SessionLoadingDots from '@/components/SessionLoadingDots.vue'
 import { listProjects, updateSessionMeta, deleteSession } from '@/api/sessions'
 import { deleteWorkDirCascade } from '@/api/work_dirs'
-import { listTeams, deleteTeam, type Team } from '@/api/teams'
 import { workingSessionIds } from '@/utils/sessionWorkStore'
 import { useModelStore } from '@/stores/model'
 import { useSidebar } from '@/composables/useSidebar'
@@ -445,15 +394,12 @@ interface Project {
   sessions: ProjectSession[]
 }
 
-const currentPage = ref<'chat' | 'skills' | 'scheduled-tasks' | 'team'>('chat')
+const currentPage = ref<'chat' | 'skills' | 'scheduled-tasks'>('chat')
 const showSettings = ref(false)
 const settingsInitialTab = ref<'models' | 'accounts' | 'paths' | 'pets' | 'network' | 'dev-env' | 'subagents' | 'updates' | undefined>(undefined)
 const updateStore = useUpdateStore()
 const hasUpdate = computed(() => updateStore.result?.update_available === true)
 const showSearch = ref(false)
-const showTeamCreate = ref(false)
-const teams = ref<Team[]>([])
-const currentTeamId = ref<string | null>(null)
 
 const currentSessionId = ref<string | null>(null)
 const sessionIdToLoad = ref<string | null>(null)
@@ -587,45 +533,6 @@ async function loadProjects(retries = 5, delay = 1500) {
   }
 }
 
-async function loadTeams() {
-  try {
-    teams.value = await listTeams()
-  } catch (e) {
-    console.warn('加载团队列表失败', e)
-    teams.value = []
-  }
-}
-
-function openTeam(teamId: string) {
-  currentTeamId.value = teamId
-  currentPage.value = 'team'
-  currentSessionId.value = null
-  sessionIdToLoad.value = null
-}
-
-function openTeamCreate() {
-  showTeamCreate.value = true
-}
-
-function onTeamCreated(team: Team) {
-  showTeamCreate.value = false
-  void loadTeams().then(() => openTeam(team.id))
-}
-
-async function onDeleteTeam(teamId: string, teamName: string) {
-  if (!confirm(`确定删除团队「${teamName}」？`)) return
-  try {
-    await deleteTeam(teamId)
-    if (currentTeamId.value === teamId) {
-      currentTeamId.value = null
-      currentPage.value = 'chat'
-    }
-    await loadTeams()
-  } catch (e: any) {
-    alert(e?.message || '删除团队失败')
-  }
-}
-
 function findSessionById(sessionId: string): ProjectSession | undefined {
   for (const project of projects.value) {
     const session = project.sessions?.find((s) => s.session_id === sessionId)
@@ -653,7 +560,7 @@ function onGlobalCloseCtxMenu(e: MouseEvent | KeyboardEvent) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadProjects(), loadTeams(), modelStore.loadModels()])
+  await Promise.all([loadProjects(), modelStore.loadModels()])
   // 启动时静默检查更新
   updateStore.check().catch(() => {})
   window.addEventListener('aries:refresh-sessions', onRefreshProjects)
@@ -683,7 +590,6 @@ onUnmounted(() => {
 
 function createNewChat() {
   currentPage.value = 'chat'
-  currentTeamId.value = null
   currentSessionId.value = null
   currentProject.value = null
   // 顶栏「新对话」走默认目录 → 侧边栏「对话」；项目内新建用 createNewChatInProject
@@ -737,7 +643,6 @@ async function openProjectDir(project: Project) {
 
 async function selectSession(id: string) {
   currentSessionId.value = id
-  currentTeamId.value = null
   // 强制触发 ChatPage watch（避免 sessionIdToLoad 未变化时不重新加载）
   sessionIdToLoad.value = null
   await nextTick()
@@ -1056,29 +961,6 @@ function cancelDeleteProject() {
   font-weight: 500;
   line-height: 1;
   color: var(--text-muted);
-}
-
-.team-section-label {
-  justify-content: space-between;
-}
-
-.team-add-btn {
-  width: 22px;
-  height: 22px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.team-add-btn:hover {
-  background: var(--bg-hover, rgba(0, 0, 0, 0.06));
-  color: var(--text-primary, #222);
 }
 
 .conversations-label {

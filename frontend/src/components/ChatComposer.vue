@@ -649,7 +649,7 @@ const props = defineProps<{
   showWorkDir?: boolean
   workDir?: string
   workDirLabel?: string
-  workDirHistory?: Array<{ work_dir: string; name: string }>
+  workDirHistory?: Array<string | { work_dir: string; name: string }>
   /** false = 普通对话（默认 ~/.Aries/work_dir）；true = 在项目中工作 */
   customWorkspace?: boolean
   rows?: number
@@ -1230,12 +1230,25 @@ function workDirBasename(dir: string): string {
   return parts[parts.length - 1] || normalized
 }
 
-const filteredProjectDirs = computed(() => {
+const normalizedProjectDirs = computed<Array<{ work_dir: string; name: string }>>(() => {
   const list = props.workDirHistory || []
+  return list.map((entry) => {
+    if (typeof entry === 'string') {
+      return { work_dir: entry, name: workDirBasename(entry) }
+    }
+    return {
+      work_dir: entry.work_dir,
+      name: entry.name || workDirBasename(entry.work_dir),
+    }
+  })
+})
+
+const filteredProjectDirs = computed(() => {
+  const list = normalizedProjectDirs.value
   const q = workDirSearchQuery.value.trim().toLowerCase()
   if (!q) return list
   return list.filter((entry) => {
-    const name = (entry.name || workDirBasename(entry.work_dir)).toLowerCase()
+    const name = entry.name.toLowerCase()
     return name.includes(q) || entry.work_dir.toLowerCase().includes(q)
   })
 })

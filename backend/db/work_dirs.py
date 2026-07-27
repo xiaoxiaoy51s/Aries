@@ -12,11 +12,22 @@ from .database import get_connection
 DEFAULT_WORK_DIR = str((Path.home() / ".Aries" / "work_dir").resolve())
 
 
+def normalize_work_dir(work_dir: str | None) -> str:
+    """展开 ~ 并 resolve。前端未 init 时可能传来 literal '~/.Aries/work_dir'。"""
+    raw = (work_dir or "").strip()
+    if not raw:
+        return DEFAULT_WORK_DIR
+    try:
+        return str(Path(raw).expanduser().resolve())
+    except Exception:
+        return DEFAULT_WORK_DIR
+
+
 def upsert_work_dir(work_dir: str, name: Optional[str] = None) -> None:
     """插入或更新一条 work_dir 记录，同时刷新 updated_at。"""
     if not work_dir or not work_dir.strip():
         return
-    work_dir = work_dir.strip()
+    work_dir = normalize_work_dir(work_dir)
     conn = get_connection()
     existing = conn.execute(
         "SELECT id FROM work_dirs WHERE work_dir = ?", (work_dir,)

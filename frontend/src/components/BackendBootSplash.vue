@@ -18,9 +18,11 @@
 </template>
 
 <script setup lang="ts">
-defineProps<{
-  error: string | null
-}>()
+withDefaults(defineProps<{
+  error?: string | null
+}>(), {
+  error: null,
+})
 
 defineEmits<{
   retry: []

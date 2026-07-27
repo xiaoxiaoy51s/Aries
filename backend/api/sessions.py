@@ -29,6 +29,8 @@ from db.work_dirs import (
     archive_work_dir,
     rename_work_dir,
     get_latest_work_dir,
+    DEFAULT_WORK_DIR,
+    normalize_work_dir,
 )
 from utils.session_logger import resolve_message_log_events, load_messages_snapshots_batch
 
@@ -101,38 +103,56 @@ def list_sessions(limit: int = 30):
     return {"sessions": items, "total": len(items)}
 
 
+def _is_default_work_dir(work_dir: str) -> bool:
+    """默认 ~/.Aries/work_dir → 普通对话；其余路径 → 项目。"""
+    raw = (work_dir or "").strip()
+    if not raw or raw == "__default__":
+        return True
+    try:
+        return normalize_work_dir(raw) == DEFAULT_WORK_DIR
+    except Exception:
+        return False
+
+
 @router.get("/projects")
 def list_projects():
-    """按 work_dir 分组，返回项目（工作目录）列表及其下的 session。
-
-    以 work_dirs 表为主源，确保即使没有 session 的工作目录也会出现在列表中。
-    """
+    """返回项目（自定义 work_dir）+ 普通对话（默认 work_dir）。"""
     # 1. 取 work_dirs 表中未归档的记录（主源）
     wd_list = list_work_dirs(include_archived=False, limit=500)
 
     # 2. 取 sessions 元数据，按 work_dir 分组
     meta_list = list_session_meta(limit=1000)
     sessions_by_wd: dict[str, list[dict]] = {}
+    conversations: list[dict] = []
     for m in meta_list:
         sid = m.get("session_id", "")
         wd = m.get("work_dir", "")
         if sid.startswith("__") and sid.endswith("__"):
             continue  # 跳过系统配置项
-        if not wd:
-            wd = "__default__"
-        sessions_by_wd.setdefault(wd, []).append({
+        item = {
             "session_id": sid,
             "title": (m.get("title") or "").strip()[:18],
+            "platform": (m.get("platform") or "aries").strip() or "aries",
             "created_at": m.get("created_at", ""),
             "updated_at": m.get("updated_at", ""),
-        })
+        }
+        if _is_default_work_dir(wd):
+            conversations.append(item)
+            continue
+        sessions_by_wd.setdefault(wd, []).append(item)
 
-    # 3. 合并：work_dirs 表为主，补上 sessions 表中有但 work_dirs 表中没有的
+    conversations.sort(key=lambda x: x.get("updated_at") or x.get("created_at") or "", reverse=True)
+
+    # 3. 合并：work_dirs 表为主，跳过默认目录；补 sessions 里有但表里没有的
     result = []
     seen_wd = set()
 
     for w in wd_list:
         wd = w["work_dir"]
+        if _is_default_work_dir(wd):
+            seen_wd.add(wd)
+            seen_wd.add(DEFAULT_WORK_DIR)
+            continue
         seen_wd.add(wd)
         sessions = sorted(
             sessions_by_wd.get(wd, []),
@@ -150,7 +170,7 @@ def list_projects():
 
     # 补 sessions 表中有但 work_dirs 表中没有的（兼容旧数据）
     for wd, sessions in sessions_by_wd.items():
-        if wd in seen_wd or wd == "__default__":
+        if wd in seen_wd or _is_default_work_dir(wd):
             continue
         result.append({
             "work_dir": wd,
@@ -163,7 +183,12 @@ def list_projects():
 
     # 按 updated_at 倒序
     result.sort(key=lambda x: x.get("updated_at", "") or x.get("created_at", ""), reverse=True)
-    return {"projects": result, "total": len(result)}
+    return {
+        "projects": result,
+        "conversations": conversations,
+        "total": len(result),
+        "conversations_total": len(conversations),
+    }
 
 
 def _derive_name(work_dir: str) -> str:

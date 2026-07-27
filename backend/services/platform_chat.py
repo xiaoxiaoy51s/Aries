@@ -157,7 +157,8 @@ async def run_agent_in_session(
 
     request = SimpleNamespace(
         baseUrl=base_url, apiKey=api_key, model=model,
-        public_url="", temperature=None, max_tokens=None
+        public_url="", temperature=None, max_tokens=None,
+        context_window=None, max_tool_rounds=None,
     )
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
     payload = {"model": model, "messages": messages, "stream": True}

@@ -44,11 +44,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** 确保后端进程已启动（启动页重试） */
   ensureBackend: () => ipcRenderer.send('backend:ensure'),
 
-  /** 强制 kill 并重启后端进程（不重启 Electron） */
-  forceRestartBackend: () => ipcRenderer.send('backend:force-restart'),
+  /** 主进程 Node http 探活 /health（不走 Chromium 连接池） */
+  probeBackendHealth: () => ipcRenderer.invoke('backend:probe-health'),
 
-  /** 系统从休眠/睡眠唤醒后，主进程通知渲染层重新探活后端（复位连接丢失状态） */
-  onBackendResume: (callback) => ipcRenderer.on('backend:resume', () => callback()),
+  /** 清 Chromium 到 localhost 的连接池 */
+  resetBackendConnections: () => ipcRenderer.invoke('backend:reset-connections'),
+
+  /** 主进程清连接池后通知渲染层（可继续探活） */
+  onBackendConnectionsReset: (callback) => ipcRenderer.on('backend:connections-reset', () => callback()),
 
   /** 窗口控制 */
   windowMinimize: () => ipcRenderer.send('window:minimize'),

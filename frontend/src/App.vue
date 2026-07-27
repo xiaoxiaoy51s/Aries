@@ -42,11 +42,7 @@
       </div>
     </div>
     <RouterView v-show="backendReady" />
-    <BackendBootSplash
-      v-if="!backendReady"
-      :error="bootError"
-      @retry="onBootRetry"
-    />
+    <BackendBootSplash v-if="!backendReady" />
     <OnboardingModal
       v-if="showOnboarding"
       :visible="showOnboarding"
@@ -60,11 +56,7 @@
       @skip="showEnvCheck = false"
       @all-installed="onEnvAllInstalled"
     />
-    <ConnectionLostModal
-      v-if="lostConnection"
-      @restart="onRestartApp"
-      @retry="onRetryConnection"
-    />
+
   </div>
 </template>
 
@@ -80,7 +72,6 @@ import TitleBarMenu, { type MenuDef } from '@/components/TitleBarMenu.vue'
 import BackendBootSplash from '@/components/BackendBootSplash.vue'
 import OnboardingModal from '@/components/OnboardingModal.vue'
 import EnvCheckModal from '@/components/EnvCheckModal.vue'
-import ConnectionLostModal from '@/components/ConnectionLostModal.vue'
 
 const { sidebarOpen, toggleSidebar } = useSidebar()
 
@@ -89,7 +80,7 @@ const workspaceStore = useWorkspaceStore()
 const BACKEND_PORT = 30000
 modelStore.setBackendPort(BACKEND_PORT)
 
-const { ready: backendReady, error: bootError, lostConnection, start: startBackendBoot, probe: probeBackend } = useBackendBoot(BACKEND_PORT)
+const { ready: backendReady, start: startBackendBoot, nudge: nudgeBackendBoot } = useBackendBoot(BACKEND_PORT)
 
 const isMaximized = ref(false)
 let appInitialized = false
@@ -142,20 +133,6 @@ async function handleOnboardingSave(data: { model: string; baseUrl: string; apiK
   }
 }
 
-function onBootRetry() {
-  window.electronAPI?.ensureBackend?.()
-  startBackendBoot()
-}
-
-function onRestartApp() {
-  window.electronAPI?.relaunch?.()
-}
-
-function onRetryConnection() {
-  window.electronAPI?.forceRestartBackend?.()
-  startBackendBoot()
-}
-
 watch(backendReady, (ready) => {
   if (ready) {
     void initAppData()
@@ -166,8 +143,16 @@ watch(backendReady, (ready) => {
 onMounted(async () => {
   startBackendBoot()
 
-  // 系统休眠唤醒后，主进程清完失效连接池后会发 backend:resume，这里立即重新探活
-  window.electronAPI?.onBackendResume?.(() => { void probeBackend() })
+  window.electronAPI?.onBackendConnectionsReset?.(() => {
+    nudgeBackendBoot()
+    window.dispatchEvent(new Event('aries:backend-connections-reset'))
+  })
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      void window.electronAPI?.resetBackendConnections?.()
+    }
+  })
 
   isMaximized.value = !!(await window.electronAPI?.windowIsMaximized?.())
   window.electronAPI?.onWindowMaximizedChange?.((value: boolean) => {

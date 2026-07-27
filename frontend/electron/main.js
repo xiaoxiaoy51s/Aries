@@ -65,6 +65,49 @@ async function waitBackendReady(maxWaitMs = 15000) {
   return false
 }
 
+/** 对齐 AionUi：休眠暂停调度，唤醒后 missed 不补跑 */
+let disposeScheduledTaskPowerListeners = null
+
+async function resetRendererBackendConnections() {
+  try {
+    await session.defaultSession.closeAllConnections()
+  } catch (e) {
+    console.error('[Backend] closeAllConnections error:', e)
+  }
+  for (const win of windows) {
+    if (!win.isDestroyed()) win.webContents.send('backend:connections-reset')
+  }
+}
+
+function notifyScheduledTaskPowerEvent(path) {
+  void fetch(`http://127.0.0.1:${BACKEND_PORT}/scheduled-tasks/internal/${path}`, {
+    method: 'POST',
+    headers: { 'x-aries-internal': '1' },
+  }).catch((error) => {
+    console.error(`[Aries] Failed to notify backend about system ${path}:`, error)
+  })
+}
+
+function registerScheduledTaskResumeBridge(port) {
+  disposeScheduledTaskPowerListeners?.()
+  const onSuspend = () => notifyScheduledTaskPowerEvent('system-suspend')
+  const onResume = () => {
+    void resetRendererBackendConnections()
+    notifyScheduledTaskPowerEvent('system-resume')
+  }
+  const onUnlock = () => {
+    void resetRendererBackendConnections()
+  }
+  powerMonitor.on('suspend', onSuspend)
+  powerMonitor.on('resume', onResume)
+  powerMonitor.on('unlock-screen', onUnlock)
+  disposeScheduledTaskPowerListeners = () => {
+    powerMonitor.removeListener('suspend', onSuspend)
+    powerMonitor.removeListener('resume', onResume)
+    powerMonitor.removeListener('unlock-screen', onUnlock)
+  }
+}
+
 function getBackendLogPath() {
   const home = process.env.USERPROFILE || process.env.HOME || app.getPath('home')
   const dir = path.join(home, '.Aries', 'logs')
@@ -174,21 +217,21 @@ function killBackend({ forceAll = false } = {}) {
 
 async function startBackend() {
   if (backendStartInProgress) return
-
-  if (await checkBackendReady()) {
-    console.log(`[Backend] already running on :${BACKEND_PORT} (will stop when app quits)`)
-    backendOwned = false
-    backendSpawnedByApp = false
-    return
-  }
-
   backendStartInProgress = true
-  const isPackaged = app.isPackaged
-  const backendExe = isPackaged
-    ? path.join(process.resourcesPath, 'aries_backend.exe')
-    : path.join(__dirname, '..', 'resources', 'aries_backend.exe')
 
   try {
+    if (await checkBackendReady()) {
+      console.log(`[Backend] already running on :${BACKEND_PORT} (will stop when app quits)`)
+      backendOwned = false
+      backendSpawnedByApp = false
+      return
+    }
+
+    const isPackaged = app.isPackaged
+    const backendExe = isPackaged
+      ? path.join(process.resourcesPath, 'aries_backend.exe')
+      : path.join(__dirname, '..', 'resources', 'aries_backend.exe')
+
     if (isPackaged) {
       if (!fs.existsSync(backendExe)) {
         console.error(`[Backend] missing executable: ${backendExe}`)
@@ -584,12 +627,13 @@ ipcMain.on('backend:ensure', () => {
   void startBackend()
 })
 
-// IPC: 后端卡死时强制 kill 并重启（不重启整个 Electron）
-ipcMain.on('backend:force-restart', () => {
-  console.log('[Backend] force-restart requested')
-  killBackend({ forceAll: true })
-  backendStartInProgress = false
-  setTimeout(() => void startBackend(), 500)
+// IPC: 主进程 Node http 探活（绕过 Chromium 死连接）
+ipcMain.handle('backend:probe-health', async () => checkBackendReady())
+
+// IPC: 清 Chromium 到 localhost 的连接池
+ipcMain.handle('backend:reset-connections', async () => {
+  await resetRendererBackendConnections()
+  return true
 })
 
 // IPC: 窗口控制
@@ -792,28 +836,7 @@ if (gotSingleInstanceLock) {
     createTray()
     createWindow()
 
-    // 系统休眠/唤醒后，Chromium 到后端的 keep-alive 连接会变成死连接，但 socket 池
-    // 仍会复用它 -> 渲染层 fetch 卡住/报错，表现为「后端正常但前端不可达，只能重启整个应用」。
-    // 唤醒时：清掉连接池 + 探活后端（卡死则重启）+ 通知渲染层立即重新探活。
-    powerMonitor.on('resume', async () => {
-      console.log('[powerMonitor] system resumed, resetting backend connection')
-      try {
-        await session.defaultSession.closeAllConnections()
-      } catch (e) {
-        console.error('[powerMonitor] closeAllConnections error:', e)
-      }
-      // 后端事件循环在长时间 suspend 后偶发 wedge：用 Node 探活，失败则强制重启
-      const alive = await waitBackendReady(3000)
-      if (!alive) {
-        console.log('[powerMonitor] backend not responding after resume, force-restarting')
-        killBackend({ forceAll: true })
-        backendStartInProgress = false
-        setTimeout(() => void startBackend(), 500)
-      }
-      for (const win of windows) {
-        if (!win.isDestroyed()) win.webContents.send('backend:resume')
-      }
-    })
+    registerScheduledTaskResumeBridge(BACKEND_PORT)
   })
 
   app.on('second-instance', () => {

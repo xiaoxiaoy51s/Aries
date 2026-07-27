@@ -45,10 +45,12 @@ interface Window {
     quitApp?: () => void
     /** 确保后端进程已启动（启动页重试） */
     ensureBackend?: () => void
-    /** 强制 kill 并重启后端进程（不重启 Electron） */
-    forceRestartBackend?: () => void
-    /** 系统从休眠/睡眠唤醒后，主进程通知渲染层重新探活后端 */
-    onBackendResume?: (callback: () => void) => void
+    /** 主进程 Node http 探活 /health（不走 Chromium 连接池） */
+    probeBackendHealth?: () => Promise<boolean>
+    /** 清 Chromium 到 localhost 的连接池 */
+    resetBackendConnections?: () => Promise<boolean>
+    /** 主进程清连接池后通知渲染层（可继续探活） */
+    onBackendConnectionsReset?: (callback: () => void) => void
 
     /** 窗口控制 */
     windowMinimize?: () => void

@@ -1,82 +1,95 @@
 <template>
-  <div>
-    <div class="header-row">
-      <p style="font-size: 14px; color: #6b7280; margin: 0;">
-        检测系统 PATH 中的 AI 编码代理 CLI，手动连接未自动找到的工具。
-      </p>
-      <button type="button" class="primary-btn sm" @click="showAddDialog = true">+ 添加自定义 CLI</button>
-    </div>
-
-    <!-- 检测中 -->
-    <div v-if="loading" style="padding: 32px 0; text-align: center; color: #9ca3af; font-size: 14px;">检测中...</div>
-
-    <!-- 工具网格 -->
-    <div v-else class="tool-grid">
-      <div
-        v-for="tool in tools"
-        :key="tool.id"
-        class="tool-card"
-        :class="{ connected: tool.connected }"
-      >
-        <div class="tool-top">
-          <div
-            class="tool-icon-wrap"
-            :style="{
-              background: tool.connected ? vendorBg(tool.vendor) : '#f3f4f6',
-              color: tool.connected ? vendorColor(tool.vendor) : '#9ca3af',
-            }"
-          >
-            <svg v-if="tool.connected" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <polyline points="20 6 9 17 4 12" />
+  <div class="tools-page">
+    <header class="tools-header">
+      <div class="tools-header-top">
+        <h2 class="tools-title">CLI 工具</h2>
+        <div class="tools-header-actions">
+          <div class="tools-search">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8" />
+              <path d="m21 21-4.3-4.3" />
             </svg>
-            <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10" />
-              <line x1="15" y1="9" x2="9" y2="15" />
-              <line x1="9" y1="9" x2="15" y2="15" />
-            </svg>
+            <input v-model="searchQuery" type="search" placeholder="搜索工具..." />
           </div>
-          <div class="tool-info">
-            <div class="tool-name">
-              {{ tool.name }}
-              <span v-if="tool.custom" class="custom-tag">自定义</span>
-            </div>
-            <div class="tool-desc">{{ tool.description }}</div>
-          </div>
-          <span class="tool-badge" :class="tool.connected ? 'badge-on' : 'badge-off'">
-            {{ tool.connected ? '已连接' : '未连接' }}
-          </span>
-        </div>
-
-        <div class="tool-path">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-          </svg>
-          <span class="path-text">{{ tool.path || '未检测到路径' }}</span>
-          <span v-if="tool.source === 'manual'" class="source-tag">手动</span>
-        </div>
-
-        <!-- 路由配置摘要 -->
-        <div v-if="tool.routing_config && tool.connected" class="tool-routing">
-          <span class="routing-label">调用方式:</span>
-          <code class="routing-cmd">{{ buildCmdPreview(tool) }}</code>
-        </div>
-
-        <!-- 操作按钮 -->
-        <div class="tool-actions" :class="{ 'space-between': tool.custom }">
-          <template v-if="tool.custom">
-            <button type="button" class="btn-text danger" @click="deleteCustomCLI(tool.id)">删除</button>
-          </template>
-          <div>
-            <template v-if="tool.connected">
-              <button type="button" class="btn-text danger" @click="disconnect(tool.id)">断开</button>
-            </template>
-            <template v-else>
-              <button type="button" class="secondary-btn sm" @click="startConnect(tool)">手动连接</button>
-            </template>
-          </div>
+          <button type="button" class="btn-primary" @click="showAddDialog = true">+ 添加自定义 CLI</button>
         </div>
       </div>
-    </div>
+      <p class="tools-desc">
+        检测系统 PATH 中的 AI 编码代理 CLI，手动连接未自动找到的工具。
+      </p>
+    </header>
+
+    <div v-if="loading" class="tools-loading">检测中...</div>
+
+    <template v-else>
+      <section class="tools-section">
+        <div class="tools-list-panel">
+          <div v-for="tool in visibleBuiltin" :key="tool.id" class="agent-row">
+            <div class="agent-row-main">
+              <div class="agent-avatar" :class="{ dimmed: !tool.connected }">
+                <img v-if="hasPlatformLogo(tool.id)" :src="resolvePlatformLogo(tool.id)" :alt="tool.name" />
+                <span v-else>{{ tool.name.slice(0, 1) }}</span>
+              </div>
+              <div class="agent-meta">
+                <div class="agent-name-line">
+                  <span class="agent-name">{{ tool.name }}</span>
+                  <span v-if="tool.custom" class="custom-tag">自定义</span>
+                  <span class="status-tag" :class="tool.connected ? 'online' : 'missing'">
+                    {{ tool.connected ? '已连接' : '未连接' }}
+                  </span>
+                </div>
+                <div v-if="tool.path" class="agent-path" :title="tool.path">{{ tool.path }}</div>
+                <div v-if="tool.routing_config && tool.connected" class="agent-routing">
+                  <span class="routing-label">调用方式:</span>
+                  <code class="routing-cmd">{{ buildCmdPreview(tool) }}</code>
+                </div>
+              </div>
+            </div>
+            <div class="agent-row-actions">
+              <template v-if="tool.connected">
+                <button type="button" class="btn-outline" @click="disconnect(tool.id)">断开</button>
+              </template>
+              <template v-else-if="tool.connectable">
+                <button type="button" class="btn-outline" @click="startConnect(tool)">手动连接</button>
+              </template>
+            </div>
+          </div>
+          <div v-if="visibleBuiltin.length === 0" class="tools-empty">
+            {{ searchQuery.trim() ? '没有匹配的工具' : '暂无工具' }}
+          </div>
+        </div>
+      </section>
+
+      <section v-if="visibleCustom.length" class="tools-section">
+        <div class="tools-section-head">
+          <div class="tools-section-title">自定义 CLI</div>
+        </div>
+        <div class="tools-list-panel">
+          <div v-for="tool in visibleCustom" :key="tool.id" class="agent-row">
+            <div class="agent-row-main">
+              <div class="agent-avatar" :class="{ dimmed: !tool.connected }">
+                <img v-if="hasPlatformLogo(tool.id)" :src="resolvePlatformLogo(tool.id)" :alt="tool.name" />
+                <span v-else>{{ tool.name.slice(0, 1) }}</span>
+              </div>
+              <div class="agent-meta">
+                <div class="agent-name-line">
+                  <span class="agent-name">{{ tool.name }}</span>
+                  <span class="custom-tag">自定义</span>
+                  <span class="status-tag" :class="tool.connected ? 'online' : 'missing'">
+                    {{ tool.connected ? '已连接' : '未连接' }}
+                  </span>
+                </div>
+                <div class="agent-path" :title="buildCmdPreview(tool)">{{ buildCmdPreview(tool) }}</div>
+              </div>
+            </div>
+            <div class="agent-row-actions">
+              <button v-if="tool.connected" type="button" class="btn-outline" @click="disconnect(tool.id)">断开</button>
+              <button type="button" class="btn-outline danger" @click="deleteCustomCLI(tool.id)">删除</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </template>
 
     <!-- 手动连接对话框 -->
     <Teleport to="body">
@@ -95,7 +108,7 @@
           </div>
           <div class="dialog-actions">
             <button type="button" class="btn-text" @click="closeConnectDialog">取消</button>
-            <button type="button" class="primary-btn sm" :disabled="!connectDialog.path.trim()" @click="confirmConnect">确认连接</button>
+            <button type="button" class="btn-primary sm" :disabled="!connectDialog.path.trim()" @click="confirmConnect">确认连接</button>
           </div>
         </div>
       </div>
@@ -116,12 +129,12 @@
                 placeholder="例如 D:\vsCode\Microsoft VS Code\bin\code.CMD"
                 @keyup.enter="confirmAddCLI"
               />
-              <button type="button" class="secondary-btn sm" @click="browseAddCLI">选择文件</button>
+              <button type="button" class="btn-outline" @click="browseAddCLI">选择文件</button>
             </div>
           </div>
           <div class="dialog-actions">
             <button type="button" class="btn-text" @click="showAddDialog = false">取消</button>
-            <button type="button" class="primary-btn sm" :disabled="!addPath.trim()" @click="confirmAddCLI">添加</button>
+            <button type="button" class="btn-primary sm" :disabled="!addPath.trim()" @click="confirmAddCLI">添加</button>
           </div>
         </div>
       </div>
@@ -132,6 +145,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useModelStore } from '@/stores/model'
+import { resolvePlatformLogo, hasPlatformLogo } from '@/utils/platformLogo'
 
 const modelStore = useModelStore()
 function getBaseUrl(): string {
@@ -162,43 +176,7 @@ interface ToolInfo {
 const loading = ref(true)
 const tools = ref<ToolInfo[]>([])
 const showAddDialog = ref(false)
-
-/* 厂商配色 */
-const VENDOR_COLORS: Record<string, string> = {
-  anthropic:  '#d4a574',
-  openai:     '#10a37f',
-  opencode:   '#6366f1',
-  xiaomi:     '#ff6700',
-  bytedance:  '#3b82f6',
-  tencent:    '#07c160',
-  qoder:      '#8b5cf6',
-  google:     '#4285f4',
-  moonshot:   '#a855f7',
-  microsoft:  '#0078d4',
-  cursor:     '#f59e0b',
-}
-
-function vendorColor(vendor: string): string {
-  return VENDOR_COLORS[vendor] || '#6b7280'
-}
-function vendorBg(vendor: string): string {
-  const c = VENDOR_COLORS[vendor]
-  if (!c) return 'rgba(107,114,128,0.1)'
-  const r = parseInt(c.slice(1, 3), 16)
-  const g = parseInt(c.slice(3, 5), 16)
-  const b = parseInt(c.slice(5, 7), 16)
-  return `rgba(${r},${g},${b},0.12)`
-}
-
-function buildCmdPreview(tool: ToolInfo): string {
-  const rc = tool.routing_config
-  if (!rc) return tool.id
-  const parts = [tool.id]
-  if (rc.extra_args?.length) parts.push(...rc.extra_args)
-  if (rc.prompt_flag) parts.push(rc.prompt_flag)
-  parts.push('{prompt}')
-  return parts.join(' ')
-}
+const searchQuery = ref('')
 
 const connectDialog = reactive<{
   visible: boolean
@@ -213,6 +191,29 @@ const connectDialog = reactive<{
 })
 
 const addPath = ref('')
+
+const filteredTools = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return tools.value
+  return tools.value.filter((t) =>
+    t.name.toLowerCase().includes(q) ||
+    (t.description || '').toLowerCase().includes(q) ||
+    (t.id || '').toLowerCase().includes(q)
+  )
+})
+
+const visibleBuiltin = computed(() => filteredTools.value.filter((t) => !t.custom))
+const visibleCustom = computed(() => filteredTools.value.filter((t) => t.custom))
+
+function buildCmdPreview(tool: ToolInfo): string {
+  const rc = tool.routing_config
+  if (!rc) return tool.id
+  const parts = [tool.id]
+  if (rc.extra_args?.length) parts.push(...rc.extra_args)
+  if (rc.prompt_flag) parts.push(rc.prompt_flag)
+  parts.push('{prompt}')
+  return parts.join(' ')
+}
 
 async function browseAddCLI() {
   const electronAPI = (window as any).electronAPI
@@ -331,293 +332,99 @@ onMounted(fetchTools)
 </script>
 
 <style scoped>
-.header-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 20px;
-  gap: 16px;
+.tools-page { display: flex; flex-direction: column; gap: 16px; }
+.tools-header-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.tools-title { margin: 0; font-size: 22px; font-weight: 700; color: #111827; }
+.tools-header-actions { display: flex; align-items: center; gap: 8px; }
+.tools-search {
+  display: flex; align-items: center; gap: 6px; width: 200px; height: 32px;
+  padding: 0 10px; border: 1px solid #e5e7eb; border-radius: 8px; color: #9ca3af;
 }
-
-.tool-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  gap: 12px;
+.tools-search input { flex: 1; border: none; outline: none; font-size: 13px; color: #111827; background: transparent; }
+.tools-desc { margin: 8px 0 0; font-size: 13px; line-height: 1.5; color: #6b7280; }
+.tools-loading, .tools-empty { padding: 24px 12px; text-align: center; font-size: 12px; color: #9ca3af; }
+.tools-section { display: flex; flex-direction: column; gap: 8px; }
+.tools-section-title { font-size: 13px; font-weight: 500; color: #4b5563; }
+.tools-list-panel {
+  display: flex; flex-direction: column; gap: 8px; padding: 8px;
+  border: 1px solid #e5e7eb; border-radius: 12px; background: #f9fafb;
 }
-
-/* 卡片：白色背景，与 Clutch 一致 */
-.tool-card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  padding: 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  transition: border-color 0.15s, box-shadow 0.15s;
+.agent-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 14px; border-radius: 12px; border: 1px solid transparent; background: #fff;
 }
-.tool-card.connected {
-  border-color: #22c55e;
+.agent-row:hover { border-color: #e5e7eb; }
+.agent-row-main { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }
+.agent-avatar {
+  width: 32px; height: 32px; border-radius: 8px; overflow: hidden; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; background: #f3f4f6;
+  font-size: 13px; font-weight: 700; color: #6b7280;
 }
-.tool-card:hover {
-  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+.agent-avatar.dimmed { opacity: 0.5; }
+.agent-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.agent-meta { min-width: 0; flex: 1; }
+.agent-name-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.agent-name {
+  font-size: 14px; font-weight: 500; color: #111827;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-
-.tool-top {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.agent-path {
+  margin-top: 2px; font-size: 11px; color: #9ca3af;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-
-.tool-icon-wrap {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  transition: background 0.15s, color 0.15s;
+.agent-routing {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 4px; font-size: 11px;
 }
-
-.tool-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.tool-name {
-  font-size: 14px;
-  font-weight: 500;
-  color: #111827;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.custom-tag {
-  font-size: 10px;
-  font-weight: 500;
-  color: #8b5cf6;
-  background: #f5f3ff;
-  padding: 1px 6px;
-  border-radius: 4px;
-}
-
-.tool-desc {
-  font-size: 12px;
-  color: #6b7280;
-  margin-top: 1px;
-}
-
-/* 状态徽章 */
-.tool-badge {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  white-space: nowrap;
-  flex-shrink: 0;
-  font-weight: 500;
-}
-.badge-on {
-  background: #f0fdf4;
-  color: #16a34a;
-}
-.badge-off {
-  background: #f9fafb;
-  color: #9ca3af;
-}
-
-/* 路径栏 */
-.tool-path {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: #6b7280;
-  padding: 6px 8px;
-  background: #f9fafb;
-  border: 1px solid #f3f4f6;
-  border-radius: 6px;
-}
-.path-text {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.source-tag {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: #fef3c7;
-  color: #d97706;
-  font-weight: 500;
-}
-
-/* 路由预览 */
-.tool-routing {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  padding: 4px 8px;
-  background: #f9fafb;
-  border-radius: 6px;
-}
-.routing-label {
-  color: #6b7280;
-  white-space: nowrap;
-}
+.routing-label { color: #6b7280; white-space: nowrap; }
 .routing-cmd {
   font-family: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Consolas, monospace;
-  font-size: 11px;
-  color: #374151;
-  background: #f3f4f6;
-  padding: 2px 6px;
-  border-radius: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: #374151; background: #f3f4f6; padding: 1px 5px; border-radius: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-
-.tool-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding-top: 2px;
+.status-tag {
+  flex-shrink: 0; font-size: 11px; font-weight: 500; padding: 1px 8px;
+  border-radius: 999px; line-height: 18px;
 }
-.tool-actions.space-between {
-  justify-content: space-between;
+.status-tag.online { background: #f0fdf4; color: #16a34a; }
+.status-tag.missing { background: #fef2f2; color: #dc2626; }
+.status-tag.offline { background: #fff7ed; color: #ea580c; }
+.status-tag.unchecked { background: #f3f4f6; color: #6b7280; }
+.custom-tag {
+  font-size: 10px; font-weight: 500; color: #8b5cf6; background: #f5f3ff;
+  padding: 1px 6px; border-radius: 4px;
 }
-
-/* 按钮 */
-.secondary-btn.sm {
-  padding: 4px 12px;
-  font-size: 12px;
-  border: 1px solid #d1d5db;
-  background: #fff;
-  color: #374151;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.15s;
+.agent-row-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.btn-outline {
+  height: 30px; padding: 0 10px; border: 1px solid #e5e7eb; border-radius: 8px;
+  background: #fff; color: #111827; font-size: 12px; font-weight: 500; cursor: pointer;
 }
-.secondary-btn.sm:hover {
-  background: #f9fafb;
-  border-color: #9ca3af;
+.btn-outline:hover:not(:disabled) { background: #f9fafb; }
+.btn-outline:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-outline.danger { color: #dc2626; border-color: #fecaca; }
+.btn-primary {
+  height: 32px; padding: 0 14px; border: none; border-radius: 8px;
+  background: #374151; color: #fff; font-size: 13px; font-weight: 500; cursor: pointer;
 }
-
-.btn-text.danger {
-  color: #ef4444;
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 12px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  transition: background 0.15s;
-  font-weight: 500;
-}
-.btn-text.danger:hover {
-  background: #fef2f2;
-}
-
-.primary-btn.sm {
-  padding: 6px 16px;
-  font-size: 13px;
-  background: #4f46e5;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.15s;
-  font-weight: 500;
-}
-.primary-btn.sm:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.primary-btn.sm:not(:disabled):hover {
-  background: #4338ca;
-}
-
-.btn-text {
-  background: none;
-  border: none;
-  color: #6b7280;
-  cursor: pointer;
-  font-size: 13px;
-  padding: 6px 12px;
-  border-radius: 6px;
-  transition: background 0.15s, color 0.15s;
-}
-.btn-text:hover {
-  background: #f3f4f6;
-  color: #374151;
-}
-
-/* 对话框 */
+.btn-primary.sm { height: 30px; font-size: 12px; }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-text { border: none; background: none; color: #6b7280; cursor: pointer; font-size: 13px; padding: 6px 12px; }
 .dialog-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2000;
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+  display: flex; align-items: center; justify-content: center; z-index: 2000;
 }
 .dialog-box {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  padding: 24px;
-  width: 480px;
-  max-width: 90vw;
-  box-shadow: 0 4px 24px rgba(0,0,0,0.12);
+  background: #fff; border: 1px solid #e5e7eb; border-radius: 12px;
+  padding: 24px; width: 480px; max-width: 90vw;
 }
-.dialog-box.wide {
-  width: 600px;
-}
-.dialog-box h3 {
-  margin: 0 0 6px;
-  font-size: 16px;
-  color: #111827;
-}
-.dialog-desc {
-  font-size: 13px;
-  color: #6b7280;
-  margin: 0 0 16px;
-}
-.input-row {
-  margin-bottom: 16px;
-}
-.input-with-btn {
-  display: flex;
-  gap: 8px;
-}
-.input-with-btn .input-box {
-  flex: 1;
-}
+.dialog-box h3 { margin: 0 0 6px; font-size: 16px; }
+.dialog-desc { font-size: 13px; color: #6b7280; margin: 0 0 16px; }
+.input-row { margin-bottom: 16px; }
+.input-with-btn { display: flex; gap: 8px; }
+.input-with-btn .input-box { flex: 1; }
 .input-box {
-  width: 100%;
-  padding: 8px 12px;
-  font-size: 13px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  background: #fff;
-  color: #111827;
-  outline: none;
-  box-sizing: border-box;
+  width: 100%; padding: 8px 12px; font-size: 13px; border: 1px solid #d1d5db;
+  border-radius: 6px; box-sizing: border-box;
 }
-.input-box:focus {
-  border-color: #4f46e5;
-  box-shadow: 0 0 0 2px rgba(79,70,229,0.12);
-}
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-/* 添加自定义的对话框不需要额外样式了 */
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 </style>
