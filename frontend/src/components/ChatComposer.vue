@@ -169,7 +169,7 @@
             <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
           </svg>
         </button>
-        <div class="approval-picker">
+        <div v-if="showApprovalPicker" class="approval-picker">
           <button
             type="button"
             class="approval-trigger"
@@ -189,20 +189,27 @@
           >
             <div class="approval-menu-list">
               <button
-                v-for="opt in approvalOptions"
+                v-for="opt in activeApprovalOptions"
                 :key="opt.id"
                 type="button"
                 class="approval-menu-item"
-                :class="{ 'approval-menu-item--active': opt.id === selectedApproval }"
+                :class="{
+                  'approval-menu-item--active': opt.id === selectedApprovalId,
+                  'approval-menu-item--no-icon': !!externalAgentPlatform,
+                }"
                 @click="selectApproval(opt.id)"
               >
-                <span class="approval-menu-icon" v-html="approvalIcon(opt.icon)"></span>
+                <span
+                  v-if="!externalAgentPlatform"
+                  class="approval-menu-icon"
+                  v-html="approvalIcon(opt.icon || 'shield-alert')"
+                ></span>
                 <span class="approval-menu-text">
                   <span class="approval-menu-label">{{ opt.label }}</span>
-                  <span class="approval-menu-desc">{{ opt.description }}</span>
+                  <span v-if="opt.description" class="approval-menu-desc">{{ opt.description }}</span>
                 </span>
                 <svg
-                  v-if="opt.id === selectedApproval"
+                  v-if="opt.id === selectedApprovalId"
                   class="approval-menu-check"
                   width="14"
                   height="14"
@@ -299,44 +306,121 @@
     <!-- /composer 容器：边框仅包裹文本区与工具栏，底部标签栏脱离边框 -->
     <!-- 底部工具栏：仅在欢迎界面显示 -->
     <div v-if="!isBottom && showWorkDir" class="composer-bottom-bar">
-      <div class="bottom-bar-item workdir-picker-bottom">
+      <div ref="workDirTriggerRef" class="bottom-bar-item workdir-picker-bottom">
+        <!-- 已选项目：显示目录名 + 可清除 -->
+        <div v-if="customWorkspace" class="workspace-pill" :title="workDir">
+          <button
+            type="button"
+            class="workspace-pill-main"
+            @click="toggleWorkDirMenu"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+            <span class="workspace-pill-name">{{ workDirLabel || '项目' }}</span>
+            <svg class="workspace-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="m6 9 6 6 6-6"/>
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="workspace-pill-close"
+            title="不使用项目"
+            aria-label="不使用项目"
+            @click.stop="onClearWorkDir"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M18 6 6 18M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+        <!-- 普通对话：未绑定项目 -->
         <button
+          v-else
           type="button"
-          class="bottom-bar-btn"
-          :title="workDirLabel || '选择工作目录'"
-          @click="workDirMenuOpen = !workDirMenuOpen"
+          class="workspace-empty-btn"
+          @click="toggleWorkDirMenu"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
           </svg>
-          <span class="bottom-bar-label">{{ workDirLabel || '新建文件夹' }}</span>
+          <span>在项目中工作</span>
+          <svg class="workspace-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="m6 9 6 6 6-6"/>
+          </svg>
         </button>
-        <div v-if="workDirMenuOpen" class="workdir-menu" @click.stop>
-          <div class="workdir-menu-title">历史工作目录</div>
-          <ul v-if="(workDirHistory || []).length" class="workdir-menu-list">
+      </div>
+      <Teleport to="body">
+        <div
+          v-if="workDirMenuOpen"
+          ref="workDirMenuRef"
+          class="workdir-menu workdir-menu-portal"
+          :style="workDirMenuStyle"
+          @click.stop
+        >
+          <div class="workdir-menu-search-wrap">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/>
+              <path d="m21 21-4.3-4.3"/>
+            </svg>
+            <input
+              ref="workDirSearchRef"
+              v-model="workDirSearchQuery"
+              type="text"
+              class="workdir-menu-search"
+              placeholder="搜索项目…"
+              @keydown.escape="workDirMenuOpen = false"
+            />
+          </div>
+          <ul v-if="filteredProjectDirs.length" class="workdir-menu-list">
             <li
-              v-for="dir in (workDirHistory || [])"
-              :key="dir"
+              v-for="entry in filteredProjectDirs"
+              :key="entry.work_dir"
               class="workdir-menu-item"
-              :class="{ active: dir === workDir }"
-              @click="onApplyWorkDir(dir)"
+              :class="{ active: customWorkspace && entry.work_dir === workDir }"
+              @click="onApplyWorkDir(entry.work_dir)"
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
               </svg>
-              <span class="workdir-menu-path" :title="dir">{{ dir }}</span>
+              <span class="workdir-menu-name" :title="entry.work_dir">{{ entry.name }}</span>
+              <svg
+                v-if="customWorkspace && entry.work_dir === workDir"
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                class="workdir-menu-check"
+              >
+                <path d="M20 6 9 17l-5-5"/>
+              </svg>
             </li>
           </ul>
-          <div v-else class="workdir-menu-empty">暂无历史工作目录</div>
+          <div v-else class="workdir-menu-empty">暂无项目，可选择其他目录</div>
           <div class="workdir-menu-divider"></div>
-          <button type="button" class="workdir-menu-new" @click="$emit('pickWorkDir')">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <button type="button" class="workdir-menu-action workdir-menu-action-accent" @click="onPickOtherDir">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
               <path d="M12 5v14M5 12h14"/>
             </svg>
-            <span>新工作目录</span>
+            <span>选择其他目录</span>
+          </button>
+          <div class="workdir-menu-divider"></div>
+          <button
+            type="button"
+            class="workdir-menu-action workdir-menu-action-muted"
+            :class="{ 'is-disabled': !customWorkspace }"
+            @click="onClearWorkDir"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
+              <line x1="2" y1="2" x2="22" y2="22"/>
+            </svg>
+            <span>不使用项目</span>
           </button>
         </div>
-      </div>
+      </Teleport>
       <div class="bottom-bar-item branch-picker-bottom">
         <button
           type="button"
@@ -565,7 +649,9 @@ const props = defineProps<{
   showWorkDir?: boolean
   workDir?: string
   workDirLabel?: string
-  workDirHistory?: string[]
+  workDirHistory?: Array<{ work_dir: string; name: string }>
+  /** false = 普通对话（默认 ~/.Aries/work_dir）；true = 在项目中工作 */
+  customWorkspace?: boolean
   rows?: number
   isBottom?: boolean
   contextUsagePercent?: number
@@ -583,6 +669,11 @@ const props = defineProps<{
     }
   } | null
   sessionId?: string
+  /** 外部 ACP 平台模式下不写入 Aries modelStore */
+  externalAgentPlatform?: boolean
+  /** 外部 Agent 原生 mode 列表（对齐 AionUi configOptions.category=mode） */
+  modeOptions?: Array<{ id: string; label: string; description?: string }>
+  selectedMode?: string
 }>()
 
 const emit = defineEmits<{
@@ -592,11 +683,14 @@ const emit = defineEmits<{
   'update:commandObjective': [value: string]
   'update:pluginMenuOpen': [value: boolean]
   'update:selectedModel': [value: string]
+  'update:selectedMode': [value: string]
   send: []
   stop: []
   openImagePicker: []
   pickWorkDir: []
   applyWorkDir: [path: string]
+  clearWorkDir: []
+  refreshWorkDirs: []
   toggleSideChat: []
   compactStart: []
   compactDone: []
@@ -609,6 +703,7 @@ async function onSelectModel(id: string) {
   if (!id) return
   modelMenuOpen.value = false
   emit('update:selectedModel', id)
+  if (props.externalAgentPlatform) return
   if (modelStore.activeModel?.id === id) return
   try {
     await modelStore.setActiveModel(id)
@@ -624,16 +719,16 @@ const currentModelOption = computed(
 
 const composerRef = ref<InstanceType<typeof SlashComposerInput>>()
 const workDirMenuOpen = ref(false)
+const workDirSearchQuery = ref('')
+const workDirSearchRef = ref<HTMLInputElement | null>(null)
+const workDirTriggerRef = ref<HTMLElement | null>(null)
+const workDirMenuRef = ref<HTMLElement | null>(null)
+const workDirMenuStyle = ref<Record<string, string>>({})
 const roleModalVisible = ref(false)
 const reviewPanelOpen = ref(false)
 const workDirWarnVisible = ref(false)
 
 function handleSend() {
-  if (!props.workDir || !props.workDir.trim()) {
-    workDirWarnVisible.value = true
-    setTimeout(() => { workDirWarnVisible.value = false }, 3000)
-    return
-  }
   emit('send')
 }
 
@@ -933,15 +1028,71 @@ const approvalOptions: ApprovalOption[] = [
 ]
 const approvalMenuOpen = ref(false)
 const selectedApproval = ref<ApprovalOption['id']>('request')
-const currentApprovalOption = computed(
-  () => approvalOptions.find((o) => o.id === selectedApproval.value) || approvalOptions[0]
+
+const useAcpModes = computed(() => !!props.externalAgentPlatform)
+/** Aries 用本地批准模式；外部 Agent 始终显示（有 ACP mode 列表则用对方的） */
+const showApprovalPicker = computed(() => true)
+
+type UnifiedApprovalOption = {
+  id: string
+  label: string
+  description?: string
+  icon?: 'hand' | 'shield-alert' | 'unlock'
+}
+
+const ACP_MODE_FALLBACK: UnifiedApprovalOption[] = [
+  {
+    id: '__acp_auto__',
+    label: '自动批准',
+    description: '默认全开权限，不弹确认',
+    icon: 'unlock',
+  },
+  {
+    id: '__acp_ask__',
+    label: '每次询问',
+    description: '需要权限时弹出确认',
+    icon: 'hand',
+  },
+]
+
+const activeApprovalOptions = computed((): UnifiedApprovalOption[] => {
+  if (props.externalAgentPlatform) {
+    const modes = props.modeOptions || []
+    if (modes.length) {
+      return modes.map((m) => ({
+        id: m.id,
+        label: m.label || m.id,
+        description: m.description,
+        icon: 'shield-alert' as const,
+      }))
+    }
+    return ACP_MODE_FALLBACK
+  }
+  return approvalOptions
+})
+
+const selectedApprovalId = computed(() =>
+  props.externalAgentPlatform
+    ? props.selectedMode || activeApprovalOptions.value[0]?.id || ''
+    : selectedApproval.value,
 )
-function selectApproval(id: ApprovalOption['id']) {
-  const prev = selectedApproval.value
-  selectedApproval.value = id
+
+const currentApprovalOption = computed(
+  () =>
+    activeApprovalOptions.value.find((o) => o.id === selectedApprovalId.value) ||
+    activeApprovalOptions.value[0] ||
+    null,
+)
+
+function selectApproval(id: string) {
   approvalMenuOpen.value = false
-  setApprovalMode(id).catch((err) => {
-    // 失败回滚 UI，避免与后端不一致
+  if (props.externalAgentPlatform) {
+    emit('update:selectedMode', id)
+    return
+  }
+  const prev = selectedApproval.value
+  selectedApproval.value = id as ApprovalOption['id']
+  setApprovalMode(id as ApprovalMode).catch((err) => {
     console.error('设置批准模式失败', err)
     selectedApproval.value = prev
   })
@@ -1073,9 +1224,66 @@ async function loadSubagentItems() {
   }
 }
 
+function workDirBasename(dir: string): string {
+  const normalized = dir.replace(/\\/g, '/').replace(/\/$/, '')
+  const parts = normalized.split('/')
+  return parts[parts.length - 1] || normalized
+}
+
+const filteredProjectDirs = computed(() => {
+  const list = props.workDirHistory || []
+  const q = workDirSearchQuery.value.trim().toLowerCase()
+  if (!q) return list
+  return list.filter((entry) => {
+    const name = (entry.name || workDirBasename(entry.work_dir)).toLowerCase()
+    return name.includes(q) || entry.work_dir.toLowerCase().includes(q)
+  })
+})
+
+function updateWorkDirMenuPosition() {
+  const el = workDirTriggerRef.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  workDirMenuStyle.value = {
+    position: 'fixed',
+    left: `${Math.max(8, rect.left)}px`,
+    bottom: `${window.innerHeight - rect.top + 6}px`,
+    minWidth: '230px',
+    maxWidth: '320px',
+    zIndex: '10000',
+  }
+}
+
+function toggleWorkDirMenu() {
+  const next = !workDirMenuOpen.value
+  workDirMenuOpen.value = next
+  if (next) {
+    emit('refreshWorkDirs')
+    workDirSearchQuery.value = ''
+    nextTick(() => {
+      updateWorkDirMenuPosition()
+      workDirSearchRef.value?.focus()
+    })
+  }
+}
+
 function onApplyWorkDir(dir: string) {
   workDirMenuOpen.value = false
+  workDirSearchQuery.value = ''
   emit('applyWorkDir', dir)
+}
+
+function onPickOtherDir() {
+  workDirMenuOpen.value = false
+  workDirSearchQuery.value = ''
+  emit('pickWorkDir')
+}
+
+function onClearWorkDir() {
+  if (!props.customWorkspace) return
+  workDirMenuOpen.value = false
+  workDirSearchQuery.value = ''
+  emit('clearWorkDir')
 }
 
 const pluginSelectedIndex = ref(0)
@@ -1376,7 +1584,7 @@ function onSubagentClick(agent: PluginItem) {
 function closeMenus(e: MouseEvent) {
   const target = e.target as HTMLElement | null
   if (!target) return
-  if (!target.closest('.workdir-picker-bottom')) {
+  if (!target.closest('.workdir-picker-bottom') && !target.closest('.workdir-menu-portal')) {
     workDirMenuOpen.value = false
   }
   if (!target.closest('.branch-picker-bottom')) {
@@ -1411,9 +1619,16 @@ function onGlobalKeydown(e: KeyboardEvent) {
   }
 }
 
+let workDirRepositionHandler: (() => void) | null = null
+
 onMounted(() => {
   document.addEventListener('mousedown', closeMenus)
   document.addEventListener('keydown', onGlobalKeydown)
+  workDirRepositionHandler = () => {
+    if (workDirMenuOpen.value) updateWorkDirMenuPosition()
+  }
+  window.addEventListener('resize', workDirRepositionHandler)
+  window.addEventListener('scroll', workDirRepositionHandler, true)
   // 首次加载技能列表和子Agent列表
   loadSkillItems()
   loadSubagentItems()
@@ -1436,6 +1651,11 @@ watch(pluginMenuOpenProxy, (open) => {
 onUnmounted(() => {
   document.removeEventListener('mousedown', closeMenus)
   document.removeEventListener('keydown', onGlobalKeydown)
+  if (workDirRepositionHandler) {
+    window.removeEventListener('resize', workDirRepositionHandler)
+    window.removeEventListener('scroll', workDirRepositionHandler, true)
+    workDirRepositionHandler = null
+  }
 })
 
 function openFilePicker() {
@@ -1983,6 +2203,8 @@ defineExpose({
   position: relative;
   display: flex;
   align-items: center;
+  flex-shrink: 0;
+  overflow: visible;
 }
 
 .approval-trigger {
@@ -2016,6 +2238,9 @@ defineExpose({
 
 .approval-trigger-label {
   font-weight: 500;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -2028,11 +2253,15 @@ defineExpose({
   position: absolute;
   left: 0;
   bottom: calc(100% + 8px);
-  width: 380px;
+  width: min(420px, calc(100vw - 32px));
+  min-width: 280px;
+  max-height: min(420px, 60vh);
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 6px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
   backdrop-filter: blur(16px) saturate(1.2);
   -webkit-backdrop-filter: blur(16px) saturate(1.2);
@@ -2071,9 +2300,11 @@ defineExpose({
 
 .approval-menu-item {
   display: grid;
-  grid-template-columns: 24px 1fr auto;
-  align-items: center;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: start;
   gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
   padding: 8px 10px;
   border: none;
   background: transparent;
@@ -2082,6 +2313,10 @@ defineExpose({
   text-align: left;
   color: var(--text);
   transition: background 0.12s;
+}
+
+.approval-menu-item--no-icon {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .approval-menu-item:hover,
@@ -2103,26 +2338,36 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
   overflow: hidden;
 }
 
 .approval-menu-label {
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--text);
-  line-height: 1.2;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .approval-menu-desc {
   font-size: 12px;
   color: var(--text-secondary);
-  line-height: 1.35;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
   white-space: normal;
 }
 
 .approval-menu-check {
   color: var(--text-secondary);
   flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .send-btn--streaming {
@@ -2161,36 +2406,112 @@ defineExpose({
 }
 
 .workdir-menu {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + 6px);
-  min-width: 280px;
-  max-width: 420px;
-  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  background: var(--bg-panel, #faf9f7);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 12px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
-  padding: 6px;
-  z-index: 200;
+  padding: 8px;
   overflow: visible;
-  backdrop-filter: blur(16px) saturate(1.2);
-  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  /* Teleport 到 body 时由 inline style 设置 fixed 定位 */
 }
 
-.workdir-menu-title {
-  font-size: 11px;
-  font-weight: 600;
+.workdir-menu-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text-muted) 8%, transparent);
+}
+
+.workdir-menu-search-wrap svg {
+  flex-shrink: 0;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 6px 10px 4px;
+}
+
+.workdir-menu-search {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text);
+  outline: none;
+}
+
+.workdir-menu-search::placeholder {
+  color: var(--text-muted);
+}
+
+.workspace-empty-btn,
+.workspace-pill-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s, color 0.12s;
+  line-height: 1;
+}
+
+.workspace-empty-btn:hover,
+.workspace-pill-main:hover {
+  color: var(--text);
+  background: var(--accent-hover);
+}
+
+.workspace-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: 220px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.workspace-pill-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
+
+.workspace-pill-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 2px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 4px;
+  color: var(--text-muted);
+}
+
+.workspace-pill-close:hover {
+  background: var(--accent-hover);
+  color: var(--text);
+}
+
+.workspace-chevron {
+  flex-shrink: 0;
+  transform: translateY(1px);
 }
 
 .workdir-menu-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: 200px;
+  max-height: 180px;
   overflow-y: auto;
 }
 
@@ -2201,7 +2522,7 @@ defineExpose({
   padding: 7px 10px;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   transition: background 0.12s, color 0.12s;
 }
@@ -2221,24 +2542,68 @@ defineExpose({
   color: var(--text-muted);
 }
 
-.workdir-menu-path {
+.workdir-menu-name {
   flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family: ui-monospace, monospace;
+}
+
+.workdir-menu-check {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .workdir-menu-empty {
   font-size: 12px;
   color: var(--text-muted);
-  padding: 8px 10px 10px;
+  padding: 8px 10px 4px;
 }
 
 .workdir-menu-divider {
   height: 1px;
   background: var(--border);
-  margin: 4px 4px;
+  margin: 6px 4px;
+}
+
+.workdir-menu-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+  font-family: inherit;
+  transition: background 0.12s;
+}
+
+.workdir-menu-action-accent {
+  color: var(--text-secondary);
+}
+
+.workdir-menu-action-accent:hover {
+  background: var(--accent-hover);
+  color: var(--text);
+}
+
+.workdir-menu-action-muted {
+  color: var(--text-muted);
+}
+
+.workdir-menu-action-muted:hover:not(.is-disabled) {
+  background: var(--accent-hover);
+  color: var(--text-secondary);
+}
+
+.workdir-menu-action-muted.is-disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .workdir-menu-new {

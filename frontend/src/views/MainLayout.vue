@@ -42,39 +42,78 @@
         </button>
       </div>
 
-      <div class="sidebar-section projects-section">
-        <div class="section-label">项目</div>
-        <div v-if="projects.length === 0" class="project-empty">暂无项目</div>
-        <div v-else class="projects-scroll">
+      <div class="sidebar-section history-section">
+        <div class="history-scroll">
+          <div class="section-label sider-section-label team-section-label">
+            <span class="sider-section-title">团队</span>
+            <button type="button" class="team-add-btn" title="新建团队" data-testid="team-create-btn" @click.stop="openTeamCreate">+</button>
+          </div>
+          <div v-if="teams.length === 0" class="history-empty">暂无团队</div>
+          <div v-else class="history-session-group history-session-group--flat">
+            <div
+              v-for="t in teams"
+              :key="t.id"
+              class="history-session-row group"
+              :class="{ active: currentPage === 'team' && currentTeamId === t.id }"
+              :title="t.name"
+              @click="openTeam(t.id)"
+            >
+              <span class="history-session-leading">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                  <circle cx="9" cy="7" r="4"/>
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                </svg>
+              </span>
+              <span class="history-session-title">{{ t.name }}</span>
+              <button
+                type="button"
+                class="history-session-more"
+                aria-label="删除团队"
+                title="删除团队"
+                @click.stop="onDeleteTeam(t.id, t.name)"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="section-label sider-section-label">
+            <span class="sider-section-title">项目</span>
+          </div>
+          <div v-if="projects.length === 0" class="history-empty">暂无项目</div>
           <div
             v-for="project in projects"
             :key="project.work_dir"
-            class="project-item"
-            :class="{ active: currentProject?.work_dir === project.work_dir }"
+            class="history-project"
           >
             <button
               type="button"
-              class="project-row"
+              class="history-folder-row group"
+              :class="{ 'is-expanded': isExpanded(project.work_dir) }"
               @click="selectProject(project)"
               @contextmenu.prevent="onProjectContextMenu($event, project)"
             >
-              <span class="project-expand">
+              <span class="history-folder-expand">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ rotated: isExpanded(project.work_dir) }">
                   <path d="m9 18 6-6-6-6"/>
                 </svg>
               </span>
-              <span class="project-icon">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              <span class="history-folder-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
                 </svg>
               </span>
-              <span class="project-name" :title="project.name">{{ project.name }}</span>
+              <span class="history-folder-name" :title="project.name">{{ project.name }}</span>
             </button>
-            <ul v-if="project.sessions?.length && isExpanded(project.work_dir)" class="session-list project-sessions">
-              <li
+            <div v-if="project.sessions?.length && isExpanded(project.work_dir)" class="history-session-group">
+              <div
                 v-for="session in project.sessions"
                 :key="session.session_id"
-                class="session-item session-sub"
+                class="history-session-row group"
                 :class="{
                   active: currentSessionId === session.session_id,
                   working: workingSessionIds.has(session.session_id),
@@ -83,10 +122,72 @@
                 @click="selectSession(session.session_id)"
                 @contextmenu.prevent="onSessionContextMenu($event, session)"
               >
+                <span class="history-session-leading">
+                  <SessionLoadingDots v-if="workingSessionIds.has(session.session_id)" />
+                  <img
+                    v-else
+                    class="history-session-logo"
+                    :src="sessionPlatformLogo(session)"
+                    :alt="sessionPlatform(session)"
+                  />
+                </span>
+                <span class="history-session-title">{{ session.title || '空对话' }}</span>
+                <button
+                  type="button"
+                  class="history-session-more"
+                  aria-label="更多"
+                  @click.stop="openSessionMenu($event, session)"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="5" cy="12" r="1.5"/>
+                    <circle cx="12" cy="12" r="1.5"/>
+                    <circle cx="19" cy="12" r="1.5"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="section-label sider-section-label conversations-label">
+            <span class="sider-section-title">对话</span>
+          </div>
+          <div v-if="conversations.length === 0" class="history-empty">暂无对话</div>
+          <div v-else class="history-session-group history-session-group--flat">
+            <div
+              v-for="session in conversations"
+              :key="session.session_id"
+              class="history-session-row group"
+              :class="{
+                active: currentSessionId === session.session_id,
+                working: workingSessionIds.has(session.session_id),
+              }"
+              :title="session.title"
+              @click="selectSession(session.session_id)"
+              @contextmenu.prevent="onSessionContextMenu($event, session)"
+            >
+              <span class="history-session-leading">
                 <SessionLoadingDots v-if="workingSessionIds.has(session.session_id)" />
-                <span class="session-title">{{ session.title || '空对话' }}</span>
-              </li>
-            </ul>
+                <img
+                  v-else
+                  class="history-session-logo"
+                  :src="sessionPlatformLogo(session)"
+                  :alt="sessionPlatform(session)"
+                />
+              </span>
+              <span class="history-session-title">{{ session.title || '空对话' }}</span>
+              <button
+                type="button"
+                class="history-session-more"
+                aria-label="更多"
+                @click.stop="openSessionMenu($event, session)"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="5" cy="12" r="1.5"/>
+                  <circle cx="12" cy="12" r="1.5"/>
+                  <circle cx="19" cy="12" r="1.5"/>
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -120,19 +221,22 @@
     <!-- 主工作区 -->
     <main class="workspace">
       <div class="workspace-panel">
-        <!-- 对话页面 -->
-        <ChatPage
-          v-if="currentPage === 'chat'"
-          :session-id-to-load="sessionIdToLoad"
-          @session-loaded="sessionIdToLoad = null"
-        />
-
-        <!-- 技能页面 -->
-        <SkillsPage v-else-if="currentPage === 'skills'" />
-
-        <!-- 定时任务页面 -->
-        <AutomationPage v-else-if="currentPage === 'scheduled-tasks'" />
-
+        <!-- keep-alive：切走对话/团队页时不卸载，后台 SSE 可继续 -->
+        <KeepAlive>
+          <ChatPage
+            v-if="currentPage === 'chat'"
+            :key="'chat'"
+            :session-id-to-load="sessionIdToLoad"
+            @session-loaded="sessionIdToLoad = null"
+          />
+          <TeamPage
+            v-else-if="currentPage === 'team' && currentTeamId"
+            :key="'team-' + currentTeamId"
+            :team-id="currentTeamId"
+          />
+          <SkillsPage v-else-if="currentPage === 'skills'" :key="'skills'" />
+          <AutomationPage v-else-if="currentPage === 'scheduled-tasks'" :key="'scheduled-tasks'" />
+        </KeepAlive>
 
       </div>
     </main>
@@ -142,6 +246,12 @@
       :visible="showSettings"
       :initial-tab="settingsInitialTab"
       @close="showSettings = false"
+    />
+
+    <TeamCreateModal
+      :visible="showTeamCreate"
+      @close="showTeamCreate = false"
+      @created="onTeamCreated"
     />
 
     <!-- 搜索弹窗 -->
@@ -253,20 +363,25 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, computed, KeepAlive } from 'vue'
 import ChatPage from './chatPage.vue'
 import SkillsPage from './SkillsPage.vue'
 import AutomationPage from './AutomationPage.vue'
+import TeamPage from './TeamPage.vue'
+import TeamCreateModal from '@/components/TeamCreateModal.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import { useUpdateStore } from '@/stores/update'
 import SearchDialog from '@/components/SearchDialog.vue'
 import SessionLoadingDots from '@/components/SessionLoadingDots.vue'
 import { listProjects, updateSessionMeta, deleteSession } from '@/api/sessions'
 import { deleteWorkDirCascade } from '@/api/work_dirs'
+import { listTeams, deleteTeam, type Team } from '@/api/teams'
 import { workingSessionIds } from '@/utils/sessionWorkStore'
 import { useModelStore } from '@/stores/model'
 import { useSidebar } from '@/composables/useSidebar'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { defaultWorkDir } from '@/utils/paths'
+import { resolvePlatformLogo, normalizeSessionPlatform } from '@/utils/platformLogo'
 
 const modelStore = useModelStore()
 const {
@@ -316,6 +431,7 @@ const workspaceStore = useWorkspaceStore()
 interface ProjectSession {
   session_id: string
   title: string
+  platform?: string
   created_at: string
   updated_at: string
 }
@@ -329,16 +445,21 @@ interface Project {
   sessions: ProjectSession[]
 }
 
-const currentPage = ref<'chat' | 'skills' | 'scheduled-tasks'>('chat')
+const currentPage = ref<'chat' | 'skills' | 'scheduled-tasks' | 'team'>('chat')
 const showSettings = ref(false)
 const settingsInitialTab = ref<'models' | 'accounts' | 'paths' | 'pets' | 'network' | 'dev-env' | 'subagents' | 'updates' | undefined>(undefined)
 const updateStore = useUpdateStore()
 const hasUpdate = computed(() => updateStore.result?.update_available === true)
 const showSearch = ref(false)
+const showTeamCreate = ref(false)
+const teams = ref<Team[]>([])
+const currentTeamId = ref<string | null>(null)
 
 const currentSessionId = ref<string | null>(null)
 const sessionIdToLoad = ref<string | null>(null)
 const projects = ref<Project[]>([])
+/** 默认 ~/.Aries/work_dir 下的会话（普通对话，不按项目分组） */
+const conversations = ref<ProjectSession[]>([])
 const currentProject = ref<Project | null>(null)
 const expandedProjects = ref<Set<string>>(new Set())
 
@@ -373,12 +494,23 @@ const projectContextMenu = ref<{
 }>({ open: false, x: 0, y: 0, project: null })
 
 function onSessionContextMenu(e: MouseEvent, session: ProjectSession) {
-  // 简单边界处理：菜单宽 ~140，高 ~80，避免溢出窗口
+  openSessionMenu(e, session)
+}
+
+function openSessionMenu(e: MouseEvent, session: ProjectSession) {
   const menuWidth = 150
   const menuHeight = 84
   const x = Math.min(e.clientX, window.innerWidth - menuWidth - 4)
   const y = Math.min(e.clientY, window.innerHeight - menuHeight - 4)
   sessionContextMenu.value = { open: true, x, y, session }
+}
+
+function sessionPlatform(session: ProjectSession): string {
+  return normalizeSessionPlatform(session.platform)
+}
+
+function sessionPlatformLogo(session: ProjectSession): string {
+  return resolvePlatformLogo(session.platform)
 }
 
 function closeSessionContextMenu() {
@@ -440,6 +572,7 @@ async function loadProjects(retries = 5, delay = 1500) {
     try {
       const data = await listProjects()
       projects.value = (data.projects || []) as Project[]
+      conversations.value = (data.conversations || []) as ProjectSession[]
       return
     } catch (e) {
       if (i < retries - 1) {
@@ -448,21 +581,64 @@ async function loadProjects(retries = 5, delay = 1500) {
       } else {
         console.error('加载项目失败（已重试耗尽）', e)
         projects.value = []
+        conversations.value = []
       }
     }
   }
 }
 
+async function loadTeams() {
+  try {
+    teams.value = await listTeams()
+  } catch (e) {
+    console.warn('加载团队列表失败', e)
+    teams.value = []
+  }
+}
+
+function openTeam(teamId: string) {
+  currentTeamId.value = teamId
+  currentPage.value = 'team'
+  currentSessionId.value = null
+  sessionIdToLoad.value = null
+}
+
+function openTeamCreate() {
+  showTeamCreate.value = true
+}
+
+function onTeamCreated(team: Team) {
+  showTeamCreate.value = false
+  void loadTeams().then(() => openTeam(team.id))
+}
+
+async function onDeleteTeam(teamId: string, teamName: string) {
+  if (!confirm(`确定删除团队「${teamName}」？`)) return
+  try {
+    await deleteTeam(teamId)
+    if (currentTeamId.value === teamId) {
+      currentTeamId.value = null
+      currentPage.value = 'chat'
+    }
+    await loadTeams()
+  } catch (e: any) {
+    alert(e?.message || '删除团队失败')
+  }
+}
+
+function findSessionById(sessionId: string): ProjectSession | undefined {
+  for (const project of projects.value) {
+    const session = project.sessions?.find((s) => s.session_id === sessionId)
+    if (session) return session
+  }
+  return conversations.value.find((s) => s.session_id === sessionId)
+}
+
 function onRenameSession(e: Event) {
   const sessionId = (e as CustomEvent).detail?.sessionId as string | undefined
   if (!sessionId) return
-  for (const project of projects.value) {
-    const session = project.sessions?.find((s) => s.session_id === sessionId)
-    if (session) {
-      renameSession(session)
-      return
-    }
-  }
+  const session = findSessionById(sessionId)
+  if (session) renameSession(session)
 }
 
 function onRefreshProjects() {
@@ -477,7 +653,7 @@ function onGlobalCloseCtxMenu(e: MouseEvent | KeyboardEvent) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadProjects(), modelStore.loadModels()])
+  await Promise.all([loadProjects(), loadTeams(), modelStore.loadModels()])
   // 启动时静默检查更新
   updateStore.check().catch(() => {})
   window.addEventListener('aries:refresh-sessions', onRefreshProjects)
@@ -490,8 +666,8 @@ onMounted(async () => {
   window.addEventListener('contextmenu', (e) => {
     // 在非会话项/非项目行上右键也要关掉旧菜单（对应项的右键会重新打开）
     const target = e.target as HTMLElement | null
-    if (!target?.closest('.session-sub')) closeSessionContextMenu()
-    if (!target?.closest('.project-row')) closeProjectContextMenu()
+    if (!target?.closest('.history-session-row')) closeSessionContextMenu()
+    if (!target?.closest('.history-folder-row')) closeProjectContextMenu()
   })
 })
 
@@ -507,10 +683,13 @@ onUnmounted(() => {
 
 function createNewChat() {
   currentPage.value = 'chat'
+  currentTeamId.value = null
   currentSessionId.value = null
   currentProject.value = null
+  // 顶栏「新对话」走默认目录 → 侧边栏「对话」；项目内新建用 createNewChatInProject
+  const wd = defaultWorkDir.value || workspaceStore.workDir
   window.dispatchEvent(new CustomEvent('aries:new-chat', {
-    detail: { workDir: workspaceStore.workDir }
+    detail: { workDir: wd }
   }))
 }
 
@@ -558,6 +737,7 @@ async function openProjectDir(project: Project) {
 
 async function selectSession(id: string) {
   currentSessionId.value = id
+  currentTeamId.value = null
   // 强制触发 ChatPage watch（避免 sessionIdToLoad 未变化时不重新加载）
   sessionIdToLoad.value = null
   await nextTick()
@@ -567,6 +747,7 @@ async function selectSession(id: string) {
     currentProject.value = null
   } else {
     const proj = projects.value.find(p => p.sessions.some(s => s.session_id === id))
+    // 普通对话不归属任何项目
     currentProject.value = proj || null
   }
   // 通知 Todo 等组件；ChatPage 通过 sessionIdToLoad prop 加载，避免重复请求
@@ -840,14 +1021,14 @@ function cancelDeleteProject() {
   margin-top: 8px;
 }
 
-.projects-section {
+.history-section {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
 }
 
-.projects-scroll {
+.history-scroll {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
@@ -855,14 +1036,204 @@ function cancelDeleteProject() {
 }
 
 .section-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 4px 10px 6px;
+  padding: 0;
 }
 
+.sider-section-label {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px;
+  margin-top: 8px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-sidebar, var(--bg-panel));
+}
+
+.sider-section-title {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--text-muted);
+}
+
+.team-section-label {
+  justify-content: space-between;
+}
+
+.team-add-btn {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.team-add-btn:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.06));
+  color: var(--text-primary, #222);
+}
+
+.conversations-label {
+  margin-top: 4px;
+}
+
+.history-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 12px 8px;
+}
+
+.history-project {
+  min-width: 0;
+}
+
+.history-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, color 0.15s;
+}
+
+.history-folder-row:hover {
+  background: var(--accent-hover);
+}
+
+.history-folder-expand {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.history-folder-expand svg.rotated {
+  transform: rotate(90deg);
+}
+
+.history-folder-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  color: var(--text-secondary);
+}
+
+.history-folder-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-session-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  margin-top: 1px;
+}
+
+.history-session-group--flat {
+  padding: 0 0 8px;
+}
+
+.history-session-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 16px 0 34px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.15s;
+}
+
+.history-session-group--flat .history-session-row {
+  padding-left: 10px;
+}
+
+.history-session-row:hover {
+  background: var(--accent-hover);
+}
+
+.history-session-row.active {
+  background: var(--accent-active);
+}
+
+.history-session-leading {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.history-session-logo {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.history-session-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 24px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-session-more {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 4px;
+  background: var(--bg-panel, #fff);
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.history-session-row:hover .history-session-more,
+.history-session-row.active .history-session-more {
+  display: inline-flex;
+}
+
+.history-session-more:hover {
+  color: var(--text);
+  background: var(--accent-hover);
+}
+
+/* legacy aliases kept for any stray references */
 .project-empty {
   font-size: 12px;
   color: var(--text-muted);
