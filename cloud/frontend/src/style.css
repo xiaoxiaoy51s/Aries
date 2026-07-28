@@ -1,0 +1,375 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Element Plus dark mode */
+@import 'element-plus/theme-chalk/dark/css-vars.css';
+
+/* ============================================================
+   TraeWork Design System — Tokens (Light mode only)
+   Source: TRAE Work Design Library
+   ============================================================ */
+:root {
+  /* radius */
+  --radius-0: 0px;
+  --radius-2: 2px;
+  --radius-4: 4px;
+  --radius-6: 6px;
+  --radius-8: 8px;
+  --radius-10: 10px;
+  --radius-12: 12px;
+  --radius-16: 16px;
+  --radius-20: 20px;
+  --radius-24: 24px;
+  --radius-32: 32px;
+  --radius-full: 999px;
+  --radius-xs: var(--radius-2);
+  --radius-sm: var(--radius-4);
+  --radius-md: var(--radius-6);
+  --radius-lg: var(--radius-8);
+  --radius-xl: var(--radius-10);
+  --border-width-default: 1px;
+
+  /* spacers */
+  --spacer-0: 0px;
+  --spacer-2: 2px;
+  --spacer-3: 3px;
+  --spacer-4: 4px;
+  --spacer-6: 6px;
+  --spacer-8: 8px;
+  --spacer-10: 10px;
+  --spacer-12: 12px;
+  --spacer-16: 16px;
+  --spacer-20: 20px;
+  --spacer-24: 24px;
+  --spacer-32: 32px;
+  --spacer-36: 36px;
+  --spacer-40: 40px;
+  --spacer-48: 48px;
+  --spacer-64: 64px;
+
+  /* icon sizes */
+  --icon-size-12: 12px;
+  --icon-size-14: 14px;
+  --icon-size-16: 16px;
+  --icon-size-20: 20px;
+  --icon-size-24: 24px;
+
+  /* font */
+  --font-family-default: "SF Pro Text", "PingFang SC", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-family-heading: "SF Pro", "PingFang SC", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-family-metric: "Inter", "SF Pro Text", "PingFang SC", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-family-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-weight-default: 400;
+  --font-weight-medium: 500;
+  --font-weight-strong: 600;
+
+  /* body */
+  --body-base-font-size: 14px;
+  --body-base-line-height: 20px;
+  --body-base-letter-spacing: -0.02em;
+
+  /* bg */
+  --bg-base-default: #FFFFFF;
+  --bg-base-secondary: #F5F5F5;
+  --bg-base-tertiary: #E5E5E5;
+  --bg-overlay-l1: rgba(115, 115, 115, 0.08);
+  --bg-overlay-l2: rgba(115, 115, 115, 0.12);
+  --bg-overlay-l3: rgba(115, 115, 115, 0.16);
+  --bg-overlay-l4: rgba(115, 115, 115, 0.20);
+  --bg-menu: #FFFFFF;
+
+  /* bg-brand */
+  --bg-brand: #4B3FE3;
+  --bg-brand-hover: #6A6FFF;
+  --bg-brand-active: #3F31C6;
+  --bg-brand-disabled: rgba(75, 63, 227, 0.22);
+
+  /* text */
+  --text-default: #171717;
+  --text-secondary: #404040;
+  --text-tertiary: #737373;
+  --text-disabled: #A1A1A1;
+  --text-onbrand: #FFFFFF;
+  --text-brand: #4B3FE3;
+  --text-brand-hover: #6A6FFF;
+
+  /* icon */
+  --icon-default: #262626;
+  --icon-secondary: #404040;
+  --icon-tertiary: #737373;
+  --icon-brand: #4B3FE3;
+
+  /* border */
+  --border-neutral-l1: rgba(115, 115, 115, 0.12);
+  --border-neutral-l2: rgba(115, 115, 115, 0.18);
+  --border-neutral-l3: rgba(115, 115, 115, 0.36);
+  --border-brand: #4B3FE3;
+
+  /* status */
+  --status-error-default: #E8463A;
+  --status-error-surface-l1: rgba(232, 70, 58, 0.12);
+  --status-success-default: #15A877;
+  --status-success-surface-l1: rgba(64, 176, 139, 0.12);
+
+  /* Sidebar (Doubao glass-gray) */
+  --sidebar-bg: #eff1f4;
+  --sidebar-foreground: #0e1115;
+  --sidebar-border: #e7eaef;
+  --sidebar-primary: #0065fd;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #d4daff;
+  --sidebar-accent-foreground: #00266b;
+  --sidebar-overlay-l1: rgba(14, 17, 21, 0.04);
+  --sidebar-overlay-l2: rgba(14, 17, 21, 0.08);
+  --sidebar-overlay-l3: rgba(14, 17, 21, 0.12);
+}
+
+/* ============================================================
+   Dark Theme
+   ============================================================ */
+[data-theme="dark"] {
+  --bg-base-default: #1A1A1A;
+  --bg-base-secondary: #0A0A0A;
+  --bg-base-tertiary: #262626;
+  --bg-overlay-l1: rgba(255, 255, 255, 0.08);
+  --bg-overlay-l2: rgba(255, 255, 255, 0.12);
+  --bg-overlay-l3: rgba(255, 255, 255, 0.16);
+  --bg-overlay-l4: rgba(255, 255, 255, 0.20);
+  --bg-menu: #262626;
+
+  --text-default: #F5F5F5;
+  --text-secondary: #D4D4D4;
+  --text-tertiary: #A3A3A3;
+  --text-disabled: #525252;
+  --text-onbrand: #FFFFFF;
+
+  --icon-default: #E5E5E5;
+  --icon-secondary: #D4D4D4;
+  --icon-tertiary: #A3A3A3;
+
+  --border-neutral-l1: rgba(255, 255, 255, 0.12);
+  --border-neutral-l2: rgba(255, 255, 255, 0.18);
+  --border-neutral-l3: rgba(255, 255, 255, 0.36);
+
+  --status-error-surface-l1: rgba(232, 70, 58, 0.16);
+  --status-success-surface-l1: rgba(64, 176, 139, 0.16);
+
+  /* Sidebar (Doubao glass-gray — dark variant) */
+  --sidebar-bg: #161a20;
+  --sidebar-foreground: #eff1f4;
+  --sidebar-border: #22252a;
+  --sidebar-primary: #0065fd;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1e40af;
+  --sidebar-accent-foreground: #bfdbfe;
+  --sidebar-overlay-l1: rgba(239, 241, 244, 0.04);
+  --sidebar-overlay-l2: rgba(239, 241, 244, 0.08);
+  --sidebar-overlay-l3: rgba(239, 241, 244, 0.12);
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+html, body, #app {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-family-default);
+  font-size: var(--body-base-font-size);
+  line-height: var(--body-base-line-height);
+  letter-spacing: var(--body-base-letter-spacing);
+  color: var(--text-default);
+  background-color: var(--bg-base-default);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================================
+   TraeWork Components — stable .ds-* atoms
+   ============================================================ */
+
+/* ---- Card / Panel ---- */
+.ds-card {
+  background-color: var(--bg-base-default);
+  border: 1px solid var(--border-neutral-l1);
+  border-radius: var(--radius-12);
+}
+
+/* ---- Button ---- */
+.ds-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacer-6);
+  font-family: var(--font-family-default);
+  font-size: var(--body-base-font-size);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--body-base-line-height);
+  padding: 10px var(--spacer-16);
+  border-radius: var(--radius-8);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, opacity 120ms ease;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* Primary (brand) — single brand CTA per view */
+.ds-btn-primary {
+  background-color: var(--bg-brand);
+  color: var(--text-onbrand);
+}
+.ds-btn-primary:hover:not(:disabled) {
+  background-color: var(--bg-brand-hover);
+}
+.ds-btn-primary:active:not(:disabled) {
+  background-color: var(--bg-brand-active);
+}
+
+/* Secondary (neutral) */
+.ds-btn-secondary {
+  background-color: var(--bg-base-default);
+  color: var(--text-default);
+  border-color: var(--border-neutral-l2);
+}
+.ds-btn-secondary:hover:not(:disabled) {
+  background-color: var(--bg-overlay-l1);
+}
+.ds-btn-secondary:active:not(:disabled) {
+  background-color: var(--bg-overlay-l2);
+}
+
+/* Soft (brand-tinted) */
+.ds-btn-soft {
+  background-color: var(--bg-overlay-l1);
+  color: var(--text-brand);
+}
+.ds-btn-soft:hover:not(:disabled) {
+  background-color: var(--bg-overlay-l2);
+}
+.ds-btn-soft:active:not(:disabled) {
+  background-color: var(--bg-overlay-l3);
+}
+
+.ds-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Block button */
+.ds-btn-block {
+  width: 100%;
+}
+
+/* ---- Input ---- */
+.ds-input {
+  width: 100%;
+  font-family: var(--font-family-default);
+  font-size: var(--body-base-font-size);
+  line-height: var(--body-base-line-height);
+  color: var(--text-default);
+  background-color: var(--bg-base-default);
+  border: 1px solid var(--border-neutral-l2);
+  border-radius: var(--radius-8);
+  padding: 10px var(--spacer-12);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+  outline: none;
+}
+.ds-input::placeholder {
+  color: var(--text-tertiary);
+}
+.ds-input:hover:not(:focus):not(:disabled) {
+  border-color: var(--border-neutral-l3);
+}
+.ds-input:focus {
+  border-color: var(--border-brand);
+  box-shadow: 0 0 0 3px rgba(75, 63, 227, 0.12);
+}
+.ds-input:disabled {
+  background-color: var(--bg-base-secondary);
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+/* ---- Label ---- */
+.ds-label {
+  display: block;
+  font-size: var(--body-base-font-size);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-default);
+  margin-bottom: var(--spacer-6);
+}
+
+/* ---- Alert / inline feedback ---- */
+.ds-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacer-8);
+  padding: 10px var(--spacer-12);
+  border-radius: var(--radius-8);
+  font-size: var(--body-base-font-size);
+  line-height: var(--body-base-line-height);
+}
+.ds-alert-error {
+  background-color: var(--status-error-surface-l1);
+  color: var(--status-error-default);
+}
+.ds-alert-success {
+  background-color: var(--status-success-surface-l1);
+  color: var(--status-success-default);
+}
+
+/* ---- Link ---- */
+.ds-link {
+  color: var(--text-brand);
+  font-weight: var(--font-weight-medium);
+  text-decoration: none;
+  transition: color 120ms ease;
+}
+.ds-link:hover {
+  color: var(--text-brand-hover);
+  text-decoration: underline;
+}
+
+/* ---- Divider ---- */
+.ds-divider {
+  height: 1px;
+  background-color: var(--border-neutral-l1);
+  border: 0;
+}
+
+/* ============================================================
+   Auth layout (shared by Login / Register)
+   ============================================================ */
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-base-secondary);
+  padding: var(--spacer-16);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  padding: var(--spacer-32);
+}
+
+.auth-logo {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  display: block;
+}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .ds-btn,
+  .ds-input,
+  .ds-link {
+    transition: none;
+  }
+}
