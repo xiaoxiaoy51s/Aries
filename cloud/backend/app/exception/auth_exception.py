@@ -12,10 +12,6 @@ class UserAlreadyExistsError(AuthException):
     detail: str = "该邮箱已注册"
 
 
-class UsernameTakenError(AuthException):
-    detail: str = "用户名已被使用"
-
-
 class InvalidCredentialsError(AuthException):
     status_code: int = 401
     detail: str = "邮箱或密码错误"
@@ -34,3 +30,8 @@ class UserNotFoundError(AuthException):
 class InvalidTokenError(AuthException):
     status_code: int = 401
     detail: str = "token无效或已过期"
+
+
+class SessionNotFoundError(AuthException):
+    status_code: int = 404
+    detail: str = "会话不存在或无权访问"

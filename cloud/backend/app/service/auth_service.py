@@ -7,7 +7,6 @@ from app.exception.auth_exception import (
     InvalidTokenError,
     UserAlreadyExistsError,
     UserNotFoundError,
-    UsernameTakenError,
     VerificationCodeError,
 )
 from app.model.user import User
@@ -39,8 +38,6 @@ class AuthService:
             raise VerificationCodeError()
         if await UserRepository.find_by_email(db, email):
             raise UserAlreadyExistsError()
-        if await UserRepository.find_by_username(db, username):
-            raise UsernameTakenError()
 
         user = await UserRepository.create(
             db, email=email, username=username, password=hash_password(password)

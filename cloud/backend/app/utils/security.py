@@ -25,3 +25,18 @@ def create_access_token(data: dict) -> str:
 
 def decode_access_token(token: str) -> dict:
     return jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+
+
+def mask_secret(value: str, visible_prefix: int = 4, visible_suffix: int = 4) -> str:
+    """脱敏敏感字符串，保留首尾少量字符，中间用 * 替代。"""
+    if not value:
+        return ""
+    if len(value) <= visible_prefix + visible_suffix:
+        return "*" * len(value)
+    hidden_len = len(value) - visible_prefix - visible_suffix
+    return value[:visible_prefix] + "*" * hidden_len + value[-visible_suffix:]
+
+
+def is_masked_secret(value: str) -> bool:
+    """判断是否为脱敏占位值（含 * 且非用户新输入的完整密钥）。"""
+    return bool(value) and "*" in value

@@ -1,0 +1,352 @@
+"""QQ 机器人（botpy，全局单例）—— 适配 cloud 后端
+
+参照 backend/services/qq_bot.py，适配 cloud 后端 import 路径。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import random
+import re
+import threading
+import time
+from typing import Any, Optional
+
+from app.services.platform_chat import process_inbound_message_async
+
+_log = logging.getLogger(__name__)
+
+try:
+    import botpy
+    from botpy.message import Message
+
+    BOTPY_AVAILABLE = True
+except ImportError:
+    BOTPY_AVAILABLE = False
+    Message = Any  # type: ignore
+
+_last_qq_network_log_at = 0.0
+_QQ_NETWORK_LOG_INTERVAL = 60.0
+
+
+def _is_network_connect_error(exc: BaseException) -> bool:
+    if isinstance(exc, (ConnectionError, OSError, asyncio.TimeoutError)):
+        return True
+    name = type(exc).__name__
+    if name in (
+        "ClientConnectorError",
+        "ClientConnectorDNSError",
+        "ServerDisconnectedError",
+        "ClientOSError",
+        "ClientConnectionError",
+    ):
+        return True
+    try:
+        from aiohttp import client_exceptions
+
+        if isinstance(exc, client_exceptions.ClientError):
+            return True
+    except ImportError:
+        pass
+    return False
+
+
+def _patch_botpy_quiet_network_errors() -> None:
+    """botpy 断网时会 traceback.print_exc() 刷屏；网络类错误只记简短日志。"""
+    if not BOTPY_AVAILABLE:
+        return
+    try:
+        from botpy.gateway import BotWebSocket
+
+        if getattr(BotWebSocket.on_error, "_qq_quiet_patched", False):
+            return
+
+        _original_on_error = BotWebSocket.on_error
+
+        async def _quiet_on_error(self, exception: BaseException):
+            global _last_qq_network_log_at
+            if _is_network_connect_error(exception):
+                now = time.time()
+                if now - _last_qq_network_log_at >= _QQ_NETWORK_LOG_INTERVAL:
+                    _last_qq_network_log_at = now
+                    _log.warning("[QQ] 网络不可用，WebSocket 暂无法连接（将自动重试）")
+                self._connection.add(self._session)
+                return
+            await _original_on_error(self, exception)
+
+        _quiet_on_error._qq_quiet_patched = True  # type: ignore[attr-defined]
+        BotWebSocket.on_error = _quiet_on_error
+    except Exception as e:
+        _log.debug("[QQ] 无法 patch botpy 错误输出: %s", e)
+
+_runner: Optional[_QQRunner] = None
+_lock = threading.Lock()
+
+
+def _clean_qq_content(content: str) -> str:
+    content = re.sub(r'<faceType=\d+[^>]*>', "", content)
+    content = re.sub(r"<[^>]+>", "", content)
+    return content.strip()
+
+
+def _get_author_id(message) -> str:
+    author = getattr(message, "author", None)
+    if author:
+        aid = getattr(author, "id", None) or getattr(author, "user_openid", None)
+        if aid:
+            return str(aid)
+    for attr in ("author_user_openid", "member_openid"):
+        val = getattr(message, attr, None)
+        if val:
+            return str(val)
+    return "unknown"
+
+
+async def _reply_qq_message(message, reply: str):
+    if not BOTPY_AVAILABLE:
+        return
+    max_len = 2000
+    segments: list[str] = []
+    while len(reply) > max_len:
+        cut = reply.rfind("\n", 0, max_len)
+        if cut < max_len // 2:
+            cut = max_len
+        segments.append(reply[:cut])
+        reply = reply[cut:]
+    if reply:
+        segments.append(reply)
+
+    for i, seg in enumerate(segments):
+        try:
+            msg_seq = int(time.time() * 1000) % 1000000 + random.randint(1, 1000) + i
+            await message.reply(content=seg, msg_seq=msg_seq)
+        except Exception as e:
+            _log.error("[QQ] 回复失败: %s", e)
+
+
+class NonoQQBot(botpy.Client if BOTPY_AVAILABLE else object):
+    def __init__(self, intents):
+        if BOTPY_AVAILABLE:
+            super().__init__(intents=intents, bot_log=False)
+        self.last_user_openid = ""
+        self.last_group_openid = ""
+        self.last_chat_type = "c2c"
+
+    async def on_ready(self):
+        name = getattr(getattr(self, "robot", None), "name", "?")
+        _log.info("[QQ] 机器人 [%s] 已上线", name)
+
+    async def on_message_create(self, message: Message):
+        await self._handle_message(message)
+
+    async def on_at_message_create(self, message: Message):
+        await self._handle_message(message)
+
+    async def on_direct_message_create(self, message):
+        await self._handle_message(message)
+
+    async def on_c2c_message_create(self, message: Message):
+        await self._handle_message(message)
+
+    async def on_group_at_message_create(self, message: Message):
+        await self._handle_message(message)
+
+    async def _handle_message(self, message: Message):
+        raw = (message.content or "").strip()
+        content = _clean_qq_content(raw)
+        if not content:
+            return
+        author_id = _get_author_id(message)
+        _log.info("[QQ] 来自 %s: %s", author_id, content[:80])
+
+        group_openid = getattr(message, "group_openid", None)
+        user_openid = None
+        author = getattr(message, "author", None)
+        if author:
+            user_openid = getattr(author, "user_openid", None) or getattr(author, "id", None)
+        if not user_openid:
+            user_openid = author_id if author_id != "unknown" else None
+
+        if group_openid:
+            self.last_chat_type = "group"
+            self.last_group_openid = str(group_openid)
+            to_persist = {"last_chat_type": "group", "last_group_openid": str(group_openid)}
+        elif user_openid:
+            self.last_chat_type = "c2c"
+            self.last_user_openid = str(user_openid)
+            to_persist = {"last_chat_type": "c2c", "last_user_openid": str(user_openid)}
+        else:
+            to_persist = None
+        # 持久化收件人信息，避免 bot 重启后无法主动推送
+        if to_persist:
+            try:
+                from app.services.bot_manager import persist_recipient
+                persist_recipient("qq", **to_persist)
+            except Exception:
+                pass
+
+        # 用 create_task 后台处理，不阻塞事件循环，让新消息能及时触发取消
+        asyncio.create_task(self._process_message_task(message, content))
+
+    async def _process_message_task(self, message: Message, content: str):
+        try:
+            async def _send_segment(seg: str):
+                await _reply_qq_message(message, seg)
+
+            reply = await process_inbound_message_async(
+                "qq", content, send_segment=_send_segment
+            )
+        except asyncio.CancelledError:
+            _log.info("[QQ] 对话已被新消息取消")
+            return
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                _log.warning("[QQ] 进程关闭中，跳过消息处理")
+                return
+            raise
+        if reply:
+            await _reply_qq_message(message, reply)
+
+
+class _QQRunner:
+    def __init__(self, app_id: str, app_secret: str):
+        self.app_id = app_id
+        self.app_secret = app_secret
+        self._thread: Optional[threading.Thread] = None
+        self._client: Any = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def start(self):
+        if not BOTPY_AVAILABLE:
+            _log.warning("[QQ] qq-botpy 未安装，无法启动")
+            return
+
+        def _run():
+            try:
+                _patch_botpy_quiet_network_errors()
+                logging.getLogger("botpy").handlers.clear()
+                logging.getLogger("botpy").propagate = False
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                self._loop = loop
+                intents = botpy.Intents.default()
+                intents.public_guild_messages = True
+                intents.direct_message = True
+                intents.value |= 1 << 30
+                client = NonoQQBot(intents)
+                self._client = client
+
+                # 从配置文件恢复上次持久化的收件人信息（重启后内存为空）
+                try:
+                    from app.services.bot_manager import _load_bot_config
+                    saved = _load_bot_config().get("qq", {})
+                    if saved.get("last_user_openid"):
+                        client.last_user_openid = saved["last_user_openid"]
+                        _log.info("[QQ] 从配置恢复 last_user_openid")
+                    if saved.get("last_group_openid"):
+                        client.last_group_openid = saved["last_group_openid"]
+                    if saved.get("last_chat_type"):
+                        client.last_chat_type = saved["last_chat_type"]
+                except Exception:
+                    pass
+
+                client.run(appid=self.app_id, secret=self.app_secret)
+            except RuntimeError:
+                pass  # stop() 正常退出路径
+            except Exception as e:
+                _log.error("[QQ] 运行出错: %s", e)
+            finally:
+                self._loop = None
+
+        self._thread = threading.Thread(
+            target=_run,
+            daemon=True,
+            name="QQBot",
+        )
+        self._thread.start()
+        _log.info("[QQ] 机器人已在后台启动")
+
+    def stop(self):
+        client = self._client
+        loop = self._loop
+        # 通知 botpy 客户端关闭
+        if loop and not loop.is_closed() and client is not None:
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    asyncio.run_coroutine_threadsafe(close(), loop)
+                except Exception as e:
+                    _log.debug("[QQ] 提交 close 失败: %s", e)
+            # 取消所有 pending tasks，避免 "Task was destroyed but it is pending"
+            def _cancel_and_stop():
+                for task in asyncio.all_tasks(loop):
+                    task.cancel()
+                loop.stop()
+            try:
+                loop.call_soon_threadsafe(_cancel_and_stop)
+            except RuntimeError:
+                pass
+        self._client = None
+        self._loop = None
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+
+_qq_user_email: str = ""
+
+
+def _load_qq_config(user_email: str) -> dict:
+    import json
+    from pathlib import Path
+    config_path = Path.home() / ".Aries" / user_email / "config.json"
+    if not config_path.exists():
+        return {}
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def start_qq_bot(user_email: str = "") -> bool:
+    global _runner, _qq_user_email
+    _qq_user_email = user_email
+    if not user_email:
+        return False
+    config = _load_qq_config(user_email)
+    qq = config.get("qq", {})
+    if not qq.get("enabled"):
+        return False
+    if not BOTPY_AVAILABLE:
+        _log.warning("[QQ] 请安装 qq-botpy: pip install qq-botpy")
+        return False
+
+    app_id = (qq.get("app_id") or "").strip()
+    app_secret = (qq.get("app_secret") or "").strip()
+    if not app_id or not app_secret:
+        return False
+
+    with _lock:
+        if _runner and _runner.is_running():
+            return True
+        _runner = _QQRunner(app_id, app_secret)
+        _runner.start()
+        return True
+
+
+def stop_qq_bot():
+    global _runner
+    with _lock:
+        if _runner:
+            _runner.stop()
+            _runner = None
+
+
+def restart_qq_bot(user_email: str = ""):
+    global _qq_user_email
+    email = user_email or _qq_user_email
+    stop_qq_bot()
+    time.sleep(0.3)
+    if email:
+        start_qq_bot(email)

@@ -22,11 +22,82 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def get_user_session_root(user_email: str) -> Path:
+    """用户主会话 JSONL 根目录：~/.Aries/{email}/session/"""
+    email = (user_email or "").strip() or "_anonymous"
+    return Path.home() / ".Aries" / email / "session"
+
+
+def parse_session_log_filename(path: Path | str) -> tuple[str, str] | None:
+    """从 {session_id}_{message_id}.jsonl 解析会话与消息 ID。"""
+    name = Path(path).name
+    if not name.endswith(".jsonl"):
+        return None
+    stem = name[: -len(".jsonl")]
+    if "_" not in stem:
+        return None
+    session_id, message_id = stem.rsplit("_", 1)
+    if not session_id or not message_id:
+        return None
+    return session_id, message_id
+
+
+def delete_session_log_files(
+    user_email: str,
+    session_id: str,
+    extra_paths: list[str] | None = None,
+) -> int:
+    """删除指定会话的所有 JSONL 日志文件，返回删除数量。"""
+    deleted = 0
+    seen: set[str] = set()
+    root = get_user_session_root(user_email)
+    prefix = f"{session_id}_"
+
+    if root.exists():
+        for path in root.rglob("*.jsonl"):
+            if "sub_agent" in path.parts:
+                continue
+            if not path.name.startswith(prefix):
+                continue
+            try:
+                key = str(path.resolve())
+                path.unlink()
+                seen.add(key)
+                deleted += 1
+            except OSError:
+                pass
+
+    for raw in extra_paths or []:
+        if not raw:
+            continue
+        p = Path(raw)
+        key = str(p.resolve()) if p.exists() else raw
+        if key in seen:
+            continue
+        try:
+            if p.is_file():
+                p.unlink()
+                seen.add(key)
+                deleted += 1
+        except OSError:
+            pass
+    return deleted
+
+
 def _get_jsonl_path(user_email: str, session_id: str, message_id: int | str) -> Path:
     today = datetime.now().strftime("%Y-%m-%d")
-    base = Path.home() / ".Aries" / user_email / "session" / today
+    base = get_user_session_root(user_email) / today
     base.mkdir(parents=True, exist_ok=True)
     return base / f"{session_id}_{message_id}.jsonl"
+
+
+def get_subagent_jsonl_path(user_email: str, task_id: str) -> Path:
+    """子 Agent 独立日志：~/.Aries/{email}/session/sub_agent/{YYYY-MM-DD}/{task_id}.jsonl"""
+    email = (user_email or "").strip() or "_anonymous"
+    today = datetime.now().strftime("%Y-%m-%d")
+    base = Path.home() / ".Aries" / email / "session" / "sub_agent" / today
+    base.mkdir(parents=True, exist_ok=True)
+    return base / f"{task_id}.jsonl"
 
 
 class SessionLogger:
@@ -125,16 +196,17 @@ class SessionLogger:
         self._emit(event)
 
     def flush_assistant_segment(self) -> str:
-        """将累积的 assistant text 一次性写入 JSONL"""
+        """将累积的 assistant text 一次性写入 JSONL，返回本段完整文本。"""
         self.flush_reasoning_segment()
-        if self._assistant_pending:
+        flushed = self._assistant_pending
+        if flushed:
             self._write_event({
                 "type": "assistant_text",
-                "text": self._assistant_pending,
+                "text": flushed,
                 "timestamp": _utc_now(),
             })
             self._assistant_pending = ""
-        return self._assistant_all
+        return flushed
 
     # ============ tool 调用 ============
 
@@ -166,6 +238,57 @@ class SessionLogger:
         }
         self._write_event(event)
         self._emit(event)
+
+    def write_subagent_block(
+        self,
+        tool_call_id: str,
+        subagent_name: str,
+        task: str,
+        status: str,
+        log_path: str = "",
+        final_output: str = "",
+        error: str = "",
+        rounds: int = 0,
+        duration_ms: int = 0,
+    ) -> None:
+        """记录主 Agent 委派子 Agent 的事件块。"""
+        self.flush_assistant_segment()
+        event = {
+            "type": "sub_agent",
+            "tool_call_id": tool_call_id,
+            "subagent": subagent_name,
+            "task": task,
+            "status": status,
+            "log_path": log_path,
+            "final_output": final_output,
+            "error": error,
+            "rounds": rounds,
+            "duration_ms": duration_ms,
+            "timestamp": _utc_now(),
+        }
+        self._write_event(event)
+        self._emit(event)
+
+    def write_error_event(
+        self,
+        error_type: str,
+        error_msg: str,
+        details: str = "",
+    ) -> None:
+        self.flush_assistant_segment()
+        event = {
+            "type": "error",
+            "error_type": error_type,
+            "error": error_msg,
+            "details": details,
+            "timestamp": _utc_now(),
+        }
+        self._write_event(event)
+        self._emit(event)
+
+    def flush_assistant_round(self) -> str:
+        """兼容参考后端命名。"""
+        return self.flush_assistant_segment()
 
     # ============ token 使用 ============
 

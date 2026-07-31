@@ -1,5 +1,9 @@
 <template>
   <main class="chat-main">
+    <div v-if="asAgent" class="chat-as-agent-bar">
+      <span>{{ t('chat.asAgentBar', { name: asAgent }) }}</span>
+      <button type="button" class="chat-as-agent-clear" @click="$emit('create-new-chat')">{{ t('chat.asAgentClear') }}</button>
+    </div>
     <!-- 空状态：欢迎页 + 输入框 + 模板画廊 -->
     <div v-if="!hasActiveChat" class="chat-empty">
       <div class="chat-empty-inner">
@@ -8,44 +12,41 @@
             <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
             <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
           </svg>
-          <h1 class="chat-welcome-title">Work with Aries Cloud</h1>
+          <h1 class="chat-welcome-title">{{ asAgent ? t('chat.asAgentTitle', { name: asAgent }) : 'Work with Aries Cloud' }}</h1>
         </div>
         <p class="chat-welcome-sub">
-          {{ t('chat.welcomeSubtitle') }}
+          {{ asAgent ? t('chat.asAgentSubtitle') : t('chat.welcomeSubtitle') }}
         </p>
 
         <!-- 输入框 -->
         <div class="chat-composer">
-          <textarea
+          <div v-if="attachedImages.length" class="composer-image-previews">
+            <div v-for="img in attachedImages" :key="img.id" class="composer-image-preview">
+              <img :src="img.data" :alt="img.name" />
+              <button type="button" class="composer-image-remove" @click="removeImage(img.id)">×</button>
+            </div>
+          </div>
+          <div
             ref="inputRef"
-            v-model="inputMessage"
             class="chat-composer-input"
-            :placeholder="t('chat.placeholder')"
-            rows="3"
+            contenteditable="true"
+            data-placeholder="placeholder"
+            :data-placeholder-text="t('chat.placeholder')"
             @keydown.enter.exact.prevent="handleSend"
-            @keydown.shift.enter="inputMessage += '\n'"
-          />
+            @input="onEditorInput"
+            @click="onEditorClick"
+            @mouseup="saveEditorSelection"
+            @keyup="saveEditorSelection"
+            @blur="saveEditorSelection"
+            @paste="onPaste"
+          ></div>
           <div class="chat-composer-actions">
             <div class="chat-composer-left">
-              <button type="button" class="composer-icon-btn" title="上传图片">
+              <button type="button" class="composer-icon-btn" :title="t('chat.uploadImage')" @click="openImagePicker">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                   <rect x="3" y="3" width="18" height="18" rx="2"/>
                   <circle cx="9" cy="9" r="2"/>
                   <path d="m21 15-3.5-3.5a2 2 0 0 0-2.8 0L6 21"/>
-                </svg>
-              </button>
-              <button type="button" class="composer-icon-btn" title="语音输入">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="9" y="2" width="6" height="12" rx="3"/>
-                  <path d="M5 10v2a7 7 0 0 0 14 0v-2"/>
-                  <line x1="12" y1="19" x2="12" y2="22"/>
-                </svg>
-              </button>
-              <button type="button" class="composer-icon-btn" title="联网搜索">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="12" cy="12" r="10"/>
-                  <path d="M2 12h20"/>
-                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
                 </svg>
               </button>
             </div>
@@ -104,17 +105,140 @@
               <button
                 type="button"
                 class="composer-send-btn"
-                :disabled="!inputMessage.trim() || sending"
-                @click="handleSend"
+                :class="{ 'is-stop': sending }"
+                :disabled="!sending && !canSend"
+                @click="sending ? $emit('stop-generation') : handleSend()"
               >
                 <svg v-if="!sending" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <line x1="12" y1="19" x2="12" y2="5"/>
                   <polyline points="5 12 12 5 19 12"/>
                 </svg>
-                <span v-else class="composer-send-loading" />
+                <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
               </button>
             </div>
           </div>
+        </div>
+
+        <!-- 工作目录选择栏（仅欢迎界面） -->
+        <div class="chat-composer-workspace-bar">
+          <div ref="wsTriggerRef" class="workspace-picker">
+            <!-- 已选非默认工作目录：显示 pill + 清除按钮 -->
+            <div v-if="isCustomWorkspace" class="workspace-pill" :title="wsLabel">
+              <button
+                type="button"
+                class="workspace-pill-main"
+                @click="toggleWsMenu"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span class="workspace-pill-name">{{ wsLabel }}</span>
+                <svg class="workspace-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="m6 9 6 6 6-6"/>
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="workspace-pill-close"
+                :title="t('workspace.normal')"
+                @click.stop="clearWorkspace"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <path d="M18 6 6 18M6 6l12 12"/>
+                </svg>
+              </button>
+            </div>
+            <!-- 默认：普通对话 -->
+            <button
+              v-else
+              type="button"
+              class="workspace-empty-btn"
+              @click="toggleWsMenu"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              </svg>
+              <span>{{ t('workspace.workIn') }}</span>
+              <svg class="workspace-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="m6 9 6 6 6-6"/>
+              </svg>
+            </button>
+          </div>
+          <Teleport to="body">
+            <div
+              v-if="wsMenuOpen"
+              ref="wsMenuRef"
+              class="ws-menu ws-menu-portal"
+              :style="wsMenuStyle"
+              @click.stop
+            >
+              <div class="ws-menu-search-wrap">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"/>
+                  <path d="m21 21-4.3-4.3"/>
+                </svg>
+                <input
+                  ref="wsSearchRef"
+                  v-model="wsSearchQuery"
+                  type="text"
+                  class="ws-menu-search"
+                  :placeholder="t('workspace.searchPlaceholder')"
+                  @keydown.escape="wsMenuOpen = false"
+                />
+              </div>
+              <ul v-if="filteredWorkspaces.length" class="ws-menu-list">
+                <li
+                  v-for="w in filteredWorkspaces"
+                  :key="w.name"
+                  class="ws-menu-item"
+                  :class="{ active: w.name === selectedWorkspace }"
+                  @click="selectWorkspace(w.name)"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
+                  </svg>
+                  <span class="ws-menu-name" :title="w.name">{{ workspaceDisplayName(w.name) }}</span>
+                  <svg
+                    v-if="w.name === selectedWorkspace"
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.5"
+                    class="ws-menu-check"
+                  >
+                    <path d="M20 6 9 17l-5-5"/>
+                  </svg>
+                </li>
+              </ul>
+              <div v-else class="ws-menu-empty">{{ t('workspace.empty') }}</div>
+              <div class="ws-menu-divider"></div>
+              <form v-if="creatingWs" class="ws-menu-create" @submit.prevent="confirmCreateWs">
+                <input
+                  ref="newWsInputRef"
+                  v-model="newWsName"
+                  class="ws-menu-input"
+                  type="text"
+                  :placeholder="t('workspace.createPrompt')"
+                  @keydown.esc.prevent="cancelCreateWs"
+                />
+                <button type="submit" class="ws-menu-confirm" :disabled="!newWsName.trim()">{{ t('settings.save') }}</button>
+                <button type="button" class="ws-menu-cancel" @click="cancelCreateWs">{{ t('settings.cancel') }}</button>
+              </form>
+              <button
+                v-else
+                type="button"
+                class="ws-menu-action ws-menu-action-accent"
+                @click="creatingWs = true"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <path d="M12 5v14M5 12h14"/>
+                </svg>
+                <span>{{ t('workspace.create') }}</span>
+              </button>
+            </div>
+          </Teleport>
         </div>
 
         <!-- 模板画廊 -->
@@ -152,34 +276,69 @@
     <div v-else class="chat-active">
       <header class="chat-header">
         <div class="chat-header-start">
-          <h2 class="chat-header-title" :title="currentSession?.title">{{ currentSession?.title }}</h2>
-        </div>
-        <div class="chat-header-actions">
-          <button type="button" class="chat-header-icon-btn" title="新建对话" @click="$emit('create-new-chat')">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 5v14M5 12h14"/>
-            </svg>
-          </button>
-          <button type="button" class="chat-header-icon-btn" title="更多">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-              <circle cx="5" cy="12" r="1.5"/>
-              <circle cx="12" cy="12" r="1.5"/>
-              <circle cx="19" cy="12" r="1.5"/>
-            </svg>
-          </button>
+          <h2 class="chat-header-title" :title="currentSession?.title">
+            {{ asAgent ? `[${asAgent}] ${currentSession?.title || ''}` : currentSession?.title }}
+          </h2>
+          <div v-if="currentSession" class="chat-header-menu-wrap">
+            <button
+              type="button"
+              class="chat-header-menu-trigger"
+              :class="{ 'is-open': headerMenuOpen }"
+              @click.stop="toggleHeaderMenu"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <circle cx="5" cy="12" r="1.5"/>
+                <circle cx="12" cy="12" r="1.5"/>
+                <circle cx="19" cy="12" r="1.5"/>
+              </svg>
+            </button>
+            <div class="sidebar-session-menu chat-header-session-menu" :class="{ show: headerMenuOpen }">
+              <button type="button" class="sidebar-menu-item" @click.stop="handlePin">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2z"/></svg>
+                <span>{{ currentSession.is_pinned ? t('session.unpin') : t('session.pin') }}</span>
+              </button>
+              <button type="button" class="sidebar-menu-item" @click.stop="handleRename">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+                <span>{{ t('session.rename') }}</span>
+              </button>
+              <button type="button" class="sidebar-menu-item sidebar-menu-item-danger" @click.stop="handleDelete">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                <span>{{ t('session.delete') }}</span>
+              </button>
+            </div>
+          </div>
         </div>
       </header>
 
-      <div ref="messagesContainer" class="chat-messages">
+      <div
+        ref="messagesContainer"
+        class="chat-messages"
+        @scroll="handleMessagesScroll"
+        @wheel="handleMessagesWheel"
+        @touchstart.passive="handleMessagesTouchStart"
+        @touchmove.passive="handleMessagesTouchMove"
+      >
         <div
           v-for="(msg, index) in currentMessages"
           :key="msg.id || index"
           class="msg-row"
-          :class="msg.role"
+          :class="[msg.role, { 'msg-row-search-hit': isHighlighted(msg.id) }]"
+          :data-message-id="msg.id"
         >
           <div class="msg-row-inner">
             <div v-if="msg.role === 'user'" class="msg-user-wrap">
-              <div class="msg-content msg-content-user">{{ msg.content }}</div>
+              <div v-if="msg.images?.length" class="msg-user-images">
+                <img
+                  v-for="(src, imgIdx) in msg.images"
+                  :key="imgIdx"
+                  :src="src"
+                  alt=""
+                  class="msg-user-image"
+                />
+              </div>
+              <div v-if="msg.content" class="msg-content msg-content-user">
+                <MarkdownRenderer :content="msg.content" :show-actions="false" />
+              </div>
               <button
                 type="button"
                 class="msg-copy-btn"
@@ -217,18 +376,29 @@
 
       <div class="chat-composer-area">
         <div class="chat-composer">
-          <textarea
+          <div v-if="attachedImages.length" class="composer-image-previews">
+            <div v-for="img in attachedImages" :key="img.id" class="composer-image-preview">
+              <img :src="img.data" :alt="img.name" />
+              <button type="button" class="composer-image-remove" @click="removeImage(img.id)">×</button>
+            </div>
+          </div>
+          <div
             ref="inputRef"
-            v-model="inputMessage"
             class="chat-composer-input"
-            :placeholder="t('chat.sendPlaceholder')"
-            rows="2"
+            contenteditable="true"
+            data-placeholder="placeholder"
+            :data-placeholder-text="t('chat.sendPlaceholder')"
             @keydown.enter.exact.prevent="handleSend"
-            @keydown.shift.enter="inputMessage += '\n'"
-          />
+            @input="onEditorInput"
+            @click="onEditorClick"
+            @mouseup="saveEditorSelection"
+            @keyup="saveEditorSelection"
+            @blur="saveEditorSelection"
+            @paste="onPaste"
+          ></div>
           <div class="chat-composer-actions">
             <div class="chat-composer-left">
-              <button type="button" class="composer-icon-btn" title="上传图片">
+              <button type="button" class="composer-icon-btn" :title="t('chat.uploadImage')" @click="openImagePicker">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                   <rect x="3" y="3" width="18" height="18" rx="2"/>
                   <circle cx="9" cy="9" r="2"/>
@@ -291,30 +461,42 @@
               <button
                 type="button"
                 class="composer-send-btn"
-                :disabled="!inputMessage.trim() || sending"
-                @click="handleSend"
+                :class="{ 'is-stop': sending }"
+                :disabled="!sending && !canSend"
+                @click="sending ? $emit('stop-generation') : handleSend()"
               >
                 <svg v-if="!sending" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <line x1="12" y1="19" x2="12" y2="5"/>
                   <polyline points="5 12 12 5 19 12"/>
                 </svg>
-                <span v-else class="composer-send-loading" />
+                <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
               </button>
             </div>
           </div>
         </div>
       </div>
     </div>
+    <input
+      ref="imageInputRef"
+      type="file"
+      accept="image/*"
+      multiple
+      hidden
+      @change="onImageFileChange"
+    />
   </main>
 </template>
 
 <script setup>
 import { ref, watch, nextTick, onMounted, onBeforeUnmount, computed } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
 import { useSettingsStore } from '../stores/settings'
 import api from '../api'
+import { listWorkspaces, createWorkspace } from '../api/workspaces'
+import { getFileIconUrl } from '../utils/fileIcons'
 import AssistantMessage from '../components/AssistantMessage.vue'
+import MarkdownRenderer from '../components/MarkdownRenderer.vue'
 import tplResume from '../assets/template-resume.jpg'
 import tplEvent from '../assets/template-event.jpg'
 import tplBrand from '../assets/template-brand.jpg'
@@ -328,13 +510,254 @@ const props = defineProps({
   currentMessages: { type: Array, default: () => [] },
   sending: Boolean,
   user: Object,
+  asAgent: { type: String, default: '' },
+  highlightMessageId: { type: [String, Number], default: '' },
+  selectedWorkspace: { type: String, default: 'default' },
 })
 
-const emit = defineEmits(['send-message', 'create-new-chat'])
+const emit = defineEmits(['send-message', 'stop-generation', 'create-new-chat', 'sessions-changed', 'session-deleted', 'update:selectedWorkspace'])
+
+const headerMenuOpen = ref(false)
+
+function toggleHeaderMenu() {
+  headerMenuOpen.value = !headerMenuOpen.value
+}
+
+function closeHeaderMenu() {
+  headerMenuOpen.value = false
+}
+
+async function handlePin() {
+  const s = props.currentSession
+  if (!s) return
+  closeHeaderMenu()
+  try {
+    await api.put(`/api/chat/sessions/${s.id}/pin`, { is_pinned: !s.is_pinned })
+    emit('sessions-changed')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.detail || t('session.actionFailed'))
+  }
+}
+
+async function handleRename() {
+  const s = props.currentSession
+  if (!s) return
+  closeHeaderMenu()
+  let value
+  try {
+    const result = await ElMessageBox.prompt(
+      t('session.renamePrompt'),
+      t('session.rename'),
+      {
+        confirmButtonText: t('settings.save'),
+        cancelButtonText: t('settings.cancel'),
+        inputValue: s.title || '',
+        inputValidator: (val) => {
+          if (!val?.trim()) return t('session.renameEmpty')
+          return true
+        },
+      },
+    )
+    value = result.value
+  } catch {
+    return
+  }
+  const clean = value.trim()
+  try {
+    await api.put(`/api/chat/sessions/${s.id}/title`, { title: clean })
+    emit('sessions-changed')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.detail || t('session.actionFailed'))
+  }
+}
+
+async function handleDelete() {
+  const s = props.currentSession
+  if (!s) return
+  closeHeaderMenu()
+  try {
+    await ElMessageBox.confirm(
+      t('session.deleteConfirm', { title: s.title || s.id }),
+      t('session.delete'),
+      {
+        type: 'warning',
+        confirmButtonText: t('session.delete'),
+        cancelButtonText: t('settings.cancel'),
+      },
+    )
+  } catch {
+    return
+  }
+  try {
+    await api.delete(`/api/chat/sessions/${s.id}`)
+    emit('session-deleted', s)
+    emit('sessions-changed')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.detail || t('session.actionFailed'))
+  }
+}
 
 const inputRef = ref(null)
+const imageInputRef = ref(null)
 const messagesContainer = ref(null)
 const inputMessage = ref('')
+const attachedImages = ref([])
+// contenteditable 编辑器状态
+const editorHtml = ref('') // 保存编辑器 HTML，跨 welcome/active 切换时恢复
+const hasInputContent = ref(false) // 编辑器是否有内容（含 chip）
+const savedRange = ref(null) // 失焦前保存的光标位置，供插入 chip 用
+
+// 监听 inputRef 挂载，恢复编辑器内容（处理 welcome/active 切换）
+watch(inputRef, (el) => {
+  if (el && editorHtml.value) {
+    el.innerHTML = editorHtml.value
+    placeCaretAtEnd(el)
+    syncEditorState()
+  }
+})
+
+// 把光标移到元素末尾
+function placeCaretAtEnd(el) {
+  const range = document.createRange()
+  range.selectNodeContents(el)
+  range.collapse(false)
+  const sel = window.getSelection()
+  sel.removeAllRanges()
+  sel.addRange(range)
+}
+
+// 从编辑器 DOM 按顺序读取合并内容（chip 原地替换为 [@file:ref]，保持原始位置）
+function getEditorContent() {
+  const el = inputRef.value
+  if (!el) return { content: '', hasRef: false }
+  let content = ''
+  let hasRef = false
+  el.childNodes.forEach((node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      content += node.textContent
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      if (node.classList && node.classList.contains('composer-file-ref-chip')) {
+        const ref = node.getAttribute('data-ref') || ''
+        content += `[@file:${ref}]`
+        hasRef = true
+      } else if (node.tagName === 'BR') {
+        content += '\n'
+      } else if (node.tagName === 'DIV' || node.tagName === 'P') {
+        content += (content ? '\n' : '') + (node.innerText || '')
+      } else {
+        content += node.innerText || node.textContent || ''
+      }
+    }
+  })
+  return { content: content.replace(/\u00a0/g, ' '), hasRef }
+}
+
+// 编辑器输入时同步状态
+function onEditorInput() {
+  syncEditorState()
+}
+
+function syncEditorState() {
+  const el = inputRef.value
+  if (!el) return
+  // 空内容时清掉浏览器残留的 <br>，保证 :empty 占位符生效
+  const hasChip = !!el.querySelector('.composer-file-ref-chip')
+  const hasText = el.textContent.replace(/\u00a0/g, '').trim() !== ''
+  if (!hasText && !hasChip) {
+    el.innerHTML = ''
+  }
+  editorHtml.value = el.innerHTML
+  const { content, hasRef } = getEditorContent()
+  inputMessage.value = content
+  hasInputContent.value = content.trim() !== '' || hasRef
+}
+
+// 供外部调用：在光标位置插入文件引用 chip
+function addFileRef(ref) {
+  if (!ref) return
+  const hashIdx = ref.lastIndexOf('#L')
+  const fullPath = hashIdx >= 0 ? ref.slice(0, hashIdx) : ref
+  const lines = hashIdx >= 0 ? ref.slice(hashIdx + 1) : ''
+  const name = fullPath.includes('/') ? fullPath.slice(fullPath.lastIndexOf('/') + 1) : fullPath
+
+  const el = inputRef.value
+  if (!el) {
+    // 编辑器未挂载，暂存待恢复后插入（极少出现）
+    return
+  }
+  el.focus()
+
+  // 恢复光标
+  let range
+  if (savedRange.value) {
+    const sel = window.getSelection()
+    sel.removeAllRanges()
+    sel.addRange(savedRange.value)
+    range = savedRange.value
+  } else {
+    range = document.createRange()
+    range.selectNodeContents(el)
+    range.collapse(false)
+  }
+
+  // 构造 chip 节点
+  const chip = document.createElement('span')
+  chip.className = 'composer-file-ref-chip'
+  chip.setAttribute('contenteditable', 'false')
+  chip.setAttribute('data-ref', ref)
+  chip.setAttribute('data-name', name)
+  chip.innerHTML =
+    `<img src="${getFileIconUrl(name)}" width="14" height="14" alt="" class="composer-file-ref-icon" />` +
+    `<span class="composer-file-ref-name">${escapeHtml(name)}</span>` +
+    (lines ? `<span class="composer-file-ref-lines">${escapeHtml(lines)}</span>` : '') +
+    `<button type="button" class="composer-file-ref-remove" contenteditable="false">×</button>`
+
+  range.deleteContents()
+  range.insertNode(chip)
+
+  // chip 后插入一个空格文本节点，便于继续输入
+  const space = document.createTextNode('\u00a0')
+  chip.after(space)
+
+  // 光标移到空格后
+  range.setStartAfter(space)
+  range.collapse(true)
+  const sel = window.getSelection()
+  sel.removeAllRanges()
+  sel.addRange(range)
+
+  syncEditorState()
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[c])
+}
+
+// 点击 chip 的 × 删除（事件委托）
+function onEditorClick(e) {
+  const btn = e.target.closest('.composer-file-ref-remove')
+  if (!btn) return
+  const chip = btn.closest('.composer-file-ref-chip')
+  if (!chip) return
+  // 同时移除 chip 后可能跟随的空格
+  const next = chip.nextSibling
+  if (next && next.nodeType === Node.TEXT_NODE && next.textContent === '\u00a0') {
+    next.remove()
+  }
+  chip.remove()
+  syncEditorState()
+  inputRef.value?.focus()
+}
+
+// 编辑器失焦/鼠标抬起时保存光标
+function saveEditorSelection() {
+  const sel = window.getSelection()
+  if (sel.rangeCount && inputRef.value?.contains(sel.anchorNode)) {
+    savedRange.value = sel.getRangeAt(0).cloneRange()
+  }
+}
 const models = ref([])
 const switchingModel = ref(false)
 const copiedMsgId = ref(null)
@@ -346,10 +769,239 @@ const activeModelOpen = ref(false)
 const welcomeDropdownRef = ref(null)
 const activeDropdownRef = ref(null)
 
+// ---- 工作目录选择器（仅欢迎界面）----
+const workspaces = ref([])
+const wsMenuOpen = ref(false)
+const wsSearchQuery = ref('')
+const wsSearchRef = ref(null)
+const wsTriggerRef = ref(null)
+const wsMenuRef = ref(null)
+const wsMenuStyle = ref({})
+const creatingWs = ref(false)
+const newWsName = ref('')
+const newWsInputRef = ref(null)
+
+const isCustomWorkspace = computed(() => props.selectedWorkspace && props.selectedWorkspace !== 'default')
+
+const wsLabel = computed(() => {
+  const name = props.selectedWorkspace || 'default'
+  if (name === 'default') return t('workspace.normal')
+  return name
+})
+
+const filteredWorkspaces = computed(() => {
+  // 下拉列表不展示 default（普通对话由按钮/清除操作体现）
+  const list = workspaces.value.filter(w => w.name !== 'default')
+  const q = wsSearchQuery.value.trim().toLowerCase()
+  if (!q) return list
+  return list.filter(w => w.name.toLowerCase().includes(q))
+})
+
+function workspaceDisplayName(name) {
+  return name === 'default' ? t('workspace.normal') : name
+}
+
+async function loadWorkspaces() {
+  try {
+    const res = await listWorkspaces()
+    workspaces.value = res.data.workspaces || []
+  } catch (err) {
+    console.error('Failed to load workspaces', err)
+  }
+}
+
+function updateWsMenuPosition() {
+  const el = wsTriggerRef.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  wsMenuStyle.value = {
+    position: 'fixed',
+    left: `${Math.max(8, rect.left)}px`,
+    bottom: `${window.innerHeight - rect.top + 6}px`,
+    minWidth: '230px',
+    maxWidth: '320px',
+    zIndex: '10000',
+  }
+}
+
+function toggleWsMenu() {
+  const next = !wsMenuOpen.value
+  wsMenuOpen.value = next
+  if (next) {
+    wsSearchQuery.value = ''
+    creatingWs.value = false
+    newWsName.value = ''
+    loadWorkspaces()
+    nextTick(() => {
+      updateWsMenuPosition()
+      wsSearchRef.value?.focus()
+    })
+  }
+}
+
+function selectWorkspace(name) {
+  wsMenuOpen.value = false
+  wsSearchQuery.value = ''
+  emit('update:selectedWorkspace', name)
+}
+
+function clearWorkspace() {
+  wsMenuOpen.value = false
+  wsSearchQuery.value = ''
+  emit('update:selectedWorkspace', 'default')
+}
+
+async function confirmCreateWs() {
+  const name = newWsName.value.trim()
+  if (!name) return
+  try {
+    await createWorkspace(name)
+    await loadWorkspaces()
+    newWsName.value = ''
+    creatingWs.value = false
+    emit('update:selectedWorkspace', name)
+    wsMenuOpen.value = false
+    wsSearchQuery.value = ''
+  } catch (err) {
+    ElMessage.error(err.response?.data?.detail || t('workspace.createFailed'))
+  }
+}
+
+function cancelCreateWs() {
+  creatingWs.value = false
+  newWsName.value = ''
+}
+
+watch(creatingWs, async (val) => {
+  if (val) {
+    await nextTick()
+    newWsInputRef.value?.focus()
+  }
+})
+
+function handleWsDocClick(e) {
+  if (wsMenuOpen.value) {
+    if (wsTriggerRef.value && !wsTriggerRef.value.contains(e.target) &&
+        wsMenuRef.value && !wsMenuRef.value.contains(e.target)) {
+      wsMenuOpen.value = false
+    }
+  }
+}
+
+let wsRepositionHandler = null
+
 const activeModel = computed(() => models.value.find(m => m.isActive) || models.value[0] || null)
 const hasModel = computed(() => !!activeModel.value)
+const canSend = computed(() => {
+  return (hasInputContent.value || attachedImages.value.length > 0) && !props.sending
+})
 
-// 从最新助手消息中获取上下文占用量；若后端尚未返回，则按当前输入 + 模型窗口做兜底展示
+function openImagePicker() {
+  imageInputRef.value?.click()
+}
+
+function addImageFiles(files) {
+  for (const file of files) {
+    if (!file.type.startsWith('image/')) continue
+    const reader = new FileReader()
+    reader.onload = () => {
+      attachedImages.value.push({
+        id: crypto.randomUUID(),
+        data: reader.result,
+        name: file.name,
+      })
+    }
+    reader.readAsDataURL(file)
+  }
+}
+
+function onImageFileChange(e) {
+  addImageFiles(Array.from(e.target.files || []))
+  e.target.value = ''
+}
+
+function onPaste(e) {
+  const items = e.clipboardData?.items
+  if (!items) return
+  const imageFiles = []
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      const file = item.getAsFile()
+      if (file) imageFiles.push(file)
+    }
+  }
+  if (imageFiles.length) {
+    e.preventDefault()
+    addImageFiles(imageFiles)
+    return
+  }
+  // contenteditable 下：以纯文本形式粘贴，避免富文本污染
+  const text = e.clipboardData?.getData('text/plain')
+  if (text) {
+    e.preventDefault()
+    document.execCommand('insertText', false, text)
+    syncEditorState()
+  }
+}
+
+function removeImage(id) {
+  attachedImages.value = attachedImages.value.filter(img => img.id !== id)
+}
+
+function clearComposer() {
+  const el = inputRef.value
+  if (el) el.innerHTML = ''
+  inputMessage.value = ''
+  attachedImages.value = []
+  editorHtml.value = ''
+  hasInputContent.value = false
+  savedRange.value = null
+}
+
+function isHighlighted(messageId) {
+  if (!props.highlightMessageId) return false
+  return String(messageId) === String(props.highlightMessageId)
+}
+
+function scrollToMessage(messageId) {
+  const id = String(messageId || props.highlightMessageId || '')
+  if (!id) return
+  autoScrollEnabled.value = false
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      const container = messagesContainer.value
+      const el = container?.querySelector(`[data-message-id="${CSS.escape(id)}"]`)
+      if (!el) return
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    })
+  })
+}
+
+// 文件引用 chip 的插入与删除见上方 contenteditable 实现（addFileRef / onEditorClick）
+
+defineExpose({ scrollToMessage, insertText: addFileRef, addFileRef })
+
+// 估算单条消息的文本长度（从 content 或 blocks 中提取）
+function estimateMessageText(msg) {
+  let text = msg?.content || ''
+  const blocks = msg?.blocks
+  if (Array.isArray(blocks) && blocks.length > 0) {
+    for (const b of blocks) {
+      if (b.text) text += '\n' + b.text
+      else if (b.type === 'tool' && b.result) text += '\n' + b.result
+    }
+  }
+  // 兜底：旧数据可能用 reasoning / toolCalls
+  if (msg?.reasoning) text += '\n' + msg.reasoning
+  if (Array.isArray(msg?.toolCalls)) {
+    for (const tc of msg.toolCalls) {
+      if (tc.result) text += '\n' + tc.result
+    }
+  }
+  return text
+}
+
+// 从最新助手消息中获取上下文占用量；若后端尚未返回，则按当前输入 + 历史消息做兜底展示
 const contextInfo = computed(() => {
   const msgs = props.currentMessages || []
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -358,8 +1010,11 @@ const contextInfo = computed(() => {
   }
   const total = activeModel.value?.context_window
   if (!total) return null
-  const text = (inputMessage.value || '') + msgs.map(m => m.content || '').join('')
-  const estimated = Math.ceil(text.length / 4)
+  const text = (inputMessage.value || '') + msgs.map(estimateMessageText).join('')
+  // 简单混合估算：CJK 约 1.5 字符/token，其他约 4 字符/token
+  const cjk = (text.match(/[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff\uac00-\ud7af\uff00-\uffef]/g) || []).length
+  const other = text.length - cjk
+  const estimated = Math.ceil(cjk / 1.5 + other / 4)
   return {
     estimated_tokens: estimated,
     context_window: total,
@@ -375,10 +1030,12 @@ const contextTooltip = computed(() => {
   const total = info.context_window || 0
   const pct = info.usage_percent || 0
   const breakdown = info.breakdown || {}
-  const parts = [`${est.toLocaleString()} / ${total.toLocaleString()} tokens (${pct}%)`]
+  const source = info.breakdown && Object.keys(info.breakdown).length > 0 ? 'backend' : 'estimated'
+  const parts = [`${est.toLocaleString()} / ${total.toLocaleString()} tokens (${pct}%)`, `source: ${source}`]
   if (breakdown.system) parts.push(`system: ${breakdown.system}`)
   if (breakdown.user) parts.push(`user: ${breakdown.user}`)
   if (breakdown.assistant) parts.push(`assistant: ${breakdown.assistant}`)
+  if (breakdown.tool) parts.push(`tool: ${breakdown.tool}`)
   return parts.join(' | ')
 })
 
@@ -429,26 +1086,45 @@ function handleDocClick(e) {
   if (activeDropdownRef.value && !activeDropdownRef.value.contains(e.target)) {
     activeModelOpen.value = false
   }
+  if (headerMenuOpen.value && !e.target.closest('.chat-header-menu-wrap')) {
+    closeHeaderMenu()
+  }
+  handleWsDocClick(e)
 }
 
 function handleEsc(e) {
-  if (e.key === 'Escape') closeAllModelMenus()
+  if (e.key === 'Escape') {
+    closeAllModelMenus()
+    closeHeaderMenu()
+    if (wsMenuOpen.value) wsMenuOpen.value = false
+  }
 }
 
 onMounted(async () => {
   document.addEventListener('mousedown', handleDocClick)
   document.addEventListener('keydown', handleEsc)
+  wsRepositionHandler = () => {
+    if (wsMenuOpen.value) updateWsMenuPosition()
+  }
+  window.addEventListener('resize', wsRepositionHandler)
+  window.addEventListener('scroll', wsRepositionHandler, true)
   try {
     const res = await api.get('/api/models')
     models.value = res.data
   } catch (err) {
     console.error('Failed to load models', err)
   }
+  loadWorkspaces()
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', handleDocClick)
   document.removeEventListener('keydown', handleEsc)
+  if (wsRepositionHandler) {
+    window.removeEventListener('resize', wsRepositionHandler)
+    window.removeEventListener('scroll', wsRepositionHandler, true)
+    wsRepositionHandler = null
+  }
 })
 
 
@@ -459,15 +1135,23 @@ const templates = [
 ]
 
 function useTemplate(tpl) {
-  inputMessage.value = `使用「${tpl.title}」模板，${tpl.desc}。请帮我生成一份。`
+  const el = inputRef.value
+  const text = `使用「${tpl.title}」模板，${tpl.desc}。请帮我生成一份。`
+  if (el) {
+    el.innerText = text
+    syncEditorState()
+    placeCaretAtEnd(el)
+  }
   nextTick(() => inputRef.value?.focus())
 }
 
 function handleSend() {
-  const content = inputMessage.value.trim()
-  if (!content || props.sending) return
-  emit('send-message', content)
-  inputMessage.value = ''
+  const { content: raw } = getEditorContent()
+  const content = raw.trim()
+  const images = attachedImages.value.map(img => img.data)
+  if ((!content && images.length === 0) || props.sending) return
+  emit('send-message', { content, images })
+  clearComposer()
 }
 
 function copyMessage(msg) {
@@ -479,21 +1163,87 @@ function copyMessage(msg) {
   }).catch(() => {})
 }
 
-function scrollToBottom() {
+const SCROLL_BOTTOM_THRESHOLD = 80
+const autoScrollEnabled = ref(true)
+let isProgrammaticScroll = false
+let touchStartY = 0
+
+function isNearBottom(el) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_BOTTOM_THRESHOLD
+}
+
+function scrollToBottom(force = false) {
   nextTick(() => {
-    if (messagesContainer.value) {
-      messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
-    }
+    const el = messagesContainer.value
+    if (!el || (!force && !autoScrollEnabled.value)) return
+    isProgrammaticScroll = true
+    el.scrollTop = el.scrollHeight
+    requestAnimationFrame(() => {
+      isProgrammaticScroll = false
+    })
   })
 }
 
-// 消息变化时自动滚动到底部
-watch(() => props.currentMessages, scrollToBottom, { deep: true })
+function handleMessagesScroll() {
+  if (isProgrammaticScroll) return
+  const el = messagesContainer.value
+  if (!el) return
+  autoScrollEnabled.value = isNearBottom(el)
+}
+
+function handleMessagesWheel(e) {
+  if (e.deltaY < 0) {
+    autoScrollEnabled.value = false
+  }
+}
+
+function handleMessagesTouchStart(e) {
+  touchStartY = e.touches[0]?.clientY ?? 0
+}
+
+function handleMessagesTouchMove(e) {
+  const y = e.touches[0]?.clientY ?? touchStartY
+  if (touchStartY - y > 8) {
+    autoScrollEnabled.value = false
+  }
+}
+
+// 消息变化时：仅在用户未主动上滑时跟随到底部（搜索定位时不抢滚动）
+watch(() => props.currentMessages, () => {
+  if (props.highlightMessageId) return
+  scrollToBottom()
+}, { deep: true })
+
+// 发送新消息时恢复自动跟随
+watch(() => props.sending, (sending) => {
+  if (sending) {
+    autoScrollEnabled.value = true
+    scrollToBottom(true)
+  }
+})
+
+// 切换会话 / 加载历史消息后滚到底部（搜索定位时除外）
+watch(() => props.currentMessages.length, (len, prevLen) => {
+  if (prevLen === 0 && len > 0) {
+    if (props.highlightMessageId) {
+      scrollToMessage(props.highlightMessageId)
+    } else {
+      autoScrollEnabled.value = true
+      scrollToBottom(true)
+    }
+  }
+})
+
+watch(() => props.highlightMessageId, (id) => {
+  if (id && props.currentMessages.length) {
+    scrollToMessage(id)
+  }
+})
 
 // 新建对话时清空输入框并聚焦
 watch(() => props.hasActiveChat, (val) => {
   if (!val) {
-    inputMessage.value = ''
+    clearComposer()
     nextTick(() => inputRef.value?.focus())
   }
 })

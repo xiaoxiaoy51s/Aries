@@ -6,6 +6,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const language = ref(localStorage.getItem('language') || 'zh')
   const theme = ref(localStorage.getItem('theme') || 'light')
   const settingsOpen = ref(false)
+  const automationOpen = ref(false)
 
   function applyTheme() {
     const root = document.documentElement
@@ -37,6 +38,14 @@ export const useSettingsStore = defineStore('settings', () => {
     settingsOpen.value = false
   }
 
+  function openAutomation() {
+    automationOpen.value = true
+  }
+
+  function closeAutomation() {
+    automationOpen.value = false
+  }
+
   // 初始化
   applyTheme()
   // 监听系统主题变化
@@ -44,5 +53,5 @@ export const useSettingsStore = defineStore('settings', () => {
     if (theme.value === 'system') applyTheme()
   })
 
-  return { language, theme, settingsOpen, setLanguage, setTheme, openSettings, closeSettings, applyTheme }
+  return { language, theme, settingsOpen, automationOpen, setLanguage, setTheme, openSettings, closeSettings, openAutomation, closeAutomation, applyTheme }
 })

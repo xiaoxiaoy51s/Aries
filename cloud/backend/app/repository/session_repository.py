@@ -44,6 +44,13 @@ class SessionRepository:
         await db.commit()
 
     @staticmethod
+    async def update_workspace_dir(db: AsyncSession, session_id: str, workspace_dir: str) -> None:
+        await db.execute(
+            update(Session).where(Session.id == session_id).values(workspace_dir=workspace_dir)
+        )
+        await db.commit()
+
+    @staticmethod
     async def delete(db: AsyncSession, session_id: str) -> None:
         # 先删消息，再删会话
         msgs = await db.execute(select(Message).where(Message.session_id == session_id))
@@ -53,6 +60,23 @@ class SessionRepository:
         session = result.scalar_one_or_none()
         if session:
             await db.delete(session)
+        await db.commit()
+
+    @staticmethod
+    async def list_by_workspace(db: AsyncSession, user_id: int, workspace_name: str) -> list[Session]:
+        result = await db.execute(
+            select(Session)
+            .where(Session.user_id == user_id, Session.workspace_dir == workspace_name)
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def update_workspace_by_name(db: AsyncSession, user_id: int, old_name: str, new_name: str) -> None:
+        await db.execute(
+            update(Session)
+            .where(Session.user_id == user_id, Session.workspace_dir == old_name)
+            .values(workspace_dir=new_name)
+        )
         await db.commit()
 
 

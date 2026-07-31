@@ -26,6 +26,24 @@ const routes = [
     component: () => import('../views/ChatPage.vue'),
     meta: { requiresAuth: true },
   },
+  {
+    path: '/automation',
+    name: 'automation',
+    component: () => import('../views/AutomationPage.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/agents',
+    name: 'agents',
+    component: () => import('../views/SubagentsPage.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/skills',
+    name: 'skills',
+    component: () => import('../views/SkillsPage.vue'),
+    meta: { requiresAuth: true },
+  },
 ]
 
 const router = createRouter({

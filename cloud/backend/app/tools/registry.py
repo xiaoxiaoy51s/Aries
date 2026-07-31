@@ -5,7 +5,7 @@ import inspect
 import json
 from typing import Any
 
-from app.tools import shell, web_search
+from app.tools import file_ops, platform_messaging, scheduled_task, shell, subagent, web_search
 
 # 工具注册表: name -> (schema, executor)
 _REGISTRY: dict[str, tuple[dict, Any]] = {}
@@ -16,6 +16,17 @@ def _register():
     _REGISTRY["run_shell"] = (shell.TOOL_SCHEMA_RUN, shell.execute)
     _REGISTRY["stop_process"] = (shell.TOOL_SCHEMA_STOP, shell.stop_process)
     _REGISTRY["list_processes"] = (shell.TOOL_SCHEMA_LIST, shell.list_processes)
+    _REGISTRY["search_file"] = (file_ops.TOOL_SCHEMA_SEARCH, file_ops.search_file)
+    _REGISTRY["read_file"] = (file_ops.TOOL_SCHEMA_READ, file_ops.read_file)
+    _REGISTRY["write_file"] = (file_ops.TOOL_SCHEMA_WRITE, file_ops.write_file)
+    _REGISTRY["list_files"] = (file_ops.TOOL_SCHEMA_LIST, file_ops.list_files)
+    _REGISTRY["delete_file"] = (file_ops.TOOL_SCHEMA_DELETE, file_ops.delete_file)
+    _REGISTRY["create_scheduled_task"] = (scheduled_task.TOOL_SCHEMA, scheduled_task.execute)
+    _REGISTRY["send_message_to_user"] = (
+        platform_messaging.TOOL_SCHEMA,
+        platform_messaging.execute,
+    )
+    _REGISTRY["delegate_to_subagent"] = (subagent.TOOL_SCHEMA, subagent.execute)
 
 
 _register()

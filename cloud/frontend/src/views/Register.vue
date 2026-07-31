@@ -52,7 +52,7 @@
           type="text"
           required
           autocomplete="username"
-          placeholder="请输入用户名"
+          placeholder="显示名称，可与他人重复"
           class="ds-input"
         />
       </div>

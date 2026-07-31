@@ -1,12 +1,29 @@
 import uuid
 
-from app.exception.model_exception import ModelNotFoundError
+from app.exception.model_exception import DuplicateModelNameError, ModelNotFoundError
 from app.model.model_config import ModelConfig, ModelItem
 from app.repository.model_config_repository import ModelConfigRepository
 
 
 class ModelConfigService:
     """模型配置业务逻辑层"""
+
+    @staticmethod
+    def _resolve_name(name: str | None, model: str) -> str:
+        resolved = (name or "").strip()
+        return resolved or model
+
+    @staticmethod
+    def _ensure_unique_name(
+        models: list[ModelItem],
+        name: str,
+        exclude_id: str | None = None,
+    ) -> None:
+        for m in models:
+            if exclude_id and m.id == exclude_id:
+                continue
+            if m.name == name:
+                raise DuplicateModelNameError()
 
     @staticmethod
     async def list_models(user_email: str) -> list[ModelItem]:
@@ -34,6 +51,8 @@ class ModelConfigService:
     async def create_model(user_email: str, **kwargs) -> ModelItem:
         config = await ModelConfigRepository.read(user_email)
         model_id = kwargs.pop("id", None) or f"model-{uuid.uuid4().hex[:8]}"
+        kwargs["name"] = ModelConfigService._resolve_name(kwargs.get("name"), kwargs["model"])
+        ModelConfigService._ensure_unique_name(config.models, kwargs["name"])
 
         # 如果新模型设为 active，取消其他模型的 active
         if kwargs.get("isActive"):
@@ -60,6 +79,14 @@ class ModelConfigService:
         if update_data.get("isActive") is True:
             for m in config.models:
                 m.isActive = False
+
+        if "name" in update_data or "model" in update_data:
+            next_name = ModelConfigService._resolve_name(
+                update_data.get("name", target.name),
+                update_data.get("model", target.model),
+            )
+            ModelConfigService._ensure_unique_name(config.models, next_name, exclude_id=target.id)
+            update_data["name"] = next_name
 
         for key, value in update_data.items():
             if hasattr(target, key) and value is not None:

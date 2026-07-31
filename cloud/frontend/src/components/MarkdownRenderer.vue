@@ -33,12 +33,13 @@ import DOMPurify from 'dompurify'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import { useI18n } from '../i18n'
+import { getFileIconUrl } from '../utils/fileIcons'
 
 const { t } = useI18n()
 
 const props = defineProps({
   content: { type: String, default: '' },
-  textColor: { type: String, default: '#1a1a1a' },
+  textColor: { type: String, default: 'var(--text-default)' },
   fontSize: { type: Number, default: 15 },
   showActions: { type: Boolean, default: true },
   isStreaming: { type: Boolean, default: false },
@@ -71,13 +72,52 @@ const md = new MarkdownIt({
   },
 })
 
+// 关闭模糊链接匹配，避免 hello.py / test.go 等文件名被误识别为链接（.py 等是顶级域名）
+md.linkify.set({ fuzzyLink: false, fuzzyEmail: false })
+
 // ── KaTeX 渲染辅助 ──────────────────────────────────
+const katexPlaceholders = []
+// 文件引用 [@file:path#L3] 占位符
+const filerefPlaceholders = []
+
+function escapeRefHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[c])
+}
+
+// 把 [@file:path#L3] 构造成消息内联 chip HTML
+function buildFilerefChip(ref) {
+  const hashIdx = ref.lastIndexOf('#L')
+  const fullPath = hashIdx >= 0 ? ref.slice(0, hashIdx) : ref
+  const lines = hashIdx >= 0 ? ref.slice(hashIdx + 1) : ''
+  const name = fullPath.includes('/') ? fullPath.slice(fullPath.lastIndexOf('/') + 1) : fullPath
+  const icon = getFileIconUrl(name)
+  return (
+    `<span class="msg-file-ref-chip" data-ref="${escapeRefHtml(ref)}">` +
+    `<img src="${escapeRefHtml(icon)}" width="13" height="13" alt="" class="msg-file-ref-icon" />` +
+    `<span class="msg-file-ref-name">${escapeRefHtml(name)}</span>` +
+    (lines ? `<span class="msg-file-ref-lines">${escapeRefHtml(lines)}</span>` : '') +
+    `</span>`
+  )
+}
+
+function restoreFilerefPlaceholders(html) {
+  return html.replace(/§FILEREF(\d+)§/g, (_m, i) => filerefPlaceholders[Number(i)] ?? _m)
+}
+
 function renderKatex(formula, displayMode) {
   try {
-    return katex.renderToString(formula.trim(), { displayMode, throwOnError: false, strict: 'ignore' })
+    const html = katex.renderToString(formula.trim(), { displayMode, throwOnError: false, strict: 'ignore' })
+    katexPlaceholders.push(html)
+    return `§KATEX${katexPlaceholders.length - 1}§`
   } catch {
     return displayMode ? `$$${formula}$$` : `$${formula}$`
   }
+}
+
+function restoreKatexPlaceholders(html) {
+  return html.replace(/§KATEX(\d+)§/g, (_m, i) => katexPlaceholders[Number(i)] ?? _m)
 }
 
 const LATEX_HINT = /\\(?:frac|sqrt|sum|int|cdot|times|implies|text|left|right|begin|end|alpha|beta|gamma|pi|theta|leq|geq|neq|pm|mp|infty|partial|nabla)/
@@ -88,7 +128,15 @@ function looksLikeLatex(body) {
   if (LATEX_HINT.test(s)) return true
   if (/[\^_]\{/.test(s)) return true
   if (/\\[a-zA-Z]+/.test(s)) return true
+  if (/[=+\-*/^_{}()[\]\\]/.test(s)) return true
+  if (/^[A-Za-z](?:'[A-Za-z])?(?:\([^)]*\))?$/.test(s)) return true
   return false
+}
+
+function normalizeMathDelimiters(raw) {
+  return raw
+    .replace(/\uFF04/g, '$')
+    .replace(/\uFE69/g, '$')
 }
 
 /** 在 markdown-it 之前统一处理各类 LaTeX 定界符 */
@@ -102,6 +150,12 @@ function preprocessMath(raw) {
   text = text.replace(/`[^`\n]+`/g, (m) => {
     inlineCodes.push(m)
     return `\x00INLINE${inlineCodes.length - 1}\x00`
+  })
+
+  // 先提取文件引用 [@file:path#L3]，避免被后续规则破坏
+  text = text.replace(/\[@file:([^\]]+?)\]/g, (_m, ref) => {
+    filerefPlaceholders.push(buildFilerefChip(ref))
+    return `§FILEREF${filerefPlaceholders.length - 1}§`
   })
 
   // 块级：\[ ... \]、$$ ... $$
@@ -120,7 +174,20 @@ function preprocessMath(raw) {
   text = text.replace(/\\\(([\s\S]+?)\\\)/g, (_m, f) => renderKatex(f, false))
 
   // 行内：$ ... $（不含换行）
-  text = text.replace(/(?<!\$)\$(?!\$)([^\$\n]+?)(?<!\$)\$(?!\$)/g, (_m, f) => renderKatex(f, false))
+  text = text.replace(/(?<!\$)\$(?!\$)([^\$\n]+?)(?<!\$)\$(?!\$)/g, (match, f) => {
+    const body = f.trim()
+    if (!body || /^\d+(?:\.\d{1,2})?$/.test(body)) return match
+    return renderKatex(f, false)
+  })
+
+  // 兜底：仍残留的 $...$（兼容不支持 lookbehind 的环境）
+  text = text.replace(/\$([^\$\n]+?)\$/g, (match, f) => {
+    if (match.includes('§KATEX')) return match
+    const body = f.trim()
+    if (!body || /^\d+(?:\.\d{1,2})?$/.test(body)) return match
+    if (!looksLikeLatex(body)) return match
+    return renderKatex(f, false)
+  })
 
   // 行内：( \frac{...} ) 等带 LaTeX 命令的圆括号
   text = text.replace(/\(\s*((?:\\(?:[a-zA-Z]+|\{[^}]*\})|[\^_{}\d\s=+\-*/().,|<>!:])+?)\s*\)/g, (match, f) =>
@@ -139,7 +206,7 @@ md.renderer.rules.fence = function (tokens, idx, options, env, self) {
   const info = token.info ? md.utils.unescapeAll(token.info).trim() : ''
   if (info === 'math' || info === 'latex') {
     try {
-      return katex.renderToString(token.content, { displayMode: true, throwOnError: false })
+      return renderKatex(token.content, true)
     } catch (_) {
       return `<pre>${md.utils.escapeHtml(token.content)}</pre>`
     }
@@ -150,12 +217,19 @@ md.renderer.rules.fence = function (tokens, idx, options, env, self) {
 // ── 渲染管道 ──────────────────────────────────────────
 function renderMarkdownToHtml(raw) {
   if (!raw) return ''
-  const html = preprocessMath(raw)
+  katexPlaceholders.length = 0
+  filerefPlaceholders.length = 0
+  const html = preprocessMath(normalizeMathDelimiters(raw))
   const rendered = md.render(html)
-  return DOMPurify.sanitize(rendered, {
-    ADD_ATTR: ['target', 'rel', 'class', 'style', 'aria-hidden'],
-    ADD_TAGS: ['span', 'math', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'msup', 'msub', 'mfrac', 'mspace', 'annotation', 'svg', 'path', 'line', 'rect', 'g', 'use'],
+  const sanitized = DOMPurify.sanitize(rendered, {
+    ADD_ATTR: ['target', 'rel', 'class', 'style', 'aria-hidden', 'xmlns', 'data-ref'],
+    ADD_TAGS: [
+      'span', 'math', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'msup', 'msub', 'mfrac', 'mspace',
+      'annotation', 'svg', 'path', 'line', 'rect', 'g', 'use', 'msqrt', 'mtext', 'mtable', 'mtr',
+      'mtd', 'mstyle', 'mpadded', 'menclose', 'mover', 'munder', 'munderover', 'ms', 'mglyph',
+    ],
   })
+  return restoreFilerefPlaceholders(restoreKatexPlaceholders(sanitized))
 }
 
 // ── 流式节流渲染 ──────────────────────────────────────
@@ -299,6 +373,7 @@ function copyAllContent() {
   -moz-osx-font-smoothing: grayscale;
   line-height: 1.65;
   color: v-bind('textColor');
+  background-color: transparent !important;
 }
 
 /* 覆盖 github-markdown-css 的默认颜色 */
@@ -330,6 +405,11 @@ function copyAllContent() {
 .markdown-body :deep(.katex-display) {
   margin: 6px 0;
   overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.markdown-body :deep(.katex-display > .katex) {
+  max-width: none;
 }
 
 .markdown-body :deep(.katex) {
@@ -338,7 +418,7 @@ function copyAllContent() {
 
 /* 代码块样式 */
 .markdown-body :deep(.code-block-wrapper) {
-  background-color: #f4f4f5;
+  background-color: var(--bg-base-tertiary, #f4f4f5);
   border-radius: 8px;
   margin: 8px 0;
   overflow: hidden;
@@ -350,13 +430,13 @@ function copyAllContent() {
   justify-content: space-between;
   align-items: center;
   padding: 3px 10px;
-  background-color: #e4e4e7;
+  background-color: var(--bg-overlay-l2, #e4e4e7);
   min-height: 24px;
 }
 
 .markdown-body :deep(.code-lang) {
   font-size: 11px;
-  color: #71717a;
+  color: var(--text-tertiary, #71717a);
   text-transform: lowercase;
 }
 
@@ -369,16 +449,17 @@ function copyAllContent() {
   border: none;
   cursor: pointer;
   font-size: 13px;
-  color: #52525b;
+  color: var(--text-tertiary, #52525b);
 }
 
 .markdown-body :deep(.copy-btn:hover) {
-  color: #18181b;
+  color: var(--text-default, #18181b);
 }
 
 .markdown-body :deep(pre) {
   padding: 10px;
   overflow-x: auto;
+  overflow-y: hidden;
   background: transparent !important;
   border: none;
   margin: 0;
@@ -392,11 +473,11 @@ function copyAllContent() {
   font-feature-settings: 'liga' 0;
   background: transparent !important;
   padding: 0;
-  color: #27272a;
+  color: var(--text-default, #27272a);
 }
 
 .markdown-body :deep(code:not(pre code)) {
-  background: rgba(110, 118, 129, 0.10);
+  background: var(--bg-overlay-l2, rgba(110, 118, 129, 0.10));
   padding: 2px 6px;
   border-radius: 5px;
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas,
@@ -409,21 +490,34 @@ function copyAllContent() {
   display: block;
   width: 100%;
   overflow-x: auto;
+  overflow-y: hidden;
   border-collapse: collapse;
   border: none;
+  background: transparent !important;
 }
 
-.markdown-body :deep(th),
-.markdown-body :deep(td) {
+.markdown-body :deep(table thead),
+.markdown-body :deep(table tbody),
+.markdown-body :deep(table tr) {
+  background: transparent !important;
+}
+
+.markdown-body :deep(table tr:nth-child(2n)) {
+  background: var(--bg-overlay-l1) !important;
+}
+
+.markdown-body :deep(table th),
+.markdown-body :deep(table td) {
   padding: 8px;
   font-size: 14px;
   border: none;
   text-align: left;
+  color: var(--text-default);
 }
 
-.markdown-body :deep(th) {
+.markdown-body :deep(table th) {
   font-weight: bold;
-  background: var(--bg-base-secondary);
+  background: var(--bg-base-tertiary) !important;
 }
 
 .markdown-body :deep(blockquote) {

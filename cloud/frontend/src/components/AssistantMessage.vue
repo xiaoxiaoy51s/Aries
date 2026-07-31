@@ -21,61 +21,88 @@
       </span>
     </div>
 
-    <!-- 按事件顺序渲染 blocks -->
-    <template v-for="(block, index) in computedBlocks" :key="index">
-      <!-- 思考过程块 -->
-      <div v-if="block.type === 'reasoning'" class="work-block">
-        <div class="work-header" @click="toggleReasoning(index)">
-          <svg class="work-icon" :class="{ expanded: isReasoningOpen(index) }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+    <!-- 按事件顺序渲染 blocks，连续的非文本块合并为可折叠的工作过程 -->
+    <template v-for="(group, gIndex) in renderedGroups" :key="gIndex">
+      <!-- 非文本块组：统一折叠 -->
+      <div v-if="!group.isText" class="work-block">
+        <div class="work-header" @click="toggleWork(gIndex)">
+          <svg class="work-icon" :class="{ expanded: isWorkOpen(gIndex) }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
             <path d="m9 18 6-6-6-6"/>
           </svg>
-          <span class="work-title">{{ isLoading && !hasContentAfter(index) ? '思考中…' : '思考过程' }}</span>
+          <span class="work-title">{{ groupTitle(group) }}</span>
+          <span v-if="groupRunningCount(group) > 0" class="work-running-badge">{{ groupRunningCount(group) }} 运行中</span>
         </div>
-        <div v-show="isReasoningOpen(index)" class="work-content">
-          <div class="reasoning-text">{{ block.text }}</div>
-        </div>
-      </div>
-
-      <!-- 工具调用块 -->
-      <div v-else-if="block.type === 'tool'" class="tool-block">
-        <div v-if="!isToolExpanded(block.toolCallId)" class="tool-header" @click="toggleTool(block.toolCallId)">
-          <svg class="tool-icon" :class="{ expanded: isToolExpanded(block.toolCallId) }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-            <path d="m9 18 6-6-6-6"/>
-          </svg>
-          <span class="tool-name">{{ block.toolName }}</span>
-          <span v-if="block.args && block.args.query" class="tool-args-preview">{{ block.args.query }}</span>
-          <span v-else-if="block.args && Object.keys(block.args).length > 0" class="tool-args-preview">{{ JSON.stringify(block.args).slice(0, 60) }}</span>
-          <span v-if="block.status === 'running'" class="tool-running-badge">运行中…</span>
-        </div>
-        <div v-else class="tool-body">
-          <div class="tool-body-header" @click="toggleTool(block.toolCallId)">
-            <svg class="tool-icon expanded" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-              <path d="m9 18 6-6-6-6"/>
-            </svg>
-            <span class="tool-name">{{ block.toolName }}</span>
-            <span v-if="block.args && block.args.query" class="tool-args-preview">{{ block.args.query }}</span>
-            <span v-else-if="block.args && Object.keys(block.args).length > 0" class="tool-args-preview">{{ JSON.stringify(block.args).slice(0, 60) }}</span>
-          </div>
-          <div v-if="block.args && Object.keys(block.args).length > 0" class="tool-section">
-            <span class="section-label">参数</span>
-            <pre class="code-text">{{ JSON.stringify(block.args, null, 2) }}</pre>
-          </div>
-          <div v-if="block.result" class="tool-section">
-            <span class="section-label">结果</span>
-            <pre class="code-text">{{ block.result }}</pre>
-          </div>
-          <div v-else-if="block.status === 'running'" class="tool-section">
-            <span class="running-text">运行中…</span>
-          </div>
+        <div v-show="isWorkOpen(gIndex)" class="work-content">
+          <template v-for="(block, idx) in group.blocks" :key="idx">
+            <!-- 思考过程 -->
+            <div v-if="block.type === 'reasoning'" class="work-step reasoning-step">
+              <MarkdownRenderer
+                :content="block.text"
+                :show-actions="false"
+                :is-streaming="isLoading && isLastBlock(block)"
+                :font-size="12"
+                text-color="#94a3b8"
+                class="reasoning-markdown"
+              />
+            </div>
+            <!-- 工具调用 -->
+            <div v-else-if="block.type === 'tool' && block.toolName === 'delegate_to_subagent'" class="work-step">
+              <SubagentEmbed
+                :args="block.args || {}"
+                :subagent="block.subagent"
+                :status="block.status"
+                :result="block.result"
+              />
+            </div>
+            <div v-else-if="block.type === 'tool'" class="work-step tool-step">
+              <div class="tool-step-header" @click="toggleToolStep(group.startIndex + idx)">
+                <svg class="tool-icon" :class="{ expanded: isToolStepOpen(group.startIndex + idx) }" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="m9 18 6-6-6-6"/>
+                </svg>
+                <span class="tool-name">{{ block.toolName }}</span>
+                <span v-if="block.args && block.args.query" class="tool-args-preview">{{ block.args.query }}</span>
+                <span v-else-if="block.args && Object.keys(block.args).length > 0" class="tool-args-preview">{{ JSON.stringify(block.args).slice(0, 60) }}</span>
+                <span v-if="block.status === 'running'" class="tool-running-badge">运行中…</span>
+              </div>
+              <div v-show="isToolStepOpen(group.startIndex + idx)" class="tool-step-body">
+                <div v-if="block.args && Object.keys(block.args).length > 0" class="tool-section">
+                  <span class="section-label">参数</span>
+                  <pre v-if="!hasCodeContent(block)" class="code-text">{{ JSON.stringify(block.args, null, 2) }}</pre>
+                  <template v-else>
+                    <div v-for="(value, key) in block.args" :key="key" class="arg-row">
+                      <span class="arg-key">{{ key }}</span>
+                      <MarkdownRenderer
+                        v-if="key === 'content' || key === 'old_string' || key === 'new_string'"
+                        :content="formatCodeArg(value)"
+                        :show-actions="false"
+                        class="arg-markdown"
+                      />
+                      <pre v-else class="code-text">{{ JSON.stringify(value, null, 2) }}</pre>
+                    </div>
+                  </template>
+                </div>
+                <div v-if="block.result" class="tool-section">
+                  <span class="section-label">结果</span>
+                  <pre class="code-text">{{ block.result }}</pre>
+                </div>
+                <div v-else-if="block.status === 'running'" class="tool-section">
+                  <span class="running-text">运行中…</span>
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
       </div>
 
       <!-- 文本内容块 -->
-      <div v-else-if="block.type === 'text'" class="message-content">
+      <div v-else class="message-content">
         <MarkdownRenderer
+          v-for="(block, idx) in group.blocks"
+          :key="idx"
           :content="block.text"
-          :is-streaming="isLoading && !hasContentAfter(index)"
+          :is-streaming="isLoading && isLastBlock(block)"
           :show-actions="false"
+          :font-size="15"
         />
       </div>
     </template>
@@ -105,6 +132,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import MarkdownRenderer from './MarkdownRenderer.vue'
+import SubagentEmbed from './SubagentEmbed.vue'
 import { useI18n } from '../i18n'
 import {
   streamDurationTick,
@@ -128,6 +156,11 @@ const props = defineProps({
   toolCalls: { type: Array, default: () => [] },
   blocks: { type: Array, default: () => [] },
 })
+
+// 判断块是否是文本类型（兼容 text 和 assistant_text）
+function isTextBlock(block) {
+  return block.type === 'text' || block.type === 'assistant_text'
+}
 
 // 若父级未提供 blocks（如历史消息），从 content/reasoning/toolCalls 生成后备 blocks
 const computedBlocks = computed(() => {
@@ -154,28 +187,91 @@ const computedBlocks = computed(() => {
   return fallback
 })
 
-const expandedReasoning = ref({})
-const expandedTools = ref({})
+// 判断消息是否完整：最后一个块是文本类型表示工作已完成
+const isComplete = computed(() => {
+  const blocks = computedBlocks.value
+  if (!blocks.length) return false
+  return isTextBlock(blocks[blocks.length - 1])
+})
+
+// 按事件顺序分组：连续同类型（文本/非文本）的块合并为一组
+const renderedGroups = computed(() => {
+  const blocks = computedBlocks.value
+  const groups = []
+  let current = null
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i]
+    const isText = isTextBlock(b)
+    if (!current || current.isText !== isText) {
+      current = { isText, blocks: [], startIndex: i }
+      groups.push(current)
+    }
+    current.blocks.push(b)
+  }
+  return groups
+})
+
+function groupTitle(group) {
+  return t('chat.deepThinking')
+}
+
+function groupRunningCount(group) {
+  return group.blocks.filter(b => {
+    if (b.type !== 'tool') return false
+    if (b.toolName === 'delegate_to_subagent') {
+      const s = b.subagent?.status || b.status
+      return !s || s === 'running' || s === 'pending' || s === 'stalled'
+    }
+    return b.status === 'running'
+  }).length
+}
+
+const workExpanded = ref({})
+// 默认：完整消息折叠工作过程，未完成消息强制展开
+function isWorkOpen(gIndex) {
+  if (gIndex in workExpanded.value) return workExpanded.value[gIndex]
+  if (!isComplete.value) return true
+  return false
+}
+function toggleWork(gIndex) {
+  workExpanded.value = { ...workExpanded.value, [gIndex]: !isWorkOpen(gIndex) }
+}
+
 const copied = ref(false)
 let copyTimer = null
 
-function toggleReasoning(index) {
-  expandedReasoning.value = { ...expandedReasoning.value, [index]: !expandedReasoning.value[index] }
+// 工具步骤展开状态（默认折叠）
+const expandedToolSteps = ref({})
+function toggleToolStep(idx) {
+  expandedToolSteps.value = { ...expandedToolSteps.value, [idx]: !expandedToolSteps.value[idx] }
 }
-function isReasoningOpen(index) {
-  if (index in expandedReasoning.value) return expandedReasoning.value[index]
-  return props.isLoading
-}
-
-function toggleTool(id) {
-  expandedTools.value = { ...expandedTools.value, [id]: !expandedTools.value[id] }
-}
-function isToolExpanded(id) {
-  return !!expandedTools.value[id]
+function isToolStepOpen(idx) {
+  return !!expandedToolSteps.value[idx]
 }
 
-function hasContentAfter(index) {
-  return computedBlocks.value.slice(index + 1).some(b => b.type === 'text')
+// 判断工具参数是否包含代码内容（需要 Markdown 渲染）
+const CODE_ARG_KEYS = ['content', 'old_string', 'new_string']
+function hasCodeContent(block) {
+  if (!block.args) return false
+  return CODE_ARG_KEYS.some(k => k in block.args && typeof block.args[k] === 'string')
+}
+
+// 将代码参数字段包装为 markdown 代码块（尝试推断语言）
+function formatCodeArg(value) {
+  const text = String(value || '')
+  // 简单推断语言：按首行 shebang 或文件路径后缀
+  let lang = ''
+  const firstLine = text.split('\n')[0] || ''
+  if (firstLine.startsWith('#!/usr/bin/env python') || firstLine.startsWith('#!/usr/bin/python')) lang = 'python'
+  else if (firstLine.startsWith('#!/usr/bin/env node') || firstLine.startsWith('#!/usr/bin/node')) lang = 'javascript'
+  else if (firstLine.startsWith('#!/bin/bash') || firstLine.startsWith('#!/bin/sh')) lang = 'bash'
+  return '```' + lang + '\n' + text + '\n```'
+}
+
+function isLastBlock(block) {
+  const blocks = computedBlocks.value
+  if (!blocks.length) return false
+  return block === blocks[blocks.length - 1]
 }
 
 // ---------- 实时计时 ----------
@@ -245,7 +341,7 @@ function formatDuration(ms) {
   return `${m}m${rest}s`
 }
 
-const content = computed(() => props.content || computedBlocks.value.filter(b => b.type === 'text').map(b => b.text).join(''))
+const content = computed(() => props.content || computedBlocks.value.filter(b => isTextBlock(b)).map(b => b.text).join(''))
 const hasMetaInfo = computed(() => !!(props.isLoading || props.model || formattedDuration.value || tokenInput.value || tokenOutput.value || tokenTotal.value))
 
 function copyContent() {
@@ -298,9 +394,9 @@ function copyContent() {
   color: var(--text-secondary, #666);
 }
 
-/* 思考过程块 */
+/* 工作过程块：外层无灰色框，仅标题可折叠 */
 .work-block {
-  margin: 2px 0 3px;
+  margin: 2px 0 6px;
 }
 
 .work-header {
@@ -323,7 +419,7 @@ function copyContent() {
 .work-icon {
   transition: transform 0.18s;
   flex-shrink: 0;
-  opacity: 0.85;
+  opacity: 0.7;
 }
 
 .work-icon.expanded {
@@ -334,12 +430,18 @@ function copyContent() {
   font-weight: 400;
 }
 
+.work-running-badge {
+  font-size: 11px;
+  color: #3b82f6;
+  font-style: italic;
+  margin-left: 4px;
+}
+
 .work-content {
-  margin-top: 5px;
-  max-height: 360px;
+  margin-top: 6px;
+  max-height: 480px;
   overflow-y: auto;
   overflow-x: hidden;
-  padding-right: 4px;
 }
 
 .work-content::-webkit-scrollbar {
@@ -347,17 +449,131 @@ function copyContent() {
 }
 
 .work-content::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.14);
+  background: var(--border-neutral-l2, rgba(0, 0, 0, 0.14));
   border-radius: 3px;
+}
+
+.work-step {
+  padding: 4px 0;
+}
+
+.step-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-tertiary, #94a3b8);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-bottom: 4px;
+  display: block;
+}
+
+.reasoning-step {
+  background: var(--bg-base-secondary, #f9fafb);
+  border: 1px solid var(--border-neutral-l1, #e5e7eb);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.reasoning-markdown :deep(.markdown-body) {
+  line-height: 1.45;
+}
+
+.reasoning-markdown :deep(.markdown-body p),
+.reasoning-markdown :deep(.markdown-body li),
+.reasoning-markdown :deep(.markdown-body td),
+.reasoning-markdown :deep(.markdown-body th) {
+  font-size: 12px !important;
+  color: #94a3b8 !important;
+}
+
+.reasoning-markdown :deep(.markdown-body h1),
+.reasoning-markdown :deep(.markdown-body h2),
+.reasoning-markdown :deep(.markdown-body h3),
+.reasoning-markdown :deep(.markdown-body h4) {
+  font-size: 13px !important;
+  color: #6b7280 !important;
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+
+.reasoning-markdown :deep(.markdown-body .katex) {
+  font-size: 0.95em;
+}
+
+.reasoning-markdown :deep(.markdown-body .code-block-wrapper) {
+  margin: 4px 0;
+}
+
+.reasoning-markdown :deep(.markdown-body pre code) {
+  font-size: 11px;
 }
 
 .reasoning-text {
   margin: 0;
-  line-height: 1.5;
-  font-size: 13px;
+  line-height: 1.45;
+  font-size: 12px;
   color: var(--text-tertiary, #94a3b8);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 工具步骤：单独灰色框包裹，默认收起 */
+.tool-step {
+  margin: 4px 0;
+  background: var(--bg-base-tertiary, #f5f5f5);
+  border: 1px solid var(--border-neutral-l1, #e5e7eb);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.tool-step-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-secondary, #475569);
+}
+
+.tool-step-header:hover {
+  color: var(--text-default, #1e293b);
+}
+
+.tool-icon {
+  transition: transform 0.18s;
+  flex-shrink: 0;
+  opacity: 0.6;
+  color: var(--text-tertiary, #9ca3af);
+}
+
+.tool-icon.expanded {
+  transform: rotate(90deg);
+}
+
+.tool-step .step-label {
+  margin-bottom: 0;
+}
+
+.tool-step-body {
+  margin-top: 8px;
+}
+
+.arg-row {
+  margin: 6px 0;
+}
+
+.arg-key {
+  font-size: 10px;
+  font-weight: 500;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-bottom: 2px;
+  display: block;
+}
+
+.arg-markdown {
+  font-size: 13px;
 }
 
 /* 回复内容 */
@@ -418,56 +634,17 @@ function copyContent() {
   color: var(--text-secondary, #666);
 }
 
-/* ============ 工具调用块（灰色框包裹） ============ */
-.tools-block,
-.tool-block {
-  margin: 2px 0 4px;
-  background: #f5f5f5;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  padding: 3px 8px;
-}
-
-.tool-header,
-.tool-body-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 0;
-  cursor: pointer;
-  user-select: none;
-  min-height: 20px;
-  border-radius: 4px;
-  transition: background 0.15s;
-}
-
-.tool-header:hover,
-.tool-body-header:hover {
-  background: rgba(0, 0, 0, 0.04);
-}
-
-.tool-icon {
-  transition: transform 0.18s;
-  flex-shrink: 0;
-  opacity: 0.7;
-  color: #9ca3af;
-}
-
-.tool-icon.expanded {
-  transform: rotate(90deg);
-}
-
+/* 工具步骤内部样式 */
 .tool-name {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
-  color: #475569;
-  flex-shrink: 0;
+  color: var(--text-secondary, #475569);
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
 }
 
 .tool-args-preview {
   font-size: 11px;
-  color: #94a3b8;
+  color: var(--text-tertiary, #94a3b8);
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -475,24 +652,13 @@ function copyContent() {
   white-space: nowrap;
 }
 
-.tool-running-badge {
-  font-size: 11px;
-  color: #3b82f6;
-  font-style: italic;
-  flex-shrink: 0;
-}
-
-.tool-body {
-  border-radius: 4px;
-}
-
 .tool-section {
-  padding: 2px 0;
+  padding: 4px 0;
 }
 
 .section-label {
   font-size: 10px;
-  color: #94a3b8;
+  color: var(--text-tertiary, #94a3b8);
   margin-bottom: 2px;
   display: block;
 }
@@ -500,7 +666,7 @@ function copyContent() {
 .code-text {
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
   font-size: 11px;
-  color: #64748b;
+  color: var(--text-secondary, #64748b);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-all;

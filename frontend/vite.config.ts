@@ -19,7 +19,10 @@ export default defineConfig({
     },
   },
   server: {
+    // Electron/Chromium 在 Windows 上常优先走 127.0.0.1；仅 [::1] 会导致 loadURL 白屏
+    host: '127.0.0.1',
     port: 5173,
+    strictPort: true,
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:30000',

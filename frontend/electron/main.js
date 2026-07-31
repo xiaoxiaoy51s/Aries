@@ -363,15 +363,27 @@ function createWindow() {
 
   const isDev = process.env.NODE_ENV !== 'production' && !app.isPackaged
   if (isDev) {
-    win.loadURL('http://localhost:5173')
+    // 与浏览器保持一致用 localhost（Vite 已绑定 127.0.0.1，localhost 会回落到 IPv4）
+    const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173'
+    win.webContents.on('did-fail-load', (_event, code, desc, url) => {
+      console.error(`[Window] failed to load ${url}: ${code} ${desc}`)
+    })
+    win.webContents.on('did-finish-load', () => {
+      // 避免误触 Ctrl+- 或不同 origin 缓存的缩放导致字体变小
+      win.webContents.setZoomLevel(0)
+    })
+    win.loadURL(devUrl)
   } else {
     win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
   }
 
-  // F12 打开/关闭 DevTools（类似浏览器行为）
+  // F12 打开/关闭 DevTools；Ctrl+0 重置缩放
   win.webContents.on('before-input-event', (event, input) => {
     if (input.key === 'F12') {
       win.webContents.toggleDevTools()
+    }
+    if (input.control && !input.shift && !input.alt && input.key === '0') {
+      win.webContents.setZoomLevel(0)
     }
   })
 

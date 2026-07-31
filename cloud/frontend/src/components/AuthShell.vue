@@ -103,9 +103,9 @@ const features = [
   width: 100%;
   position: relative;
   background:
-    radial-gradient(1200px 800px at 12% 18%, rgba(75, 63, 227, 0.12), transparent 60%),
-    radial-gradient(1000px 700px at 88% 82%, rgba(106, 111, 255, 0.12), transparent 60%),
-    linear-gradient(135deg, #F3F2FF 0%, #FAFAFE 50%, #F0F3FF 100%);
+    radial-gradient(1200px 800px at 12% 18%, rgba(22, 100, 255, 0.12), transparent 60%),
+    radial-gradient(1000px 700px at 88% 82%, rgba(56, 123, 255, 0.12), transparent 60%),
+    linear-gradient(135deg, #EBF1FF 0%, #F6F8FA 50%, #EBF1FF 100%);
   padding: 96px var(--spacer-48) var(--spacer-48);
   box-sizing: border-box;
   display: flex;
@@ -151,8 +151,8 @@ const features = [
   padding: var(--spacer-40) var(--spacer-40);
   border-radius: var(--radius-20);
   background:
-    radial-gradient(600px 400px at 0% 0%, rgba(75, 63, 227, 0.08), transparent 70%),
-    linear-gradient(160deg, #ECEAFF 0%, #F6F5FF 45%, #FFFFFF 100%);
+    radial-gradient(600px 400px at 0% 0%, rgba(22, 100, 255, 0.08), transparent 70%),
+    linear-gradient(160deg, #EBF1FF 0%, #F6F8FA 45%, #FFFFFF 100%);
   border: 1px solid var(--border-neutral-l1);
   display: flex;
   flex-direction: column;
@@ -223,7 +223,7 @@ const features = [
   border-radius: var(--radius-20);
   background-color: var(--bg-base-default);
   border: 1px solid var(--border-neutral-l1);
-  box-shadow: 0 8px 32px rgba(75, 63, 227, 0.06), 0 1px 4px rgba(0, 0, 0, 0.03);
+  box-shadow: 0 8px 32px rgba(22, 100, 255, 0.06), 0 1px 4px rgba(0, 0, 0, 0.03);
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
