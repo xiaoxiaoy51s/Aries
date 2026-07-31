@@ -346,11 +346,16 @@ def build_skills_prompt_section(
     *,
     for_main: bool = True,
     allowed_names: list[str] | None = None,
+    filter_names: list[str] | None = None,
 ) -> str:
     if for_main:
         entries = list_main_skills(email)
     else:
         entries = resolve_skills_for_agent(email, allowed_names)
+
+    if filter_names is not None:
+        wanted = {str(n).strip() for n in filter_names if str(n).strip()}
+        entries = [e for e in entries if e.folder_name in wanted or e.name in wanted]
 
     if not entries:
         return ""

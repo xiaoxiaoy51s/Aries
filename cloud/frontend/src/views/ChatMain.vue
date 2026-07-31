@@ -1,9 +1,5 @@
 <template>
   <main class="chat-main">
-    <div v-if="asAgent" class="chat-as-agent-bar">
-      <span>{{ t('chat.asAgentBar', { name: asAgent }) }}</span>
-      <button type="button" class="chat-as-agent-clear" @click="$emit('create-new-chat')">{{ t('chat.asAgentClear') }}</button>
-    </div>
     <!-- 空状态：欢迎页 + 输入框 + 模板画廊 -->
     <div v-if="!hasActiveChat" class="chat-empty">
       <div class="chat-empty-inner">
@@ -12,10 +8,10 @@
             <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
             <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
           </svg>
-          <h1 class="chat-welcome-title">{{ asAgent ? t('chat.asAgentTitle', { name: asAgent }) : 'Work with Aries Cloud' }}</h1>
+          <h1 class="chat-welcome-title">{{ activeAgentName ? t('chat.asAgentTitle', { name: activeAgentName }) : 'Work with Aries Cloud' }}</h1>
         </div>
         <p class="chat-welcome-sub">
-          {{ asAgent ? t('chat.asAgentSubtitle') : t('chat.welcomeSubtitle') }}
+          {{ activeAgentName ? t('chat.asAgentSubtitle') : t('chat.welcomeSubtitle') }}
         </p>
 
         <!-- 输入框 -->
@@ -47,6 +43,37 @@
                   <rect x="3" y="3" width="18" height="18" rx="2"/>
                   <circle cx="9" cy="9" r="2"/>
                   <path d="m21 15-3.5-3.5a2 2 0 0 0-2.8 0L6 21"/>
+                </svg>
+              </button>
+              <button
+                type="button"
+                ref="agentTriggerRef"
+                class="composer-pill-btn"
+                :class="{ 'is-active': agentMenuOpen, 'has-value': !!activeAgentName }"
+                @click="toggleAgentMenu"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2a5 5 0 1 0 0 10 5 5 0 0 0 0-10z"/>
+                  <path d="M12 14c-4.4 0-8 2.7-8 6v2h16v-2c0-3.3-3.6-6-8-6z"/>
+                </svg>
+                <span class="composer-pill-label">{{ activeAgentName || t('chat.mainAgent') }}</span>
+                <svg class="composer-pill-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </button>
+              <button
+                type="button"
+                ref="skillTriggerRef"
+                class="composer-pill-btn"
+                :class="{ 'is-active': skillMenuOpen, 'has-value': selectedSkills.length > 0 }"
+                @click="toggleSkillMenu"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                </svg>
+                <span class="composer-pill-label">{{ skillButtonLabel }}</span>
+                <svg class="composer-pill-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="6 9 12 15 18 9"/>
                 </svg>
               </button>
             </div>
@@ -277,7 +304,7 @@
       <header class="chat-header">
         <div class="chat-header-start">
           <h2 class="chat-header-title" :title="currentSession?.title">
-            {{ asAgent ? `[${asAgent}] ${currentSession?.title || ''}` : currentSession?.title }}
+            {{ activeAgentName ? `[${activeAgentName}] ${currentSession?.title || ''}` : currentSession?.title }}
           </h2>
           <div v-if="currentSession" class="chat-header-menu-wrap">
             <button
@@ -405,6 +432,37 @@
                   <path d="m21 15-3.5-3.5a2 2 0 0 0-2.8 0L6 21"/>
                 </svg>
               </button>
+              <button
+                type="button"
+                ref="agentTriggerRef"
+                class="composer-pill-btn"
+                :class="{ 'is-active': agentMenuOpen, 'has-value': !!activeAgentName }"
+                @click="toggleAgentMenu"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2a5 5 0 1 0 0 10 5 5 0 0 0 0-10z"/>
+                  <path d="M12 14c-4.4 0-8 2.7-8 6v2h16v-2c0-3.3-3.6-6-8-6z"/>
+                </svg>
+                <span class="composer-pill-label">{{ activeAgentName || t('chat.mainAgent') }}</span>
+                <svg class="composer-pill-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </button>
+              <button
+                type="button"
+                ref="skillTriggerRef"
+                class="composer-pill-btn"
+                :class="{ 'is-active': skillMenuOpen, 'has-value': selectedSkills.length > 0 }"
+                @click="toggleSkillMenu"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                </svg>
+                <span class="composer-pill-label">{{ skillButtonLabel }}</span>
+                <svg class="composer-pill-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </button>
             </div>
             <div class="chat-composer-right">
               <!-- 上下文占用量指示器（模型按钮旁） -->
@@ -484,6 +542,103 @@
       hidden
       @change="onImageFileChange"
     />
+
+    <!-- Agent 选择器下拉菜单 -->
+    <Teleport to="body">
+      <div
+        v-if="agentMenuOpen"
+        ref="agentMenuRef"
+        class="composer-dropdown-menu composer-dropdown-portal"
+        :style="agentMenuStyle"
+        @click.stop
+      >
+        <div class="composer-dropdown-search">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/>
+            <path d="m21 21-4.3-4.3"/>
+          </svg>
+          <input
+            ref="agentSearchRef"
+            v-model="agentSearch"
+            type="text"
+            class="composer-dropdown-search-input"
+            :placeholder="t('chat.searchAgent')"
+            @keydown.escape="agentMenuOpen = false"
+          />
+        </div>
+        <ul v-if="filteredAgents.length || !agentSearch" class="composer-dropdown-list">
+          <li
+            class="composer-dropdown-item"
+            :class="{ active: !activeAgentName }"
+            @click="selectAgent('')"
+          >
+            <span class="composer-dropdown-check" :class="{ checked: !activeAgentName }" />
+            <span class="composer-dropdown-name">{{ t('chat.mainAgent') }}</span>
+          </li>
+          <li
+            v-for="a in filteredAgents"
+            :key="a.name"
+            class="composer-dropdown-item"
+            :class="{ active: a.name === activeAgentName }"
+            @click="selectAgent(a.name)"
+          >
+            <span class="composer-dropdown-check" :class="{ checked: a.name === activeAgentName }" />
+            <img v-if="a.avatar_data" :src="a.avatar_data" class="composer-dropdown-avatar" alt="" />
+            <span class="composer-dropdown-name">{{ a.name }}</span>
+            <span v-if="a.scope" class="composer-dropdown-scope">{{ a.scope === 'private' ? t('agents.scopePrivate') : t('agents.scopeShared') }}</span>
+          </li>
+        </ul>
+        <div v-else class="composer-dropdown-empty">{{ t('chat.noAgent') }}</div>
+      </div>
+    </Teleport>
+
+    <!-- Skill 选择器下拉菜单 -->
+    <Teleport to="body">
+      <div
+        v-if="skillMenuOpen"
+        ref="skillMenuRef"
+        class="composer-dropdown-menu composer-dropdown-portal"
+        :style="skillMenuStyle"
+        @click.stop
+      >
+        <div class="composer-dropdown-search">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/>
+            <path d="m21 21-4.3-4.3"/>
+          </svg>
+          <input
+            ref="skillSearchRef"
+            v-model="skillSearch"
+            type="text"
+            class="composer-dropdown-search-input"
+            :placeholder="t('chat.searchSkill')"
+            @keydown.escape="skillMenuOpen = false"
+          />
+        </div>
+        <ul v-if="filteredSkills.length" class="composer-dropdown-list">
+          <li
+            v-for="s in filteredSkills"
+            :key="s.folder_name"
+            class="composer-dropdown-item"
+            :class="{ active: isSkillSelected(s.folder_name) }"
+            @click="toggleSkill(s.folder_name)"
+          >
+            <span class="composer-dropdown-checkbox" :class="{ checked: isSkillSelected(s.folder_name) }">
+              <svg v-if="isSkillSelected(s.folder_name)" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </span>
+            <img v-if="s.avatar_data" :src="s.avatar_data" class="composer-dropdown-avatar" alt="" />
+            <span class="composer-dropdown-name">{{ s.name }}</span>
+            <span v-if="s.scope" class="composer-dropdown-scope">{{ s.scope === 'private' ? t('skills.scopePrivate') : t('skills.scopeShared') }}</span>
+          </li>
+        </ul>
+        <div v-else class="composer-dropdown-empty">{{ t('chat.noSkill') }}</div>
+        <div v-if="selectedSkills.length" class="composer-dropdown-footer">
+          <button type="button" class="composer-dropdown-clear" @click="clearSelectedSkills">{{ t('chat.clearSkills') }}</button>
+        </div>
+      </div>
+    </Teleport>
   </main>
 </template>
 
@@ -494,6 +649,8 @@ import { useI18n } from '../i18n'
 import { useSettingsStore } from '../stores/settings'
 import api from '../api'
 import { listWorkspaces, createWorkspace } from '../api/workspaces'
+import { listSubagents } from '../api/subagents'
+import { listSkills } from '../api/skills'
 import { getFileIconUrl } from '../utils/fileIcons'
 import AssistantMessage from '../components/AssistantMessage.vue'
 import MarkdownRenderer from '../components/MarkdownRenderer.vue'
@@ -890,6 +1047,164 @@ function handleWsDocClick(e) {
 
 let wsRepositionHandler = null
 
+// ---- Agent / Skill 选择器 ----
+const agents = ref([])
+const allSkills = ref([])
+const selectedSkills = ref([]) // 选中的 skill folder_name 数组
+const selectedAgent = ref(props.asAgent || '') // 本地维护的当前 Agent，可在同一对话内切换
+const agentMenuOpen = ref(false)
+const skillMenuOpen = ref(false)
+const agentTriggerRef = ref(null)
+const skillTriggerRef = ref(null)
+const agentMenuRef = ref(null)
+const skillMenuRef = ref(null)
+const agentMenuStyle = ref({})
+const skillMenuStyle = ref({})
+const agentSearch = ref('')
+const skillSearch = ref('')
+const agentSearchRef = ref(null)
+const skillSearchRef = ref(null)
+
+const activeAgentName = computed(() => selectedAgent.value || props.asAgent || '')
+
+// URL 传入的 asAgent 变化时同步本地状态（如从 SubagentsPage 跳转过来）
+watch(() => props.asAgent, (val) => {
+  selectedAgent.value = val || ''
+})
+
+const mainAgents = computed(() =>
+  agents.value.filter(a => a.main_enabled && a.enabled)
+)
+const moreAgents = computed(() =>
+  agents.value.filter(a => !(a.main_enabled && a.enabled))
+)
+
+const mainSkills = computed(() =>
+  allSkills.value.filter(s => s.main_enabled && s.enabled)
+)
+const moreSkills = computed(() =>
+  allSkills.value.filter(s => !(s.main_enabled && s.enabled))
+)
+
+const filteredAgents = computed(() => {
+  const q = agentSearch.value.trim().toLowerCase()
+  if (!q) return mainAgents.value
+  return agents.value.filter(a =>
+    a.name.toLowerCase().includes(q) || (a.description || '').toLowerCase().includes(q)
+  )
+})
+
+const filteredSkills = computed(() => {
+  const q = skillSearch.value.trim().toLowerCase()
+  if (!q) return mainSkills.value
+  return allSkills.value.filter(s =>
+    s.name.toLowerCase().includes(q) || (s.description || '').toLowerCase().includes(q)
+  )
+})
+
+const skillButtonLabel = computed(() => {
+  if (selectedSkills.value.length === 0) return t('chat.selectSkill')
+  return `${t('chat.selectSkill')} · ${selectedSkills.value.length}`
+})
+
+async function loadAgents() {
+  try {
+    agents.value = await listSubagents()
+  } catch (err) {
+    console.error('Failed to load agents', err)
+  }
+}
+
+async function loadSkills() {
+  try {
+    allSkills.value = await listSkills()
+  } catch (err) {
+    console.error('Failed to load skills', err)
+  }
+}
+
+function updateAgentMenuPosition() {
+  const el = agentTriggerRef.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  agentMenuStyle.value = {
+    position: 'fixed',
+    left: `${Math.max(8, rect.left)}px`,
+    bottom: `${window.innerHeight - rect.top + 6}px`,
+    minWidth: '220px',
+    maxWidth: '300px',
+    zIndex: '10000',
+  }
+}
+
+function updateSkillMenuPosition() {
+  const el = skillTriggerRef.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  skillMenuStyle.value = {
+    position: 'fixed',
+    left: `${Math.max(8, rect.left)}px`,
+    bottom: `${window.innerHeight - rect.top + 6}px`,
+    minWidth: '220px',
+    maxWidth: '300px',
+    zIndex: '10000',
+  }
+}
+
+function toggleAgentMenu() {
+  const next = !agentMenuOpen.value
+  agentMenuOpen.value = next
+  skillMenuOpen.value = false
+  if (next) {
+    agentSearch.value = ''
+    loadAgents()
+    nextTick(() => {
+      updateAgentMenuPosition()
+      agentSearchRef.value?.focus()
+    })
+  }
+}
+
+function toggleSkillMenu() {
+  const next = !skillMenuOpen.value
+  skillMenuOpen.value = next
+  agentMenuOpen.value = false
+  if (next) {
+    skillSearch.value = ''
+    loadSkills()
+    nextTick(() => {
+      updateSkillMenuPosition()
+      skillSearchRef.value?.focus()
+    })
+  }
+}
+
+function selectAgent(name) {
+  agentMenuOpen.value = false
+  agentSearch.value = ''
+  selectedAgent.value = name || ''
+}
+
+function toggleSkill(folderName) {
+  const idx = selectedSkills.value.indexOf(folderName)
+  if (idx >= 0) {
+    selectedSkills.value.splice(idx, 1)
+  } else {
+    selectedSkills.value.push(folderName)
+  }
+}
+
+function isSkillSelected(folderName) {
+  return selectedSkills.value.includes(folderName)
+}
+
+function clearSelectedSkills() {
+  selectedSkills.value = []
+}
+
+let agentRepositionHandler = null
+let skillRepositionHandler = null
+
 const activeModel = computed(() => models.value.find(m => m.isActive) || models.value[0] || null)
 const hasModel = computed(() => !!activeModel.value)
 const canSend = computed(() => {
@@ -1090,6 +1405,18 @@ function handleDocClick(e) {
     closeHeaderMenu()
   }
   handleWsDocClick(e)
+  if (agentMenuOpen.value) {
+    if (agentTriggerRef.value && !agentTriggerRef.value.contains(e.target) &&
+        agentMenuRef.value && !agentMenuRef.value.contains(e.target)) {
+      agentMenuOpen.value = false
+    }
+  }
+  if (skillMenuOpen.value) {
+    if (skillTriggerRef.value && !skillTriggerRef.value.contains(e.target) &&
+        skillMenuRef.value && !skillMenuRef.value.contains(e.target)) {
+      skillMenuOpen.value = false
+    }
+  }
 }
 
 function handleEsc(e) {
@@ -1097,6 +1424,8 @@ function handleEsc(e) {
     closeAllModelMenus()
     closeHeaderMenu()
     if (wsMenuOpen.value) wsMenuOpen.value = false
+    if (agentMenuOpen.value) agentMenuOpen.value = false
+    if (skillMenuOpen.value) skillMenuOpen.value = false
   }
 }
 
@@ -1108,6 +1437,16 @@ onMounted(async () => {
   }
   window.addEventListener('resize', wsRepositionHandler)
   window.addEventListener('scroll', wsRepositionHandler, true)
+  agentRepositionHandler = () => {
+    if (agentMenuOpen.value) updateAgentMenuPosition()
+  }
+  window.addEventListener('resize', agentRepositionHandler)
+  window.addEventListener('scroll', agentRepositionHandler, true)
+  skillRepositionHandler = () => {
+    if (skillMenuOpen.value) updateSkillMenuPosition()
+  }
+  window.addEventListener('resize', skillRepositionHandler)
+  window.addEventListener('scroll', skillRepositionHandler, true)
   try {
     const res = await api.get('/api/models')
     models.value = res.data
@@ -1115,6 +1454,8 @@ onMounted(async () => {
     console.error('Failed to load models', err)
   }
   loadWorkspaces()
+  loadAgents()
+  loadSkills()
 })
 
 onBeforeUnmount(() => {
@@ -1124,6 +1465,16 @@ onBeforeUnmount(() => {
     window.removeEventListener('resize', wsRepositionHandler)
     window.removeEventListener('scroll', wsRepositionHandler, true)
     wsRepositionHandler = null
+  }
+  if (agentRepositionHandler) {
+    window.removeEventListener('resize', agentRepositionHandler)
+    window.removeEventListener('scroll', agentRepositionHandler, true)
+    agentRepositionHandler = null
+  }
+  if (skillRepositionHandler) {
+    window.removeEventListener('resize', skillRepositionHandler)
+    window.removeEventListener('scroll', skillRepositionHandler, true)
+    skillRepositionHandler = null
   }
 })
 
@@ -1150,7 +1501,9 @@ function handleSend() {
   const content = raw.trim()
   const images = attachedImages.value.map(img => img.data)
   if ((!content && images.length === 0) || props.sending) return
-  emit('send-message', { content, images })
+  const skills = selectedSkills.value.length ? [...selectedSkills.value] : null
+  const agentName = activeAgentName.value || null
+  emit('send-message', { content, images, skills, agent_name: agentName })
   clearComposer()
 }
 

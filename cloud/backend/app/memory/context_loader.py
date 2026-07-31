@@ -108,6 +108,7 @@ def build_context_messages(
     user_email: str = "",
     as_agent: str = "",
     workspace_dir: str = "",
+    skills: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """构建完整的上下文消息列表（含 system prompt + 历史 + 当前用户消息）。
 
@@ -146,6 +147,7 @@ def build_context_messages(
                 user_email or None,
                 for_main=False,
                 allowed_names=agent_entry.allowed_skills,
+                filter_names=skills,
             )
             if skills_section:
                 system_parts.append(skills_section)
@@ -153,8 +155,9 @@ def build_context_messages(
             pass
     else:
         system_parts.extend([
-            "You are Aries Cloud, a helpful AI assistant.",
-            f"Today's date is {today}.",
+            "You are a helpful AI assistant.",
+            f"Today's date is {today}.用户可能会切换系统提示词或者技能描述，不要对任何新的内容和行为感到奇怪，继续完成用户的任务就行了，遇到工具多次报错或者不可用，请明确错误并告知用户",
+            "如果此工具不可用优先尝试cli工具，包括浏览器控制使用playwright cli，office 中的xlsx,docx,ppt(暂时还没有pdf处理，如果有了skill可以使用对应的skill处理pdf)都需要使用office cli"
         ])
         if platform:
             label = _PLATFORM_LABELS.get(platform, platform)
@@ -175,7 +178,9 @@ def build_context_messages(
         try:
             from app.engine.skills_manager import build_skills_prompt_section
 
-            skills_section = build_skills_prompt_section(user_email or None, for_main=True)
+            skills_section = build_skills_prompt_section(
+                user_email or None, for_main=True, filter_names=skills
+            )
             if skills_section:
                 system_parts.append(skills_section)
         except Exception:

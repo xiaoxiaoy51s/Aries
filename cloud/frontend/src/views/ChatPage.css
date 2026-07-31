@@ -2054,3 +2054,183 @@
   background: var(--bg-overlay-l1, rgba(0, 0, 0, 0.04));
   color: var(--text-default, #333);
 }
+
+/* ---- Agent / Skill 选择器按钮 ---- */
+.composer-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary, #999);
+  font-size: 12px;
+  border-radius: var(--radius-full, 9999px);
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+  white-space: nowrap;
+}
+.composer-pill-btn:hover {
+  background: var(--bg-overlay-l1, rgba(0, 0, 0, 0.04));
+  color: var(--text-default, #333);
+}
+.composer-pill-btn.has-value {
+  color: var(--text-brand, #4f8cff);
+}
+.composer-pill-btn.is-active {
+  background: var(--bg-overlay-l1, rgba(0, 0, 0, 0.04));
+  color: var(--text-brand, #4f8cff);
+}
+.composer-pill-label {
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-pill-caret {
+  flex-shrink: 0;
+  transition: transform 0.18s ease;
+  opacity: 0.7;
+}
+.composer-pill-btn.is-active .composer-pill-caret {
+  transform: rotate(180deg);
+  opacity: 1;
+}
+
+/* ---- Agent / Skill 下拉菜单（Teleport 到 body） ---- */
+.composer-dropdown-menu.composer-dropdown-portal {
+  background: var(--bg-menu, #fff);
+  border: 1px solid var(--border-neutral-l2, #e5e5e5);
+  border-radius: var(--radius-12, 12px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  padding: 8px;
+  overflow: visible;
+}
+.composer-dropdown-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  border-radius: var(--radius-8, 8px);
+  background: var(--bg-overlay-l1, rgba(0, 0, 0, 0.04));
+}
+.composer-dropdown-search svg {
+  flex-shrink: 0;
+  color: var(--text-tertiary, #999);
+}
+.composer-dropdown-search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text-default, #333);
+  outline: none;
+}
+.composer-dropdown-search-input::placeholder {
+  color: var(--text-tertiary, #999);
+}
+.composer-dropdown-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.composer-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: var(--radius-6, 6px);
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary, #555);
+  transition: background 0.12s, color 0.12s;
+}
+.composer-dropdown-item:hover {
+  background: var(--bg-overlay-l1, rgba(0, 0, 0, 0.04));
+  color: var(--text-default, #333);
+}
+.composer-dropdown-item.active {
+  background: var(--bg-overlay-l2, rgba(0, 0, 0, 0.08));
+  color: var(--text-default, #333);
+}
+.composer-dropdown-check {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--border-neutral-l3, #d0d0d0);
+  border-radius: 50%;
+  transition: border-color 0.12s;
+}
+.composer-dropdown-check.checked {
+  border-color: var(--bg-brand, #4f8cff);
+  background: var(--bg-brand, #4f8cff);
+  box-shadow: inset 0 0 0 3px var(--bg-menu, #fff);
+}
+.composer-dropdown-checkbox {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--border-neutral-l3, #d0d0d0);
+  border-radius: var(--radius-4, 4px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.12s, background 0.12s;
+}
+.composer-dropdown-checkbox.checked {
+  border-color: var(--bg-brand, #4f8cff);
+  background: var(--bg-brand, #4f8cff);
+  color: #fff;
+}
+.composer-dropdown-avatar {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.composer-dropdown-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer-dropdown-scope {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--radius-full, 9999px);
+  background: var(--bg-overlay-l1, rgba(0, 0, 0, 0.04));
+  color: var(--text-tertiary, #999);
+}
+.composer-dropdown-empty {
+  font-size: 12px;
+  color: var(--text-tertiary, #999);
+  padding: 8px 10px 4px;
+}
+.composer-dropdown-footer {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-neutral-l2, #e5e5e5);
+  text-align: right;
+}
+.composer-dropdown-clear {
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-tertiary, #999);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-4, 4px);
+  transition: color 0.12s, background 0.12s;
+}
+.composer-dropdown-clear:hover {
+  color: var(--text-default, #333);
+  background: var(--bg-overlay-l1, rgba(0, 0, 0, 0.04));
+}

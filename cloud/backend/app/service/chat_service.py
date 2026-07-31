@@ -166,6 +166,7 @@ class ChatService:
         segment_sink: "PlatformStreamSink | None" = None,
         cancel_event: Optional[Any] = None,
         workspace_dir: str | None = None,
+        skills: list[str] | None = None,
     ) -> AsyncGenerator[str, None]:
         """流式对话 + 工具调用循环。
 
@@ -254,6 +255,7 @@ class ChatService:
             user_email=user_email,
             as_agent=as_agent,
             workspace_dir=session_workspace,
+            skills=skills,
         )
         yield f'data: {json.dumps({"type": "context_info", "context_info": context_info})}\n\n'
 

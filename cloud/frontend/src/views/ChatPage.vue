@@ -411,6 +411,8 @@ onMounted(async () => {
 async function sendMessage(payload) {
   const content = typeof payload === 'string' ? payload : (payload?.content || '')
   const images = typeof payload === 'string' ? [] : (payload?.images || [])
+  const skills = typeof payload === 'string' ? null : (payload?.skills || null)
+  const agentName = typeof payload === 'string' ? null : (payload?.agent_name || null)
   const displayContent = content || (images.length > 1 ? `[${images.length} 张图片]` : '[图片]')
 
   // 如果没有 session，先在前端创建一个占位
@@ -472,7 +474,8 @@ async function sendMessage(payload) {
         message: content,
         workspace_dir: selectedWorkspace.value,
         ...(images.length ? { images } : {}),
-        ...(activeAgentName.value ? { agent_name: activeAgentName.value } : {}),
+        ...(agentName ? { agent_name: agentName } : {}),
+        ...(skills ? { skills } : {}),
       }),
       signal: abortController.value.signal,
     })
