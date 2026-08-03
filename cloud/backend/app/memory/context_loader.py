@@ -213,6 +213,26 @@ def build_context_messages(
         "- 使用任何 CLI 工具前，先执行 `命令 --help` 确认对应功能与参数，避免臆测用法。"
     )
 
+    # 知识库能力说明
+    try:
+        from app.tools.sandbox import get_wiki_root
+        wiki_path = str(get_wiki_root(user_email))
+    except Exception:
+        wiki_path = f"~/.Aries/{user_email}/wiki"
+    system_parts.append(
+        f"【知识库】知识库目录为 {wiki_path}，通过 `wiki/` 前缀使用文件工具直接读写，权限与工作目录相同。\n"
+        "- 搜索：search_file(path=\"wiki/\", pattern=\"关键词\", context_lines=3) 搜索知识库，支持上下文行。\n"
+        "- 读取：read_file(path=\"wiki/文件夹/文件.md\") 读取文档全文。\n"
+        "- 写入：write_file(path=\"wiki/文件夹/文件.md\", content=...) 创建/编辑文档。\n"
+        "- 列出：list_files(path=\"wiki/\", recursive=true) 查看知识库结构。\n"
+        "写入知识库时必须遵循以下流程：\n"
+        "1. 先 list_files 查看目标文件夹现有文件，并 read_file 读取该文件夹的 _index.md，了解已有文档与结构。\n"
+        "2. 写入新文档或修改已有文档。文档格式：开头为 YAML frontmatter（--- 包裹），含 title/tags/last_updated 字段；正文为 markdown。\n"
+        "3. 检查写入内容与 _index.md 是否一致：新增文档需在 _index.md 的「文档」段添加条目（- [标题](相对路径.md)｜一句话摘要）；"
+        "修改文档需同步更新 _index.md 中对应条目的摘要；删除文档需移除对应条目。\n"
+        "4. 若 _index.md 与实际文件不符（条目缺失、指向不存在的文件等），必须修正 _index.md 使其与实际文件一致。"
+    )
+
     system_msg: dict[str, Any] = {
         "role": "system",
         "content": "\n".join(system_parts),

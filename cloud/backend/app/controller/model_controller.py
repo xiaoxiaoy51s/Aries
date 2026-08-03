@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from app.interceptor.auth_interceptor import get_current_user
@@ -21,6 +21,7 @@ class ModelResponse(BaseModel):
     max_tool_rounds: int
     context_window: int
     isActive: bool
+    type: str = "chat"
 
     class Config:
         from_attributes = True
@@ -34,6 +35,7 @@ class CreateModelRequest(BaseModel):
     max_tool_rounds: int = 100
     context_window: int = 200_000
     isActive: bool = False
+    type: str = "chat"                  # chat(对话) | ocr(文字识别) | asr(语音识别)
 
 
 class UpdateModelRequest(BaseModel):
@@ -44,6 +46,7 @@ class UpdateModelRequest(BaseModel):
     max_tool_rounds: int | None = None
     context_window: int | None = None
     isActive: bool | None = None
+    type: str | None = None
 
 
 # ============ 接口 ============
@@ -55,14 +58,20 @@ def _to_response(model: ModelItem) -> ModelResponse:
 
 
 @router.get("", response_model=list[ModelResponse])
-async def list_models(user: User = Depends(get_current_user)):
-    models = await ModelConfigService.list_models(user.email)
+async def list_models(
+    type: str = Query("", description="模型类型过滤：chat/ocr/asr，空返回全部"),
+    user: User = Depends(get_current_user),
+):
+    models = await ModelConfigService.list_models(user.email, model_type=type)
     return [_to_response(m) for m in models]
 
 
 @router.get("/active", response_model=ModelResponse | None)
-async def get_active_model(user: User = Depends(get_current_user)):
-    model = await ModelConfigService.get_active_model(user.email)
+async def get_active_model(
+    type: str = Query("chat", description="模型类型：chat/ocr/asr"),
+    user: User = Depends(get_current_user),
+):
+    model = await ModelConfigService.get_active_model(user.email, model_type=type)
     return _to_response(model) if model else None
 
 

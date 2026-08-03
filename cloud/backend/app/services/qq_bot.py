@@ -90,6 +90,28 @@ def _clean_qq_content(content: str) -> str:
     return content.strip()
 
 
+async def _extract_qq_images(message: Message) -> list[str]:
+    """从 QQ 消息的 attachments 中提取图片，返回 base64 data URL 列表。"""
+    attachments = getattr(message, "attachments", None) or []
+    images: list[str] = []
+    for att in attachments:
+        ct = getattr(att, "content_type", "") or ""
+        url = getattr(att, "url", "") or ""
+        if not ct.startswith("image/") or not url:
+            continue
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+            import base64
+            b64 = base64.b64encode(resp.content).decode()
+            images.append(f"data:{ct};base64,{b64}")
+        except Exception as e:
+            _log.warning("[QQ] 下载图片失败: %s", e)
+    return images
+
+
 def _get_author_id(message) -> str:
     author = getattr(message, "author", None)
     if author:
@@ -155,10 +177,11 @@ class NonoQQBot(botpy.Client if BOTPY_AVAILABLE else object):
     async def _handle_message(self, message: Message):
         raw = (message.content or "").strip()
         content = _clean_qq_content(raw)
-        if not content:
+        images = await _extract_qq_images(message)
+        if not content and not images:
             return
         author_id = _get_author_id(message)
-        _log.info("[QQ] 来自 %s: %s", author_id, content[:80])
+        _log.info("[QQ] 来自 %s: %s%s", author_id, content[:80], f" +{len(images)}张图片" if images else "")
 
         group_openid = getattr(message, "group_openid", None)
         user_openid = None
@@ -187,15 +210,15 @@ class NonoQQBot(botpy.Client if BOTPY_AVAILABLE else object):
                 pass
 
         # 用 create_task 后台处理，不阻塞事件循环，让新消息能及时触发取消
-        asyncio.create_task(self._process_message_task(message, content))
+        asyncio.create_task(self._process_message_task(message, content, images))
 
-    async def _process_message_task(self, message: Message, content: str):
+    async def _process_message_task(self, message: Message, content: str, images: list[str] | None = None):
         try:
             async def _send_segment(seg: str):
                 await _reply_qq_message(message, seg)
 
             reply = await process_inbound_message_async(
-                "qq", content, send_segment=_send_segment
+                "qq", content, send_segment=_send_segment, images=images or None
             )
         except asyncio.CancelledError:
             _log.info("[QQ] 对话已被新消息取消")

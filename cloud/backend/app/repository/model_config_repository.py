@@ -8,7 +8,7 @@ from app.model.model_config import ModelConfig
 class ModelConfigRepository:
     """模型配置文件读写层
 
-    配置路径：~/.Aries/{user_email}/config/model.json
+    对话模型配置路径：~/.Aries/{user_email}/config/model.json
     """
 
     @staticmethod

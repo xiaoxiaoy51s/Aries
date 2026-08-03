@@ -167,6 +167,7 @@ class ChatService:
         cancel_event: Optional[Any] = None,
         workspace_dir: str | None = None,
         skills: list[str] | None = None,
+        use_kb: bool = False,
     ) -> AsyncGenerator[str, None]:
         """流式对话 + 工具调用循环。
 
@@ -174,6 +175,7 @@ class ChatService:
         模型不再请求工具或达到 max_tool_rounds 上限。
         platform 非空时，平台说明写入 system prompt，不污染用户消息。
         as_agent 非空时，以该子 Agent 提示词作为主对话身份。
+        use_kb 为 True 时，先对用户消息做知识库检索，将命中文档注入 system prompt。
         """
 
         # 1. 获取模型配置
@@ -257,6 +259,32 @@ class ChatService:
             workspace_dir=session_workspace,
             skills=skills,
         )
+
+        # 6.5 知识库模式：BM25 检索 wiki 文档，命中文档注入 system prompt（不污染用户消息）
+        if use_kb and clean_message:
+            try:
+                from app.service.wiki import retrieval
+
+                kb_pages = await retrieval.retrieve(user_email, clean_message, top_k=5)
+                if kb_pages:
+                    kb_ctx = "\n\n".join(
+                        f"### {p['file_path']}\n{p['content_md'] or ''}" for p in kb_pages
+                    )
+                    kb_sys = (
+                        "【知识库资料】用户开启了知识库问答模式。请优先基于以下 wiki 文档内容回答，"
+                        "并用 [[标题]] 或 [来源: 文件路径] 标注引用来源；"
+                        "若资料不足以回答，请明确说明基于资料无法回答。\n\n"
+                        f"Wiki 文档：\n{kb_ctx}"
+                    )
+                    # 注入为 system 消息（置于最前，历史消息之后由 build_context_messages 已排好）
+                    messages.insert(
+                        0, {"role": "system", "content": kb_sys}
+                    )
+                    context_info["kb_retrieved"] = len(kb_pages)
+            except Exception:
+                # 检索失败不阻断主对话
+                pass
+
         yield f'data: {json.dumps({"type": "context_info", "context_info": context_info})}\n\n'
 
         # 7. 工具调用循环

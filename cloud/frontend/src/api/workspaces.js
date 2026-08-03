@@ -24,6 +24,13 @@ export function uploadToWorkspace(workspaceName, file, path = '') {
   )
 }
 
+export function createWorkspaceEntry(workspaceName, path, isDir) {
+  return api.post(`/api/workspaces/${encodeURIComponent(workspaceName)}/files/create`, {
+    path,
+    is_dir: isDir,
+  })
+}
+
 export function downloadWorkspaceFile(workspaceName, path) {
   return `/api/workspaces/${encodeURIComponent(workspaceName)}/files/download?path=${encodeURIComponent(path)}`
 }

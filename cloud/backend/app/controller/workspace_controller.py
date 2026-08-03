@@ -30,6 +30,11 @@ class SaveFileContentRequest(BaseModel):
     content: str
 
 
+class CreateEntryRequest(BaseModel):
+    path: str
+    is_dir: bool = False
+
+
 class RenameWorkspaceRequest(BaseModel):
     new_name: str
 
@@ -80,6 +85,22 @@ async def upload_to_workspace(
     try:
         result = await WorkspaceService.save_upload_to_workspace(
             user.email, workspace_name, path, file
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
+@router.post("/{workspace_name}/files/create")
+async def create_workspace_entry(
+    workspace_name: str,
+    req: CreateEntryRequest,
+    user: User = Depends(get_current_user),
+):
+    """在工作目录内创建空文件或文件夹。"""
+    try:
+        result = WorkspaceService.create_entry(
+            user.email, workspace_name, req.path, req.is_dir
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

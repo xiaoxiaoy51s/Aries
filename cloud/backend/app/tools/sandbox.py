@@ -87,6 +87,37 @@ def get_upload_dir(user_email: str) -> Path:
     return path
 
 
+def get_wiki_root(user_email: str) -> Path:
+    """~/.Aries/{email}/wiki/ 知识库目录（读写）。"""
+    return get_user_home(user_email) / "wiki"
+
+
+def resolve_wiki_path(user_email: str, path: str) -> tuple[Path | None, str]:
+    """解析知识库 wiki 目录下的路径（读写权限，不受 allow_skills 限制）。"""
+    raw = (path or "").strip()
+    if not raw:
+        return None, "路径不能为空"
+
+    wiki_root = get_wiki_root(user_email)
+
+    # wiki/ 前缀 -> 相对 wiki 根目录
+    if raw.startswith("wiki/") or raw.startswith("wiki\\"):
+        target = (wiki_root / raw[5:]).resolve()
+    else:
+        # 绝对路径 -> 检查是否在 wiki 目录下
+        expanded = Path(os.path.expanduser(raw))
+        if not expanded.is_absolute():
+            return None, "wiki 路径需为绝对路径或 wiki/ 前缀"
+        target = expanded.resolve()
+
+    try:
+        target.relative_to(wiki_root.resolve())
+    except ValueError:
+        return None, "路径超出知识库目录范围"
+
+    return target, ""
+
+
 def get_workspaces_root(user_email: str) -> Path:
     """~/.Aries/{email}/workspaces/"""
     path = get_user_home(user_email) / "workspaces"
@@ -238,17 +269,27 @@ def resolve_sandbox_path(
     user_email: str = "",
     allow_skills: bool = True,
 ) -> tuple[Path | None, str]:
-    """解析路径：优先工作目录相对路径，可选技能绝对路径（只读）。"""
+    """解析路径：工作目录相对路径 / 知识库 wiki 目录（读写）/ 技能目录（只读）。"""
     raw = (path or "").strip()
     if not raw or raw in (".", "./"):
         return workspace, ""
 
-    if allow_skills and (raw.startswith("~") or os.path.isabs(raw) or (len(raw) > 1 and raw[1] == ":")):
-        skill_path, err = resolve_skill_read_path(user_email, raw)
-        if skill_path:
-            return skill_path, ""
-        if err:
-            return None, err
+    # 知识库 wiki 目录（读写，不受 allow_skills 限制）
+    if raw.startswith("wiki/") or raw.startswith("wiki\\"):
+        return resolve_wiki_path(user_email, raw)
+
+    # 绝对路径 / ~ 路径：先检查 wiki 目录（读写），再检查 skills（只读）
+    if raw.startswith("~") or os.path.isabs(raw) or (len(raw) > 1 and raw[1] == ":"):
+        wiki_path, _ = resolve_wiki_path(user_email, raw)
+        if wiki_path:
+            return wiki_path, ""
+        if allow_skills:
+            skill_path, err = resolve_skill_read_path(user_email, raw)
+            if skill_path:
+                return skill_path, ""
+            if err:
+                return None, err
+        return None, "路径超出允许范围"
 
     return resolve_workspace_path(workspace, raw)
 

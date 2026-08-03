@@ -165,6 +165,7 @@ async def _run_agent_for_platform(
     user_text: str,
     *,
     cancel_flag: threading.Event,
+    images: list[str] | None = None,
 ) -> tuple[str | None, str, str]:
     """在 PlatformAgentLoop 上跑 Agent（不推送平台），返回 (email, log_path, early_error)。"""
     from app.service.chat_service import ChatService
@@ -199,6 +200,7 @@ async def _run_agent_for_platform(
             user.id,
             sid,
             user_text,
+            images=images,
             platform=platform,
             segment_sink=None,
             cancel_event=cancel_flag,
@@ -219,16 +221,17 @@ async def process_inbound_message_async(
     platform: str,
     text: str,
     send_segment=None,
+    images: list[str] | None = None,
 ) -> str:
     text = (text or "").strip()
-    if not text:
+    if not text and not images:
         return ""
 
     if _shutting_down:
         _log.warning("[平台 %s] 服务正在关闭，跳过消息处理", platform)
         return ""
 
-    _log.info("[平台 %s] 收到消息: %s", platform, text[:120])
+    _log.info("[平台 %s] 收到消息: %s%s", platform, text[:120], f" +{len(images)}张图片" if images else "")
 
     await _cancel_platform_task(platform)
 
@@ -237,7 +240,7 @@ async def process_inbound_message_async(
 
     agent_loop = ensure_agent_loop()
     fut = asyncio.run_coroutine_threadsafe(
-        _run_agent_for_platform(platform, text, cancel_flag=cancel_flag),
+        _run_agent_for_platform(platform, text, cancel_flag=cancel_flag, images=images),
         agent_loop,
     )
     _platform_futures[platform] = fut

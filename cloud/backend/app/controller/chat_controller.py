@@ -22,6 +22,7 @@ class SendRequest(BaseModel):
     agent_name: Optional[str] = None
     workspace_dir: Optional[str] = None
     skills: list[str] | None = None
+    use_kb: bool = False
 
 
 class SessionResponse(BaseModel):
@@ -68,6 +69,7 @@ async def stream(
             as_agent=(req.agent_name or "").strip(),
             workspace_dir=(req.workspace_dir or "").strip() or None,
             skills=req.skills,
+            use_kb=req.use_kb,
         ):
             yield chunk
 

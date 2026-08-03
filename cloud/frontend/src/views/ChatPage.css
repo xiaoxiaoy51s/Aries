@@ -1445,6 +1445,41 @@
   white-space: nowrap;
   flex: 1;
 }
+.chat-app .sidebar-file-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.chat-app .sidebar-file-tool-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-foreground);
+  border-radius: var(--radius-4);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s;
+}
+.chat-app .sidebar-file-tool-btn:hover {
+  background: var(--sidebar-overlay-l1);
+}
+.chat-app .sidebar-file-tool-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.chat-app .sidebar-file-input-hidden {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
 .chat-app .sidebar-file-list {
   display: flex;
   flex-direction: column;
@@ -2081,6 +2116,18 @@
 .composer-pill-btn.is-active {
   background: var(--bg-overlay-l1, rgba(0, 0, 0, 0.04));
   color: var(--text-brand, #4f8cff);
+}
+/* 知识库 toggle：激活态用黑白高亮，与整体黑白设计语言一致 */
+.composer-kb-btn.is-kb-active {
+  background: var(--text-default, #171717);
+  color: var(--bg-base-default, #fff);
+}
+.composer-kb-btn.is-kb-active:hover {
+  background: var(--text-default, #171717);
+  color: var(--bg-base-default, #fff);
+}
+.composer-kb-btn.is-kb-active svg {
+  color: var(--bg-base-default, #fff);
 }
 .composer-pill-label {
   max-width: 100px;

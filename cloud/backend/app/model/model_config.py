@@ -1,5 +1,3 @@
-from typing import Optional
-
 from pydantic import BaseModel
 
 
@@ -13,6 +11,7 @@ class ModelItem(BaseModel):
     max_tool_rounds: int = 100           # 工具调用轮次
     context_window: int = 200_000        # 最大上下文
     isActive: bool = False               # 是否为当前激活模型
+    type: str = "chat"                   # 模型类型：chat(对话) | ocr(文字识别) | asr(语音识别)
 
 
 class ModelConfig(BaseModel):

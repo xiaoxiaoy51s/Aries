@@ -1,7 +1,7 @@
 """文件管理工具：增删改查 + ripgrep 全局搜索。
 
 工具列表：
-1. search_file - 用 ripgrep 搜索文件内容
+1. search_file - 用 ripgrep 搜索文件内容 search_file - 用 ripgrep 搜索文件内容
 2. read_file - 读取文件内容
 3. write_file - 写入/创建文件
 4. list_files - 列出目录内容
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config.settings import settings
-from app.tools.sandbox import get_tool_workspace, resolve_sandbox_path, is_under_paths, get_allowed_skill_roots
+from app.tools.sandbox import get_tool_workspace, resolve_sandbox_path, is_under_paths, get_allowed_skill_roots, get_wiki_root
 
 
 def _get_workspace(context: dict[str, Any] | None) -> tuple[Any, str]:
@@ -53,6 +53,10 @@ def _resolve_path(
 
 def _is_skill_path(path: Path, user_email: str) -> bool:
     return is_under_paths(path, get_allowed_skill_roots(user_email))
+
+
+def _is_wiki_path(path: Path, user_email: str) -> bool:
+    return is_under_paths(path, [get_wiki_root(user_email)])
 
 _cached_rg: str | None = None
 
@@ -225,7 +229,13 @@ TOOL_SCHEMA_SEARCH = {
                 },
                 "path": {
                     "type": "string",
-                    "description": "搜索的工作区内子目录路径（相对路径）。默认搜索整个工作区。",
+                    "description": (
+                        "搜索范围路径。支持三种形式：\n"
+                        "1. 相对路径（如 src/、./）：相对于当前工作目录。\n"
+                        "2. wiki/ 前缀（如 wiki/编程/Python/）：搜索知识库指定目录。\n"
+                        "3. 绝对路径：仅限工作目录或知识库目录内的路径。\n"
+                        "留空则搜索整个工作目录（不含知识库）。"
+                    ),
                     "default": "",
                 },
                 "glob": {
@@ -271,7 +281,12 @@ TOOL_SCHEMA_READ = {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "文件路径（工作区内相对路径）",
+                    "description": (
+                        "文件路径。支持三种形式：\n"
+                        "1. 相对路径（如 src/main.py）：相对于当前工作目录。\n"
+                        "2. wiki/ 前缀（如 wiki/编程/Python/笔记.md）：读取知识库文件。\n"
+                        "3. 绝对路径：仅限工作目录或知识库目录内的路径。"
+                    ),
                 },
                 "start_line": {
                     "type": "integer",
@@ -300,7 +315,12 @@ TOOL_SCHEMA_WRITE = {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "文件路径（工作区内相对路径）",
+                    "description": (
+                        "文件路径。支持三种形式：\n"
+                        "1. 相对路径（如 src/main.py）：相对于当前工作目录。\n"
+                        "2. wiki/ 前缀（如 wiki/编程/Python/笔记.md）：写入知识库文件。\n"
+                        "3. 绝对路径：仅限工作目录或知识库目录内的路径。"
+                    ),
                 },
                 "content": {
                     "type": "string",
@@ -323,7 +343,12 @@ TOOL_SCHEMA_LIST = {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "目录路径（工作区内相对路径），默认为工作区根目录",
+                    "description": (
+                        "目录路径。支持三种形式：\n"
+                        "1. 相对路径（如 src/）：相对于当前工作目录，留空为工作目录根。\n"
+                        "2. wiki/ 前缀（如 wiki/编程/）：列出知识库目录。\n"
+                        "3. 绝对路径：仅限工作目录或知识库目录内的路径。"
+                    ),
                     "default": "",
                 },
                 "recursive": {
@@ -347,7 +372,12 @@ TOOL_SCHEMA_DELETE = {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "要删除的文件或目录路径（工作区内相对路径）",
+                    "description": (
+                        "要删除的文件或目录路径。支持三种形式：\n"
+                        "1. 相对路径（如 src/old.py）：相对于当前工作目录。\n"
+                        "2. wiki/ 前缀（如 wiki/编程/旧笔记.md）：删除知识库文件。\n"
+                        "3. 绝对路径：仅限工作目录或知识库目录内的路径。"
+                    ),
                 },
             },
             "required": ["path"],
@@ -554,7 +584,7 @@ async def list_files(
     if not target.is_dir():
         return f"错误：不是目录 {path}"
 
-    base = target if _is_skill_path(target, user_email) else workspace
+    base = target if (_is_skill_path(target, user_email) or _is_wiki_path(target, user_email)) else workspace
     lines = []
     if recursive:
         for root, dirs, files in os.walk(target):
@@ -599,9 +629,11 @@ async def delete_file(
         return "错误：路径无效或超出工作区范围（禁止删除技能目录）"
     if not target.exists():
         return f"错误：路径不存在 {path}"
-    # 不允许删除工作区根目录
+    # 不允许删除工作区根目录或知识库根目录
     if target == workspace:
         return "错误：不允许删除工作区根目录"
+    if _is_wiki_path(target, user_email) and target == get_wiki_root(user_email):
+        return "错误：不允许删除知识库根目录"
 
     try:
         if target.is_dir():

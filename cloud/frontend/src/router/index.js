@@ -44,6 +44,12 @@ const routes = [
     component: () => import('../views/SkillsPage.vue'),
     meta: { requiresAuth: true },
   },
+  {
+    path: '/knowledge',
+    name: 'knowledge',
+    component: () => import('../views/KnowledgeBase.vue'),
+    meta: { requiresAuth: true },
+  },
 ]
 
 const router = createRouter({

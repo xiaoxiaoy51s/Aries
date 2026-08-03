@@ -47,6 +47,19 @@
               </button>
               <button
                 type="button"
+                class="composer-pill-btn composer-kb-btn"
+                :class="{ 'is-kb-active': kbEnabled }"
+                :title="t('chat.kbToggle')"
+                @click="toggleKb"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
+                  <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+                </svg>
+                <span class="composer-pill-label">{{ kbEnabled ? t('chat.kbOn') : t('chat.kbOff') }}</span>
+              </button>
+              <button
+                type="button"
                 ref="agentTriggerRef"
                 class="composer-pill-btn"
                 :class="{ 'is-active': agentMenuOpen, 'has-value': !!activeAgentName }"
@@ -434,6 +447,19 @@
               </button>
               <button
                 type="button"
+                class="composer-pill-btn composer-kb-btn"
+                :class="{ 'is-kb-active': kbEnabled }"
+                :title="t('chat.kbToggle')"
+                @click="toggleKb"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
+                  <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+                </svg>
+                <span class="composer-pill-label">{{ kbEnabled ? t('chat.kbOn') : t('chat.kbOff') }}</span>
+              </button>
+              <button
+                type="button"
                 ref="agentTriggerRef"
                 class="composer-pill-btn"
                 :class="{ 'is-active': agentMenuOpen, 'has-value': !!activeAgentName }"
@@ -759,6 +785,12 @@ const imageInputRef = ref(null)
 const messagesContainer = ref(null)
 const inputMessage = ref('')
 const attachedImages = ref([])
+// 知识库模式开关：开启后发送的消息会先检索知识库并注入上下文
+const kbEnabled = ref(false)
+
+function toggleKb() {
+  kbEnabled.value = !kbEnabled.value
+}
 // contenteditable 编辑器状态
 const editorHtml = ref('') // 保存编辑器 HTML，跨 welcome/active 切换时恢复
 const hasInputContent = ref(false) // 编辑器是否有内容（含 chip）
@@ -1503,7 +1535,7 @@ function handleSend() {
   if ((!content && images.length === 0) || props.sending) return
   const skills = selectedSkills.value.length ? [...selectedSkills.value] : null
   const agentName = activeAgentName.value || null
-  emit('send-message', { content, images, skills, agent_name: agentName })
+  emit('send-message', { content, images, skills, agent_name: agentName, use_kb: kbEnabled.value })
   clearComposer()
 }
 

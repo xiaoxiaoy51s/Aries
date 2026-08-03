@@ -84,6 +84,25 @@ class WorkspaceService:
         return {"path": rel_path, "size": len(content.encode("utf-8"))}
 
     @staticmethod
+    def create_entry(user_email: str, workspace_name: str, rel_path: str, is_dir: bool) -> dict[str, Any]:
+        """在工作目录内创建空文件或文件夹。"""
+        workspace = ensure_workspace(user_email, workspace_name)
+        target, err = resolve_workspace_path(workspace, rel_path)
+        if err or target is None:
+            raise ValueError(err or "路径无效")
+        if target == workspace:
+            raise ValueError("不能在根路径创建同名项")
+        if target.exists():
+            raise ValueError(f"已存在：{rel_path}")
+        if is_dir:
+            target.mkdir(parents=True, exist_ok=False)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("", encoding="utf-8")
+        rel = os.path.relpath(target, workspace).replace("\\", "/")
+        return {"path": rel, "name": target.name, "is_dir": is_dir}
+
+    @staticmethod
     async def save_upload_to_workspace(
         user_email: str,
         workspace_name: str,

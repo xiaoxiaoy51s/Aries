@@ -104,6 +104,20 @@
             </button>
           </div>
 
+          <!-- 模型类型子标签：对话 / OCR / ASR -->
+          <div class="settings-subtabs">
+            <button
+              v-for="mt in modelTypes"
+              :key="mt.key"
+              type="button"
+              class="settings-subtab"
+              :class="{ active: modelTypeTab === mt.key }"
+              @click="modelTypeTab = mt.key"
+            >
+              {{ mt.label }}
+            </button>
+          </div>
+
           <div class="settings-card">
             <div v-if="models.length === 0" class="settings-empty">
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
@@ -293,13 +307,44 @@
             </div>
           </div>
 
-          <!-- QQ（表单输入）-->
           <div class="settings-card">
-            <div class="settings-card-body">
-              <div class="bot-platform-card">
+            <!-- 平台 Tab -->
+            <div class="bot-tabs" role="tablist">
+              <button
+                v-for="tab in botTabs"
+                :key="tab.key"
+                type="button"
+                class="bot-tab"
+                :class="{ active: botTab === tab.key }"
+                role="tab"
+                :aria-selected="botTab === tab.key"
+                @click="botTab = tab.key"
+              >
+                <span class="bot-tab-icon">
+                  <img :src="tab.icon" :alt="tab.label" />
+                </span>
+                <span class="bot-tab-label">{{ tab.label }}</span>
+                <span
+                  v-if="botStatus[tab.key]?.bound && botStatus[tab.key]?.enabled"
+                  class="bot-tab-dot dot-success"
+                  title="已启用"
+                ></span>
+                <span
+                  v-else-if="botStatus[tab.key]?.bound"
+                  class="bot-tab-dot dot-warning"
+                  title="已绑定·未启用"
+                ></span>
+              </button>
+            </div>
+
+            <div class="bot-tab-content">
+              <!-- QQ -->
+              <div v-if="botTab === 'qq'" class="bot-platform-card">
                 <div class="bot-platform-header">
                   <div class="bot-platform-info">
-                    <span class="bot-platform-icon bot-icon-qq">QQ</span>
+                    <div class="bot-platform-icon-big">
+                      <img :src="qqIcon" alt="QQ" />
+                    </div>
                     <div>
                       <div class="bot-platform-name">QQ 机器人</div>
                       <div class="bot-platform-status">
@@ -318,7 +363,7 @@
                 <div class="bot-platform-form" v-if="!botStatus.qq?.bound || botEdit.qq">
                   <a href="https://q.qq.com/qqbot/openclaw/" target="_blank" rel="noopener" class="bot-help-link">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                    前往 QQ 开放平台注册机器人（q.qq.com/qqbot/openclaw）
+                    前往 QQ 开放平台注册机器人
                   </a>
                   <div class="settings-field">
                     <label class="settings-field-label">App ID</label>
@@ -342,16 +387,14 @@
                   <button type="button" class="ds-btn ds-btn-danger-ghost" @click="unbindBot('qq')">解绑</button>
                 </div>
               </div>
-            </div>
-          </div>
 
-          <!-- 飞书（扫码绑定）-->
-          <div class="settings-card">
-            <div class="settings-card-body">
-              <div class="bot-platform-card">
+              <!-- 飞书 -->
+              <div v-if="botTab === 'feishu'" class="bot-platform-card">
                 <div class="bot-platform-header">
                   <div class="bot-platform-info">
-                    <span class="bot-platform-icon bot-icon-feishu">飞书</span>
+                    <div class="bot-platform-icon-big">
+                      <img :src="feishuIcon" alt="飞书" />
+                    </div>
                     <div>
                       <div class="bot-platform-name">飞书机器人</div>
                       <div class="bot-platform-status">
@@ -384,16 +427,14 @@
                   <button type="button" class="ds-btn ds-btn-danger-ghost" @click="unbindBot('feishu')">解绑</button>
                 </div>
               </div>
-            </div>
-          </div>
 
-          <!-- 微信（扫码绑定）-->
-          <div class="settings-card">
-            <div class="settings-card-body">
-              <div class="bot-platform-card">
+              <!-- 微信 -->
+              <div v-if="botTab === 'wechat'" class="bot-platform-card">
                 <div class="bot-platform-header">
                   <div class="bot-platform-info">
-                    <span class="bot-platform-icon bot-icon-wechat">微信</span>
+                    <div class="bot-platform-icon-big">
+                      <img :src="weixinIcon" alt="微信" />
+                    </div>
                     <div>
                       <div class="bot-platform-name">微信机器人</div>
                       <div class="bot-platform-status">
@@ -531,6 +572,9 @@ import {
   getProjectMemory,
   saveProjectMemory,
 } from '../api/memory'
+import qqIcon from '../assets/QQ.png'
+import feishuIcon from '../assets/feishu.png'
+import weixinIcon from '../assets/weixin.png'
 import './SettingsModal.css'
 
 const settingsStore = useSettingsStore()
@@ -592,10 +636,18 @@ function membershipText(level) {
 const models = ref([])
 const loading = ref(false)
 
+// 模型类型子标签（对话 / OCR / ASR）
+const modelTypes = [
+  { key: 'chat', label: t('settings.modelTypeChat') },
+  { key: 'ocr', label: t('settings.modelTypeOcr') },
+  { key: 'asr', label: t('settings.modelTypeAsr') },
+]
+const modelTypeTab = ref('chat')
+
 async function fetchModels() {
   loading.value = true
   try {
-    const res = await api.get('/api/models')
+    const res = await api.get('/api/models', { params: { type: modelTypeTab.value } })
     models.value = res.data
   } catch (err) {
     ElMessage.error(err.response?.data?.detail || 'Failed to load models')
@@ -605,6 +657,14 @@ async function fetchModels() {
 }
 
 onMounted(fetchModels)
+
+watch(activeTab, (tab) => {
+  if (tab === 'models') {
+    fetchModels()
+  }
+})
+
+watch(modelTypeTab, () => fetchModels())
 
 // 新增/编辑表单
 const formVisible = ref(false)
@@ -620,6 +680,7 @@ const formData = reactive({
   max_tool_rounds: 100,
   context_window: 200000,
   isActive: false,
+  type: 'chat',
 })
 
 watch(
@@ -639,6 +700,7 @@ function resetForm() {
   formData.max_tool_rounds = 100
   formData.context_window = 200000
   formData.isActive = false
+  formData.type = 'chat'
   advancedOpen.value = false
   nameManuallyEdited.value = false
 }
@@ -646,6 +708,7 @@ function resetForm() {
 function openAddForm() {
   editingModel.value = null
   resetForm()
+  formData.type = modelTypeTab.value
   formVisible.value = true
 }
 
@@ -658,6 +721,7 @@ function openEditForm(m) {
   formData.max_tool_rounds = m.max_tool_rounds
   formData.context_window = m.context_window
   formData.isActive = m.isActive
+  formData.type = m.type || 'chat'
   advancedOpen.value = m.name !== m.model
   nameManuallyEdited.value = m.name !== m.model
   formVisible.value = true
@@ -698,13 +762,15 @@ async function handleSave() {
 async function handleDelete(m) {
   try {
     await ElMessageBox.confirm(t('settings.deleteConfirm'), '', { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
     await api.delete(`/api/models/${m.id}`)
     ElMessage.success('Deleted')
     await fetchModels()
   } catch (err) {
-    if (err !== 'cancel') {
-      ElMessage.error(err.response?.data?.detail || 'Delete failed')
-    }
+    ElMessage.error(err.response?.data?.detail || 'Delete failed')
   }
 }
 
@@ -718,6 +784,12 @@ async function toggleActive(m, val) {
 }
 
 // ── 消息平台（QQ 表单 / 飞书扫码 / 微信扫码）──
+const botTab = ref('qq')
+const botTabs = [
+  { key: 'qq', label: 'QQ 机器人', icon: qqIcon },
+  { key: 'feishu', label: '飞书机器人', icon: feishuIcon },
+  { key: 'wechat', label: '微信机器人', icon: weixinIcon },
+]
 const botStatus = ref({ qq: null, feishu: null, wechat: null })
 const botEdit = ref({ qq: false })
 const botSaving = ref(false)

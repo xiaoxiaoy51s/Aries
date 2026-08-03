@@ -14,3 +14,6 @@ lark-oapi>=1.4.0
 qq-botpy>=1.2.0
 nest-asyncio>=1.6.0
 PyYAML>=6.0.1
+networkx>=3.2
+markitdown[all]>=0.1.5
+rapidocr_onnxruntime>=1.2.0

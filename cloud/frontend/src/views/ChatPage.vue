@@ -413,6 +413,7 @@ async function sendMessage(payload) {
   const images = typeof payload === 'string' ? [] : (payload?.images || [])
   const skills = typeof payload === 'string' ? null : (payload?.skills || null)
   const agentName = typeof payload === 'string' ? null : (payload?.agent_name || null)
+  const useKb = typeof payload === 'string' ? false : !!payload?.use_kb
   const displayContent = content || (images.length > 1 ? `[${images.length} 张图片]` : '[图片]')
 
   // 如果没有 session，先在前端创建一个占位
@@ -476,6 +477,7 @@ async function sendMessage(payload) {
         ...(images.length ? { images } : {}),
         ...(agentName ? { agent_name: agentName } : {}),
         ...(skills ? { skills } : {}),
+        ...(useKb ? { use_kb: true } : {}),
       }),
       signal: abortController.value.signal,
     })

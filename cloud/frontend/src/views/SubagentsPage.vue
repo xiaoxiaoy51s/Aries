@@ -16,35 +16,79 @@
           <h2 class="agents-title">{{ t('agents.title') }}</h2>
           <p class="agents-desc">{{ t('agents.desc') }}</p>
         </div>
-        <button type="button" class="ds-btn ds-btn-primary" @click="openCreate">
+        <button type="button" class="ds-btn ds-btn-primary agents-create-btn" @click="openCreate">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>
           {{ t('agents.create') }}
         </button>
       </header>
 
+      <!-- Tab 切换：官方 / 我的 -->
+      <nav class="agents-tabs">
+        <button
+          type="button"
+          class="agent-tab"
+          :class="{ active: activeTab === 'official' }"
+          @click="activeTab = 'official'"
+        >
+          {{ t('agents.official') }}
+          <span class="tab-count">{{ officialAgents.length }}</span>
+        </button>
+        <button
+          type="button"
+          class="agent-tab"
+          :class="{ active: activeTab === 'personal' }"
+          @click="activeTab = 'personal'"
+        >
+          {{ t('agents.personal') }}
+          <span class="tab-count">{{ personalAgents.length }}</span>
+        </button>
+      </nav>
+
       <div class="agents-body">
-        <div v-if="loading && agents.length === 0" class="agents-empty">{{ t('agents.loading') }}</div>
-        <div v-else-if="!loading && agents.length === 0" class="agents-empty">
-          <p>{{ t('agents.empty') }}</p>
+        <div v-if="loading && agents.length === 0" class="agents-empty">
+          <div class="empty-spinner"></div>
+          <span>{{ t('agents.loading') }}</span>
         </div>
+
+        <div v-else-if="activeAgents.length === 0" class="agents-empty">
+          <div class="empty-icon">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M8 4h8"/><path d="M8 14h.01M16 14h.01"/></svg>
+          </div>
+          <p class="empty-title">{{ activeTab === 'official' ? t('agents.officialEmpty') : t('agents.personalEmpty') }}</p>
+          <p v-if="activeTab === 'personal'" class="empty-hint">{{ t('agents.personalEmptyHint') }}</p>
+          <button
+            v-if="activeTab === 'personal'"
+            type="button"
+            class="ds-btn ds-btn-primary empty-action"
+            @click="openCreate"
+          >
+            {{ t('agents.create') }}
+          </button>
+        </div>
+
         <div v-else class="agents-grid">
           <div
-            v-for="agent in agents"
+            v-for="agent in activeAgents"
             :key="agent.name"
             class="agent-card"
             :class="{ disabled: !agent.enabled }"
             @click="openDetail(agent)"
           >
             <div class="agent-card-head">
-              <div class="agent-avatar">
+              <div class="agent-avatar" :class="{ 'official-avatar': isOfficial(agent) }">
                 <img v-if="agent.avatar_data" :src="agent.avatar_data" :alt="agent.name" />
-                <span v-else>{{ (agent.name || '?').charAt(0).toUpperCase() }}</span>
+                <span v-else-if="isOfficial(agent)" class="agent-avatar-default">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M8 4h8"/><path d="M8 14h.01M16 14h.01"/></svg>
+                </span>
+                <span v-else class="agent-avatar-default">{{ (agent.name || '?').charAt(0).toUpperCase() }}</span>
               </div>
               <div class="agent-card-titles">
                 <h3 class="agent-card-title">{{ agent.name }}</h3>
-                <span class="agent-scope" :class="agent.scope">
-                  {{ agent.scope === 'private' ? t('agents.scopePrivate') : t('agents.scopeShared') }}
+                <span v-if="isOfficial(agent)" class="agent-badge-official">
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg>
+                  {{ t('agents.officialBadge') }}
                 </span>
+                <span v-else class="agent-scope">{{ t('agents.scopePrivate') }}</span>
               </div>
             </div>
             <p class="agent-card-desc">{{ agent.description || t('agents.noDesc') }}</p>
@@ -61,18 +105,10 @@
             <div class="agent-card-actions" @click.stop>
               <button type="button" class="agent-btn" @click="openDetail(agent)">{{ t('agents.view') }}</button>
               <button type="button" class="agent-btn" @click="chatAsAgent(agent)">{{ t('agents.chatAs') }}</button>
-              <button
-                v-if="agent.scope === 'private'"
-                type="button"
-                class="agent-btn"
-                @click="openEdit(agent)"
-              >{{ t('agents.edit') }}</button>
-              <button
-                v-if="agent.scope === 'private'"
-                type="button"
-                class="agent-btn danger"
-                @click="removeAgent(agent)"
-              >{{ t('agents.delete') }}</button>
+              <template v-if="!isOfficial(agent)">
+                <button type="button" class="agent-btn" @click="openEdit(agent)">{{ t('agents.edit') }}</button>
+                <button type="button" class="agent-btn danger" @click="removeAgent(agent)">{{ t('agents.delete') }}</button>
+              </template>
             </div>
           </div>
         </div>
@@ -86,14 +122,23 @@
       <div class="modal-dialog modal-wide" @click.stop>
         <div class="modal-header">
           <div class="detail-head">
-            <div class="agent-avatar lg">
+            <div class="agent-avatar lg" :class="{ 'official-avatar': isOfficial(detail) }">
               <img v-if="detail.avatar_data" :src="detail.avatar_data" :alt="detail.name" />
-              <span v-else>{{ (detail.name || '?').charAt(0).toUpperCase() }}</span>
+              <span v-else-if="isOfficial(detail)" class="agent-avatar-default">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M8 4h8"/><path d="M8 14h.01M16 14h.01"/></svg>
+              </span>
+              <span v-else class="agent-avatar-default">{{ (detail.name || '?').charAt(0).toUpperCase() }}</span>
             </div>
             <div>
-              <div>{{ detail.name }}</div>
+              <div class="detail-title-row">
+                <span>{{ detail.name }}</span>
+                <span v-if="isOfficial(detail)" class="agent-badge-official">
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg>
+                  {{ t('agents.officialBadge') }}
+                </span>
+              </div>
               <div class="detail-sub">
-                {{ detail.scope === 'private' ? t('agents.scopePrivate') : t('agents.scopeShared') }}
+                {{ isOfficial(detail) ? t('agents.officialBadge') : t('agents.scopePrivate') }}
               </div>
             </div>
           </div>
@@ -114,7 +159,7 @@
           <button type="button" class="ds-btn" @click="detail = null">{{ t('agents.cancel') }}</button>
           <button type="button" class="ds-btn" @click="chatAsAgent(detail); detail = null">{{ t('agents.chatAs') }}</button>
           <button
-            v-if="detail.scope === 'private'"
+            v-if="!isOfficial(detail)"
             type="button"
             class="ds-btn ds-btn-primary"
             @click="openEdit(detail); detail = null"
@@ -137,11 +182,33 @@
           />
           <label class="form-label">{{ t('agents.description') }}</label>
           <input v-model="form.description" class="form-input" :placeholder="t('agents.descriptionHint')" />
+
+          <!-- 头像上传 -->
           <label class="form-label">{{ t('agents.avatar') }}</label>
-          <input type="file" accept="image/*" @change="onAvatarPick" />
-          <div v-if="form.avatarPreview" class="avatar-preview">
-            <img :src="form.avatarPreview" alt="avatar" />
+          <div class="avatar-uploader" @click="$refs.avatarInput.click()">
+            <input
+              ref="avatarInput"
+              type="file"
+              accept="image/*"
+              class="avatar-uploader-input"
+              @change="onAvatarPick"
+            />
+            <div class="avatar-uploader-box">
+              <img v-if="form.avatarPreview" :src="form.avatarPreview" alt="avatar" />
+              <div v-else class="avatar-uploader-placeholder">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+              </div>
+              <div class="avatar-uploader-mask">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                <span>{{ form.avatarPreview ? t('agents.avatarChange') : t('agents.avatarUpload') }}</span>
+              </div>
+            </div>
+            <div class="avatar-uploader-meta">
+              <span class="avatar-uploader-title">{{ form.avatarPreview ? t('agents.avatarChange') : t('agents.avatarUpload') }}</span>
+              <span class="avatar-uploader-hint">{{ t('agents.avatarHint') }}</span>
+            </div>
           </div>
+
           <label class="form-label">{{ t('agents.skills') }}</label>
           <div class="skill-checks">
             <label v-for="s in skillOptions" :key="s.folder_name" class="skill-check">
@@ -171,10 +238,11 @@
       </div>
     </div>
   </div>
+  <SettingsModal v-if="settingsStore.settingsOpen" />
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../i18n'
@@ -189,13 +257,16 @@ import {
 } from '../api/subagents'
 import { listSkills } from '../api/skills'
 import ChatSidebar from './ChatSidebar.vue'
+import SettingsModal from '../components/SettingsModal.vue'
 import MarkdownRenderer from '../components/MarkdownRenderer.vue'
 import { ElMessageBox } from 'element-plus'
+import { useSettingsStore } from '../stores/settings'
 import './ChatPage.css'
 
 const { t } = useI18n()
 const router = useRouter()
 const auth = useAuthStore()
+const settingsStore = useSettingsStore()
 
 const sidebarOpen = ref(true)
 const sessions = ref([])
@@ -207,6 +278,7 @@ const errorMessage = ref('')
 const dialogVisible = ref(false)
 const dialogMode = ref('create')
 const detail = ref(null)
+const activeTab = ref('official')
 const form = ref({
   name: '',
   description: '',
@@ -216,6 +288,23 @@ const form = ref({
   allowed_mcps: [],
   avatar: '',
   avatarPreview: '',
+})
+
+// 判断是否为官方智能体：scope 不为 private 的视为官方
+function isOfficial(agent) {
+  return agent && agent.scope !== 'private'
+}
+
+const officialAgents = computed(() => agents.value.filter(isOfficial))
+const personalAgents = computed(() => agents.value.filter((a) => !isOfficial(a)))
+const activeAgents = computed(() =>
+  activeTab.value === 'official' ? officialAgents.value : personalAgents.value
+)
+
+// 官方为空时自动切到个人 tab；个人为空时切回官方
+watch([officialAgents, personalAgents], ([o, p]) => {
+  if (activeTab.value === 'official' && o.length === 0 && p.length > 0) activeTab.value = 'personal'
+  else if (activeTab.value === 'personal' && p.length === 0 && o.length > 0) activeTab.value = 'official'
 })
 
 async function loadSessions() {
@@ -316,6 +405,7 @@ function onAvatarPick(e) {
     form.value.avatarPreview = form.value.avatar
   }
   reader.readAsDataURL(file)
+  e.target.value = ''
 }
 
 function toggleSkill(name, checked) {
@@ -401,107 +491,478 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+/* ============ 页面容器 ============ */
 .agents-page {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg-base-secondary, #f7f7f8);
+  background: var(--bg-base-secondary, #f5f5f5);
+  overflow: hidden;
 }
+
+/* ============ 头部 ============ */
 .agents-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 20px 28px 12px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-  background: #fff;
+  gap: var(--spacer-16, 16px);
+  height: 60px;
+  padding: 0 var(--spacer-24, 24px);
+  flex-shrink: 0;
+  background-color: var(--bg-base-default, #fff);
+  border-bottom: 1px solid var(--border-neutral-l1, rgba(115,115,115,0.12));
 }
-.agents-title { margin: 0; font-size: 20px; font-weight: 600; color: #111827; }
-.agents-desc { margin: 6px 0 0; font-size: 13px; color: #6b7280; max-width: 560px; line-height: 1.45; }
-.agents-body { flex: 1; overflow: auto; padding: 20px 28px 40px; }
-.agents-empty { color: #9ca3af; font-size: 14px; padding: 48px 0; text-align: center; }
-.agents-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
-.agent-card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  padding: 14px 16px;
+.agents-head-left { min-width: 0; flex-shrink: 0; }
+.agents-title {
+  margin: 0;
+  font-family: var(--font-family-heading, "SF Pro", "PingFang SC", system-ui, sans-serif);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-default, #171717);
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
+.agents-desc {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--text-tertiary, #737373);
+  max-width: 560px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agents-create-btn {
+  height: 34px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  background-color: var(--text-default, #171717);
+  color: var(--bg-base-default, #fff);
+  border-color: var(--text-default, #171717);
+}
+.agents-create-btn:hover:not(:disabled) {
+  background-color: var(--icon-default-hover, #171717);
+  border-color: var(--icon-default-hover, #171717);
+}
+.agents-create-btn:active:not(:disabled) {
+  background-color: var(--text-default, #171717);
+  border-color: var(--text-default, #171717);
+}
+
+/* ============ Tab 栏 ============ */
+.agents-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: var(--spacer-4, 4px);
+  height: 46px;
+  padding: 0 var(--spacer-24, 24px);
+  flex-shrink: 0;
+  background-color: var(--bg-base-default, #fff);
+  border-bottom: 1px solid var(--border-neutral-l1, rgba(115,115,115,0.12));
+}
+.agent-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px;
+  margin-right: var(--spacer-24, 24px);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-family-default, "SF Pro Text", "PingFang SC", system-ui, sans-serif);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-tertiary, #737373);
+  transition: color 0.15s;
+}
+.agent-tab:hover { color: var(--text-secondary, #404040); }
+.agent-tab.active { color: var(--text-default, #171717); font-weight: 600; }
+.agent-tab::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; bottom: -1px;
+  height: 2px;
+  border-radius: 1px;
+  background: transparent;
+  transition: background-color 0.2s;
+}
+.agent-tab.active::after { background: var(--text-default, #171717); }
+.tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-full, 999px);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  background: var(--bg-overlay-l1, rgba(115,115,115,0.08));
+  color: var(--text-tertiary, #737373);
+  transition: background-color 0.2s, color 0.2s;
+}
+.agent-tab.active .tab-count {
+  background: var(--text-default, #171717);
+  color: var(--bg-base-default, #fff);
+}
+
+/* ============ 内容区 ============ */
+.agents-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--spacer-24, 24px);
+}
+.agents-empty {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  align-items: center;
+  gap: var(--spacer-8, 8px);
+  color: var(--text-tertiary, #737373);
+  font-size: 14px;
+  padding: 88px 0;
+  text-align: center;
+}
+.empty-icon {
+  width: 64px; height: 64px;
+  border-radius: var(--radius-16, 16px);
+  background: var(--bg-overlay-l1, rgba(115,115,115,0.08));
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-tertiary, #737373);
+  margin-bottom: var(--spacer-4, 4px);
+}
+.empty-title { margin: 0; font-size: 14px; font-weight: 500; color: var(--text-secondary, #404040); }
+.empty-hint { margin: 0; font-size: 12px; color: var(--text-tertiary, #737373); }
+.empty-action { margin-top: var(--spacer-12, 12px); }
+.empty-spinner {
+  width: 24px; height: 24px;
+  border: 2px solid var(--border-neutral-l1, rgba(115,115,115,0.12));
+  border-top-color: var(--text-default, #171717);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  margin-bottom: var(--spacer-4, 4px);
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ============ 卡片网格 ============ */
+.agents-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--spacer-16, 16px);
+  max-width: 1200px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* ============ 智能体卡片 ============ */
+.agent-card {
+  background: var(--bg-base-default, #fff);
+  border: 1px solid var(--border-neutral-l1, rgba(115,115,115,0.12));
+  border-radius: var(--radius-12, 12px);
+  padding: var(--spacer-20, 20px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-10, 10px);
   cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.2s, transform 0.15s;
+  animation: card-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
-.agent-card:hover { border-color: #c7cdd6; }
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.agent-card:hover {
+  border-color: var(--border-neutral-l2, rgba(115,115,115,0.18));
+  box-shadow: 0 4px 16px rgba(23,23,23,0.06);
+  transform: translateY(-1px);
+}
 .agent-card.disabled { opacity: 0.55; }
-.agent-card-head { display: flex; align-items: center; gap: 10px; }
+
+.agent-card-head { display: flex; align-items: center; gap: var(--spacer-12, 12px); }
 .agent-avatar {
-  width: 40px; height: 40px; border-radius: 10px;
-  background: #f3f4f6; display: flex; align-items: center; justify-content: center;
-  overflow: hidden; font-weight: 600; color: #6b7280; flex-shrink: 0;
+  width: 40px; height: 40px; border-radius: var(--radius-10, 10px);
+  background: var(--bg-overlay-l1, rgba(115,115,115,0.08));
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden; flex-shrink: 0;
+  color: var(--icon-secondary, #404040);
 }
-.agent-avatar.lg { width: 48px; height: 48px; }
+.agent-avatar.lg { width: 48px; height: 48px; border-radius: var(--radius-12, 12px); }
 .agent-avatar img { width: 100%; height: 100%; object-fit: cover; }
-.agent-card-titles { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; }
+.agent-avatar-default {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%;
+  font-size: 16px; font-weight: 600;
+  color: var(--icon-secondary, #404040);
+}
+.agent-avatar.lg .agent-avatar-default { font-size: 18px; }
+/* 官方头像：黑底白图标 */
+.official-avatar {
+  background: var(--text-default, #171717);
+  color: var(--bg-base-default, #fff);
+}
+.official-avatar .agent-avatar-default { color: var(--bg-base-default, #fff); }
+
+.agent-card-titles {
+  min-width: 0; flex: 1;
+  display: flex; align-items: center; gap: var(--spacer-8, 8px);
+}
 .agent-card-title {
-  margin: 0; font-size: 15px; font-weight: 600; color: #111827;
+  margin: 0; font-size: 14px; font-weight: 600; color: var(--text-default, #171717);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  letter-spacing: -0.01em;
 }
+/* 官方徽章 */
+.agent-badge-official {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: var(--radius-full, 999px);
+  background: var(--text-default, #171717);
+  color: var(--bg-base-default, #fff);
+  flex-shrink: 0;
+  letter-spacing: 0.02em;
+}
+/* 个人范围标签 */
 .agent-scope {
-  font-size: 11px; color: #6b7280; background: #f3f4f6;
-  border-radius: 4px; padding: 2px 6px; flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: var(--radius-full, 999px);
+  background: var(--bg-overlay-l1, rgba(115,115,115,0.08));
+  color: var(--text-tertiary, #737373);
+  flex-shrink: 0;
 }
+
 .agent-card-desc {
-  margin: 0; font-size: 13px; color: #6b7280; line-height: 1.45; min-height: 38px;
+  margin: 0; font-size: 13px; color: var(--text-secondary, #404040); line-height: 1.55;
+  min-height: 40px;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.agent-card-meta { font-size: 12px; color: #6b7280; }
-.agent-switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
-.agent-card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.agent-card-meta {
+  font-size: 12px; color: var(--text-tertiary, #737373);
+  padding-top: var(--spacer-8, 8px);
+  border-top: 1px solid var(--border-neutral-l1, rgba(115,115,115,0.12));
+}
+.agent-switch {
+  display: inline-flex; align-items: center; gap: 7px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-secondary, #404040);
+}
+.agent-switch input {
+  width: 14px; height: 14px;
+  accent-color: var(--text-default, #171717);
+  cursor: pointer;
+}
+.agent-card-actions { display: flex; gap: var(--spacer-8, 8px); flex-wrap: wrap; }
 .agent-btn {
-  border: 1px solid #e5e7eb; background: #fff; border-radius: 6px;
-  padding: 4px 10px; font-size: 12px; cursor: pointer; color: #374151;
+  border: 1px solid var(--border-neutral-l2, rgba(115,115,115,0.18));
+  background: var(--bg-base-default, #fff);
+  border-radius: var(--radius-6, 6px);
+  padding: 6px 13px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font-family-default, inherit);
+  cursor: pointer;
+  color: var(--text-secondary, #404040);
+  transition: background-color 0.12s, border-color 0.12s, color 0.12s;
 }
-.agent-btn:hover { background: #f9fafb; }
-.agent-btn.danger { color: #b91c1c; }
+.agent-btn:hover {
+  background: var(--bg-overlay-l1, rgba(115,115,115,0.08));
+  border-color: var(--border-neutral-l3, rgba(115,115,115,0.36));
+  color: var(--text-default, #171717);
+}
+.agent-btn.danger { color: var(--status-error-default, #e8463a); }
+.agent-btn.danger:hover {
+  background: var(--status-error-surface-l1, rgba(232,70,58,0.12));
+  border-color: var(--status-error-default, #e8463a);
+  color: var(--status-error-default, #e8463a);
+}
+
 .agents-error {
-  position: fixed; bottom: 24px; right: 24px; background: #111827; color: #fff;
-  padding: 10px 14px; border-radius: 8px; font-size: 13px; cursor: pointer; z-index: 50;
+  position: fixed; bottom: var(--spacer-24, 24px); right: var(--spacer-24, 24px);
+  background: var(--text-default, #171717); color: var(--bg-base-default, #fff);
+  padding: 10px 14px; border-radius: var(--radius-8, 8px);
+  font-size: 13px; cursor: pointer; z-index: 50;
+  box-shadow: 0 8px 24px rgba(23,23,23,0.16);
 }
+
+/* ============ 弹窗 ============ */
 .modal-overlay {
-  position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45);
-  display: flex; align-items: center; justify-content: center; z-index: 80; padding: 20px;
+  position: fixed; inset: 0;
+  background: var(--bg-overlay-l4, rgba(115,115,115,0.2));
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 80; padding: var(--spacer-20, 20px);
 }
 .modal-dialog {
-  width: min(560px, 100%); background: #fff; border-radius: 12px;
-  max-height: 90vh; overflow: auto; box-shadow: 0 20px 50px rgba(0,0,0,.18);
+  width: min(560px, 100%); background: var(--bg-base-default, #fff);
+  border: 1px solid var(--border-neutral-l1, rgba(115,115,115,0.12));
+  border-radius: var(--radius-16, 16px);
+  max-height: 90vh; overflow: auto;
+  box-shadow: 0 24px 64px rgba(23,23,23,0.14), 0 8px 24px rgba(23,23,23,0.08);
 }
 .modal-wide { width: min(760px, 100%); }
-.modal-header { padding: 16px 20px; font-weight: 600; border-bottom: 1px solid #eee; }
-.modal-body { padding: 16px 20px; display: flex; flex-direction: column; gap: 8px; }
-.modal-footer { padding: 12px 20px 16px; display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid #eee; }
-.form-label { font-size: 12px; color: #6b7280; margin-top: 6px; }
-.form-input, .form-textarea {
-  width: 100%; border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px;
-  font-size: 13px; font-family: inherit; box-sizing: border-box;
+.modal-header {
+  padding: var(--spacer-20, 20px);
+  font-family: var(--font-family-heading, "SF Pro", "PingFang SC", system-ui, sans-serif);
+  font-size: 16px; font-weight: 600;
+  color: var(--text-default, #171717);
+  border-bottom: 1px solid var(--border-neutral-l1, rgba(115,115,115,0.12));
+  letter-spacing: -0.01em;
 }
+.modal-body { padding: var(--spacer-20, 20px); display: flex; flex-direction: column; gap: var(--spacer-8, 8px); }
+.modal-footer {
+  padding: var(--spacer-16, 16px) var(--spacer-20, 20px);
+  display: flex; justify-content: flex-end; gap: var(--spacer-8, 8px);
+  border-top: 1px solid var(--border-neutral-l1, rgba(115,115,115,0.12));
+}
+.form-label {
+  font-size: 12px; font-weight: 600;
+  color: var(--text-secondary, #404040);
+  margin-top: var(--spacer-6, 6px);
+  font-family: var(--font-family-heading, "SF Pro", "PingFang SC", system-ui, sans-serif);
+}
+.form-input, .form-textarea {
+  width: 100%; border: 1px solid var(--border-neutral-l2, rgba(115,115,115,0.18));
+  border-radius: var(--radius-8, 8px); padding: 8px 10px;
+  font-size: 13px; font-family: inherit; box-sizing: border-box;
+  background: var(--bg-base-default, #fff);
+  color: var(--text-default, #171717);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.form-input:focus, .form-textarea:focus {
+  outline: none;
+  border-color: var(--border-neutral-l3, rgba(115,115,115,0.36));
+  box-shadow: 0 0 0 3px rgba(115,115,115,0.12);
+}
+.form-input:disabled { background: var(--bg-overlay-l1, rgba(115,115,115,0.08)); color: var(--text-tertiary, #737373); }
 .form-textarea { resize: vertical; line-height: 1.5; }
-.detail-head { display: flex; align-items: center; gap: 12px; }
-.detail-sub { font-size: 12px; color: #9ca3af; font-weight: 400; }
-.detail-desc { margin: 0 0 8px; color: #4b5563; font-size: 14px; }
+
+/* ============ 头像上传 ============ */
+.avatar-uploader-input { display: none; }
+.avatar-uploader {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-14, 14px);
+  cursor: pointer;
+  padding: var(--spacer-12, 12px);
+  border: 1px solid var(--border-neutral-l2, rgba(115,115,115,0.18));
+  border-radius: var(--radius-10, 10px);
+  background: var(--bg-base-secondary, #f5f5f5);
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.avatar-uploader:hover {
+  border-color: var(--border-neutral-l3, rgba(115,115,115,0.36));
+  background: var(--bg-overlay-l1, rgba(115,115,115,0.08));
+}
+.avatar-uploader-box {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  border-radius: var(--radius-12, 12px);
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--bg-base-default, #fff);
+  border: 1px solid var(--border-neutral-l1, rgba(115,115,115,0.12));
+}
+.avatar-uploader-box img {
+  width: 100%; height: 100%; object-fit: cover;
+  display: block;
+}
+.avatar-uploader-placeholder {
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-tertiary, #737373);
+}
+.avatar-uploader-mask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: color-mix(in srgb, var(--text-default, #171717) 55%, transparent);
+  color: var(--bg-base-default, #fff);
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.avatar-uploader:hover .avatar-uploader-mask,
+.avatar-uploader:focus-within .avatar-uploader-mask { opacity: 1; }
+.avatar-uploader-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.avatar-uploader-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-default, #171717);
+}
+.avatar-uploader-hint {
+  font-size: 12px;
+  color: var(--text-tertiary, #737373);
+}
+
+/* ============ 详情 ============ */
+.detail-head { display: flex; align-items: center; gap: var(--spacer-12, 12px); }
+.detail-head > div:last-child { min-width: 0; }
+.detail-title-row {
+  display: flex; align-items: center; gap: var(--spacer-8, 8px);
+  font-size: 16px; font-weight: 600; color: var(--text-default, #171717);
+  letter-spacing: -0.01em;
+}
+.detail-sub { font-size: 12px; color: var(--text-tertiary, #737373); font-weight: 400; margin-top: 3px; }
+.detail-desc { margin: 0 0 var(--spacer-8, 8px); color: var(--text-secondary, #404040); font-size: 14px; line-height: 1.6; }
 .detail-md {
-  background: #f9fafb;
-  border: 1px solid #eee;
-  border-radius: 8px;
-  padding: 12px 14px;
+  background: var(--bg-base-secondary, #f5f5f5);
+  border: 1px solid var(--border-neutral-l1, rgba(115,115,115,0.12));
+  border-radius: var(--radius-8, 8px);
+  padding: 14px 16px;
   max-height: 420px;
   overflow: auto;
 }
-.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip { background: #f3f4f6; border-radius: 999px; padding: 2px 8px; font-size: 12px; color: #374151; }
-.muted { color: #9ca3af; font-size: 12px; }
-.skill-checks { display: flex; flex-direction: column; gap: 6px; max-height: 140px; overflow: auto; }
-.skill-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #374151; }
-.avatar-preview { width: 56px; height: 56px; border-radius: 10px; overflow: hidden; }
-.avatar-preview img { width: 100%; height: 100%; object-fit: cover; }
+.chip-row { display: flex; flex-wrap: wrap; gap: var(--spacer-6, 6px); }
+.chip {
+  background: var(--bg-overlay-l1, rgba(115,115,115,0.08));
+  border-radius: var(--radius-full, 999px);
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-secondary, #404040);
+  font-weight: 500;
+}
+.muted { color: var(--text-disabled, #a1a1a1); font-size: 12px; }
+.skill-checks { display: flex; flex-direction: column; gap: var(--spacer-6, 6px); max-height: 140px; overflow: auto; }
+.skill-check { display: flex; align-items: center; gap: var(--spacer-8, 8px); font-size: 13px; color: var(--text-secondary, #404040); cursor: pointer; }
+.skill-check input { accent-color: var(--text-default, #171717); }
+
+/* ============ 响应式 ============ */
+@media (max-width: 768px) {
+  .agents-head {
+    padding: 0 var(--spacer-16, 16px);
+    height: auto;
+    min-height: 56px;
+    flex-wrap: wrap;
+    padding-top: var(--spacer-12, 12px);
+    padding-bottom: var(--spacer-12, 12px);
+    gap: var(--spacer-8, 8px);
+  }
+  .agents-head-left { flex: 1 0 100%; }
+  .agents-desc { white-space: normal; }
+  .agents-tabs { padding: 0 var(--spacer-16, 16px); }
+  .agents-body { padding: var(--spacer-16, 16px); }
+  .agents-grid { grid-template-columns: 1fr; }
+}
 </style>

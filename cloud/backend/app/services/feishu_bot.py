@@ -43,6 +43,52 @@ class _FeishuRunner:
         self._channel: Optional[Any] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.last_chat_id: str = ""
+        self._tenant_token: str = ""
+        self._token_expires_at: float = 0.0
+
+    async def _get_tenant_token(self) -> str:
+        """获取飞书 tenant_access_token（缓存，提前 5 分钟刷新）。"""
+        import time
+        if self._tenant_token and time.time() < self._token_expires_at - 300:
+            return self._tenant_token
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+                    json={"app_id": self.app_id, "app_secret": self.app_secret},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            self._tenant_token = data.get("tenant_access_token", "")
+            expire = data.get("expire", 7200)
+            self._token_expires_at = time.time() + expire
+            return self._tenant_token
+        except Exception as e:
+            _log.warning("[飞书] 获取 tenant_access_token 失败: %s", e)
+            return ""
+
+    async def _download_feishu_image(self, image_key: str) -> str:
+        """通过飞书 API 下载图片，返回 base64 data URL。"""
+        token = await self._get_tenant_token()
+        if not token:
+            return ""
+        try:
+            import httpx
+            import base64
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                resp = await client.get(
+                    f"https://open.feishu.cn/open-apis/im/v1/images/{image_key}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    params={"image_type": "message"},
+                )
+                resp.raise_for_status()
+            ct = resp.headers.get("content-type", "image/jpeg")
+            b64 = base64.b64encode(resp.content).decode()
+            return f"data:{ct};base64,{b64}"
+        except Exception as e:
+            _log.warning("[飞书] 下载图片失败 (key=%s): %s", image_key, e)
+            return ""
 
     def start(self):
         self._running = True
@@ -75,10 +121,29 @@ class _FeishuRunner:
 
     async def _on_message(self, msg: Any):
         try:
-            _log.info("[飞书] 收到消息: %s", msg.content_text[:80])
+            _log.info("[飞书] 收到消息: %s", (msg.content_text or "")[:80])
 
-            text = (msg.content_text or "").strip()
-            if not text:
+            import json
+            msg_type = getattr(msg, "message_type", "") or ""
+            text = ""
+            images: list[str] = []
+
+            if msg_type == "image":
+                # 图片消息：content_text 是 JSON {"image_key":"..."}
+                raw_content = getattr(msg, "content_text", "") or getattr(msg, "content", "") or ""
+                try:
+                    content_obj = json.loads(raw_content) if isinstance(raw_content, str) else raw_content
+                    image_key = content_obj.get("image_key", "") if isinstance(content_obj, dict) else ""
+                except Exception:
+                    image_key = ""
+                if image_key:
+                    data_url = await self._download_feishu_image(image_key)
+                    if data_url:
+                        images.append(data_url)
+            else:
+                text = (msg.content_text or "").strip()
+
+            if not text and not images:
                 return
 
             chat_id = (msg.chat_id or "").strip()
@@ -91,17 +156,17 @@ class _FeishuRunner:
                     pass
 
             # 用 create_task 后台处理，不阻塞事件循环，让新消息能及时触发取消
-            asyncio.create_task(self._process_message_task(text, chat_id))
+            asyncio.create_task(self._process_message_task(text, chat_id, images))
         except Exception as e:
             _log.error("[飞书] 处理消息失败: %s", e)
 
-    async def _process_message_task(self, text: str, chat_id: str):
+    async def _process_message_task(self, text: str, chat_id: str, images: list[str] | None = None):
         try:
             async def _send_segment(seg: str):
                 await self._channel.send(chat_id, {"text": seg})
 
             reply = await process_inbound_message_async(
-                "feishu", text, send_segment=_send_segment
+                "feishu", text, send_segment=_send_segment, images=images or None
             )
             _log.info("[飞书] Agent 分段推送完成, chat_id=%s", chat_id)
         except asyncio.CancelledError:

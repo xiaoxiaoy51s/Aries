@@ -31,6 +31,81 @@ def _random_uin() -> str:
     return base64.b64encode(str(random.randint(0, 0xFFFFFFFF)).encode()).decode()
 
 
+def _decode_wechat_aes_key(aeskey: str, media_aes_key: str) -> bytes:
+    """解码微信图片 AES-128-ECB 密钥，返回 16 字节密钥。"""
+    # 格式1: 32 位 hex 字符串
+    if aeskey and len(aeskey) == 32:
+        try:
+            key = bytes.fromhex(aeskey)
+            if len(key) == 16:
+                return key
+        except ValueError:
+            pass
+    # 格式2: base64 编码的原始 16 字节
+    if media_aes_key:
+        try:
+            decoded = base64.b64decode(media_aes_key)
+            if len(decoded) == 16:
+                return decoded
+            # 格式3: base64 编码的 32 位 hex 字符串
+            if len(decoded) == 32:
+                try:
+                    return bytes.fromhex(decoded.decode("ascii"))
+                except (ValueError, UnicodeDecodeError):
+                    pass
+        except Exception:
+            pass
+    return b""
+
+
+def _download_wechat_image(full_url: str, aeskey: str, media_aes_key: str) -> str:
+    """下载微信图片并 AES-128-ECB 解密，返回 base64 data URL。"""
+    if not full_url:
+        return ""
+    try:
+        with httpx.Client(timeout=30, follow_redirects=True) as client:
+            resp = client.get(full_url)
+            resp.raise_for_status()
+        encrypted = resp.content
+        # 尝试 AES 解密
+        key = _decode_wechat_aes_key(aeskey, media_aes_key)
+        if key:
+            try:
+                from Crypto.Cipher import AES
+                from Crypto.Util.Padding import unpad
+                cipher = AES.new(key, AES.MODE_ECB)
+                decrypted = unpad(cipher.decrypt(encrypted), AES.block_size)
+                b64 = base64.b64encode(decrypted).decode()
+                return f"data:image/jpeg;base64,{b64}"
+            except Exception:
+                # 解密失败，尝试直接使用原始数据
+                pass
+        # 无密钥或解密失败：直接 base64 编码
+        b64 = base64.b64encode(encrypted).decode()
+        ct = resp.headers.get("content-type", "image/jpeg")
+        return f"data:{ct};base64,{b64}"
+    except Exception as e:
+        _log.warning("[微信] 下载图片失败: %s", e)
+        return ""
+
+
+def _extract_wechat_images(msg: dict) -> list[str]:
+    """从微信消息 item_list 中提取图片，返回 base64 data URL 列表。"""
+    images: list[str] = []
+    for item in msg.get("item_list", []):
+        if item.get("type") != 2:
+            continue
+        img_item = item.get("image_item", {})
+        media = img_item.get("media", {})
+        full_url = media.get("full_url", "")
+        aeskey = img_item.get("aeskey", "")
+        media_aes_key = media.get("aes_key", "")
+        data_url = _download_wechat_image(full_url, aeskey, media_aes_key)
+        if data_url:
+            images.append(data_url)
+    return images
+
+
 _wechat_user_email: str = ""
 
 
@@ -159,8 +234,11 @@ class WeChatBotClient:
                         for item in msg.get("item_list", []):
                             if item.get("type") == 1:
                                 text = item.get("text_item", {}).get("text", "")
-                        if not text:
+                        images = _extract_wechat_images(msg)
+                        if not text and not images:
                             continue
+                        if not text and images:
+                            text = f"[图片×{len(images)}]"
                         _log.info("[微信] 来自 %s: %s", from_user, text[:80])
                         try:
                             reply, _files = handler(text)
@@ -329,9 +407,13 @@ class WeChatRunner:
                     for item in msg.get("item_list", []):
                         if item.get("type") == 1:
                             text = item.get("text_item", {}).get("text", "")
-                    if not text:
+                    # 提取图片（type 2），下载并解密
+                    images = await asyncio.get_running_loop().run_in_executor(
+                        None, _extract_wechat_images, msg
+                    )
+                    if not text and not images:
                         continue
-                    _log.info("[微信] 来自 %s: %s", from_user, text[:80])
+                    _log.info("[微信] 来自 %s: %s%s", from_user, text[:80], f" +{len(images)}张图片" if images else "")
 
                     if _current_msg_task and not _current_msg_task.done():
                         _current_msg_task.cancel()
@@ -342,10 +424,11 @@ class WeChatRunner:
                         except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                             pass
 
-                    async def _handle_inbound(inbound_text: str):
+                    async def _handle_inbound(inbound_text: str, inbound_images: list[str] | None = None):
                         try:
                             reply = await process_inbound_message_async(
-                                "wechat", inbound_text, send_segment=_send_segment
+                                "wechat", inbound_text, send_segment=_send_segment,
+                                images=inbound_images or None,
                             )
                             if reply:
                                 client.send_message(
@@ -358,7 +441,7 @@ class WeChatRunner:
                         except Exception as e:
                             _log.error("[微信] 处理消息失败: %s", e)
 
-                    _current_msg_task = asyncio.create_task(_handle_inbound(text))
+                    _current_msg_task = asyncio.create_task(_handle_inbound(text, images))
 
                 # 短暂等待，避免 CPU 空转
                 await asyncio.sleep(0.5)

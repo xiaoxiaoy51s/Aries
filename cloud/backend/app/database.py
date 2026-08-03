@@ -48,6 +48,7 @@ async def init_db():
     import app.model.user  # noqa: F401
     import app.model.session  # noqa: F401
     import app.model.scheduled_task  # noqa: F401
+    import app.model.wiki  # noqa: F401
 
     from sqlalchemy import text
 

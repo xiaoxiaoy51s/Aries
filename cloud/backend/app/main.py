@@ -21,6 +21,7 @@ from app.controller.workspace_controller import router as workspace_router, uplo
 from app.controller.office_preview_controller import router as office_router
 from app.controller.memory_controller import router as memory_router
 from app.controller.preview_controller import router as preview_router
+from app.controller.kb_controller import router as kb_router
 from app.database import init_db
 from app.exception.auth_exception import AuthException
 from app.tools.sandbox import cleanup_stale_workspaces
@@ -28,6 +29,7 @@ from app.utils.scheduler import run_scheduler
 
 # Bot 生命周期（子进程模式，主进程仅负责 spawn/terminate）
 from app.services.bot_manager import spawn_all_bot_processes, stop_bot_process
+from app.service.kb_worker import kb_worker_loop
 from app.service.model_config_service import ModelConfigService
 
 logger = logging.getLogger(__name__)
@@ -105,6 +107,8 @@ async def lifespan(app: FastAPI):
     cleanup_task = asyncio.create_task(_workspace_cleanup_loop())
     # 启动定时任务调度器
     scheduler_task = asyncio.create_task(run_scheduler())
+    # 启动知识库后台 worker（ingest）
+    kb_task = asyncio.create_task(kb_worker_loop())
 
     async def _boot_bots_background() -> None:
         await asyncio.sleep(2)
@@ -125,9 +129,9 @@ async def lifespan(app: FastAPI):
     yield
 
     stop_bot_process()
-    for task in (cleanup_task, scheduler_task):
+    for task in (cleanup_task, scheduler_task, kb_task):
         task.cancel()
-    for task in (cleanup_task, scheduler_task):
+    for task in (cleanup_task, scheduler_task, kb_task):
         try:
             await task
         except (asyncio.CancelledError, Exception):
@@ -166,6 +170,7 @@ app.include_router(upload_router)
 app.include_router(office_router)
 app.include_router(memory_router)
 app.include_router(preview_router)
+app.include_router(kb_router)
 
 
 @app.get("/")

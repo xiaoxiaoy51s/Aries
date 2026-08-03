@@ -58,6 +58,47 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
           </button>
           <span class="sidebar-file-title">{{ workspaceDisplayName(fileView.workspace) }}</span>
+          <div class="sidebar-file-toolbar">
+            <button
+              type="button"
+              class="sidebar-file-tool-btn"
+              :title="t('workspace.uploadFile')"
+              :disabled="fileUploading"
+              @click="triggerUpload"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            </button>
+            <button
+              type="button"
+              class="sidebar-file-tool-btn"
+              :title="t('workspace.newFile')"
+              @click="handleCreateFile"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+            </button>
+            <button
+              type="button"
+              class="sidebar-file-tool-btn"
+              :title="t('workspace.newFolder')"
+              @click="handleCreateFolder"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+            </button>
+            <button
+              type="button"
+              class="sidebar-file-tool-btn"
+              :title="t('workspace.refresh')"
+              @click="handleRefreshFiles"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            </button>
+          </div>
+          <input
+            ref="fileInputRef"
+            type="file"
+            class="sidebar-file-input-hidden"
+            @change="onUploadFileChange"
+          />
         </div>
 
         <div class="sidebar-file-list">
@@ -310,7 +351,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
 import { useSettingsStore } from '../stores/settings'
 import api from '../api'
-import { listWorkspaceFiles, deleteWorkspaceFile, renameWorkspaceFile, renameWorkspace, deleteWorkspace } from '../api/workspaces'
+import { listWorkspaceFiles, deleteWorkspaceFile, renameWorkspaceFile, renameWorkspace, deleteWorkspace, uploadToWorkspace, createWorkspaceEntry } from '../api/workspaces'
 import { getFileIconUrl, getFolderIconUrl } from '../utils/fileIcons'
 
 const { t, tm } = useI18n()
@@ -343,6 +384,7 @@ const activeNav = computed(() => {
   if (route.name === 'agents') return 'agent'
   if (route.name === 'skills') return 'skills'
   if (route.name === 'automation') return 'schedule'
+  if (route.name === 'knowledge') return 'knowledge'
   return 'chat'
 })
 const openMenuId = ref(null)
@@ -478,6 +520,8 @@ const fileView = ref(null)
 // treeData: 扁平 map，path -> { name, path, is_dir, expanded, children_loaded, children: string[] }
 const treeData = ref({})
 const treeLoadingFolders = ref(new Set())
+const fileInputRef = ref(null)
+const fileUploading = ref(false)
 
 async function handleViewFiles(s) {
   closeMenu()
@@ -584,6 +628,68 @@ function onTreeFileClick(node) {
     toggleTreeFolder(node)
   } else if (fileView.value) {
     emit('view-file', { workspace: fileView.value.workspace, file: { name: node.name, path: node.path, is_dir: false, size: 0 } })
+  }
+}
+
+// ============ 文件工具栏：上传 / 新建文件 / 新建文件夹 / 刷新 ============
+
+function triggerUpload() {
+  fileInputRef.value && fileInputRef.value.click()
+}
+
+function handleRefreshFiles() {
+  if (!fileView.value) return
+  loadTreeRoot()
+}
+
+async function onUploadFileChange(e) {
+  const file = e.target.files && e.target.files[0]
+  // 重置 input，便于重复选择同一文件
+  if (fileInputRef.value) fileInputRef.value.value = ''
+  if (!file || !fileView.value) return
+  fileUploading.value = true
+  try {
+    await uploadToWorkspace(fileView.value.workspace, file, '')
+    ElMessage.success(t('workspace.uploadSuccess'))
+    await loadTreeRoot()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.detail || t('session.actionFailed'))
+  } finally {
+    fileUploading.value = false
+  }
+}
+
+async function handleCreateFile() {
+  await createEntry(false, t('workspace.newFilePrompt'), t('workspace.newFile'))
+}
+
+async function handleCreateFolder() {
+  await createEntry(true, t('workspace.newFolderPrompt'), t('workspace.newFolder'))
+}
+
+async function createEntry(isDir, promptText, titleText) {
+  if (!fileView.value) return
+  let value
+  try {
+    const result = await ElMessageBox.prompt(promptText, titleText, {
+      confirmButtonText: t('settings.save'),
+      cancelButtonText: t('settings.cancel'),
+      inputValidator: (val) => {
+        if (!val?.trim()) return t('workspace.nameEmpty')
+        if (val.includes('/') || val.includes('\\')) return t('workspace.nameEmpty')
+        return true
+      },
+    })
+    value = result.value
+  } catch {
+    return
+  }
+  try {
+    await createWorkspaceEntry(fileView.value.workspace, value.trim(), isDir)
+    ElMessage.success(t('workspace.createSuccess'))
+    await loadTreeRoot()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.detail || t('session.actionFailed'))
   }
 }
 
@@ -787,6 +893,8 @@ function handleNavClick(key) {
     router.push({ name: 'agents' })
   } else if (key === 'skills') {
     router.push({ name: 'skills' })
+  } else if (key === 'knowledge') {
+    router.push({ name: 'knowledge' })
   }
 }
 
