@@ -60,7 +60,7 @@ const router = createRouter({
 router.beforeEach((to) => {
   const auth = useAuthStore()
   if (to.meta.requiresAuth && !auth.token) {
-    return { name: 'chat' }
+    return { name: 'login' }
   }
   if ((to.name === 'login' || to.name === 'register') && auth.token) {
     return { name: 'chat' }

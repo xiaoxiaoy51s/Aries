@@ -1,4 +1,4 @@
-import api from './index'
+import api, { API_BASE_URL } from './index'
 
 export function listWorkspaces() {
   return api.get('/api/workspaces')
@@ -32,7 +32,7 @@ export function createWorkspaceEntry(workspaceName, path, isDir) {
 }
 
 export function downloadWorkspaceFile(workspaceName, path) {
-  return `/api/workspaces/${encodeURIComponent(workspaceName)}/files/download?path=${encodeURIComponent(path)}`
+  return `${API_BASE_URL}/api/workspaces/${encodeURIComponent(workspaceName)}/files/download?path=${encodeURIComponent(path)}`
 }
 
 export function readWorkspaceFile(workspaceName, path) {
@@ -74,7 +74,7 @@ export function uploadFile(file) {
 }
 
 export function downloadUpload(path) {
-  return `/api/upload/download?path=${encodeURIComponent(path)}`
+  return `${API_BASE_URL}/api/upload/download?path=${encodeURIComponent(path)}`
 }
 
 export function setSessionWorkspace(sessionId, workspaceDir) {

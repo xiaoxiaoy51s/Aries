@@ -166,21 +166,20 @@ async def _run_agent_in_session(
     适配 cloud 后端的 ChatService.chat_stream 流式生成器。
     """
     reply_parts: list[str] = []
-    async with async_session() as db:
-        async for sse in ChatService.chat_stream(
-            db, user_email, user_id, session_id, user_text
-        ):
-            if not sse.startswith("data: "):
-                continue
-            raw = sse[6:].strip()
-            if not raw or raw == "[DONE]":
-                continue
-            try:
-                event = json.loads(raw)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if event.get("type") == "assistant_text":
-                reply_parts.append(event.get("text", ""))
+    async for sse in ChatService.chat_stream(
+        user_email, user_id, session_id, user_text
+    ):
+        if not sse.startswith("data: "):
+            continue
+        raw = sse[6:].strip()
+        if not raw or raw == "[DONE]":
+            continue
+        try:
+            event = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if event.get("type") == "assistant_text":
+            reply_parts.append(event.get("text", ""))
     return "".join(reply_parts)
 
 

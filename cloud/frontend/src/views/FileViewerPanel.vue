@@ -184,7 +184,7 @@ import { useI18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import { getFileIconUrl } from '../utils/fileIcons'
 import { downloadWorkspaceFile, readWorkspaceFile, saveWorkspaceFileContent } from '../api/workspaces'
-import api from '../api'
+import api, { API_BASE_URL } from '../api'
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('typescript', typescript)
@@ -303,7 +303,7 @@ const previewUrl = computed(() => {
   if (!email) return ''
   const ws = encodeURIComponent(props.workspace)
   const segs = props.file.path.split('/').map(encodeURIComponent).join('/')
-  return `/api/preview/${email}/${ws}/${segs}`
+  return `${API_BASE_URL}/api/preview/${email}/${ws}/${segs}`
 })
 
 const hlLang = computed(() => EXT_LANG_MAP[ext.value] || 'plaintext')
@@ -424,7 +424,7 @@ function downloadFile() {
 
 function copyShareLink() {
   if (!previewUrl.value) return
-  const url = window.location.origin + previewUrl.value
+  const url = previewUrl.value
   if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(url).then(() => {
       window.dispatchEvent(new CustomEvent('aries:toast', {

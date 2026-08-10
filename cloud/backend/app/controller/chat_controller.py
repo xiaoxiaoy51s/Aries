@@ -55,12 +55,10 @@ class WorkspaceRequest(BaseModel):
 async def stream(
     req: SendRequest,
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
     """流式对话接口（SSE），输出 reasoning + content"""
     async def sse_generator():
         async for chunk in ChatService.chat_stream(
-            db,
             user.email,
             user.id,
             req.session_id,

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # App
     APP_NAME: str = "Aries Cloud"
     APP_DEBUG: bool = True
-    CORS_ORIGINS: list[str] = ["http://localhost:5173"]
+    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000", "http://47.109.109.250:7070", "https://www.ayuandoubao.icu"]
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"

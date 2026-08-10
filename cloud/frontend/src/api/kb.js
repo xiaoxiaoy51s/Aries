@@ -1,4 +1,4 @@
-import api from './index'
+import api, { API_BASE_URL } from './index'
 
 export function listKbPages(type) {
   return api.get('/api/kb/pages', { params: type ? { type } : {} })
@@ -38,7 +38,7 @@ export function chatWithKb(question) {
 }
 
 export function exportZip() {
-  return `/api/kb/export`
+  return `${API_BASE_URL}/api/kb/export`
 }
 
 export function getJobs(page = 1, pageSize = 20) {
@@ -46,10 +46,10 @@ export function getJobs(page = 1, pageSize = 20) {
 }
 
 export function getRawFileUrl(file_path) {
-  return `/api/kb/raw/${encodeURIComponent(file_path)}`
+  return `${API_BASE_URL}/api/kb/raw/${encodeURIComponent(file_path)}`
 }
 
 // 外链图片/视频代理（绕过微信 mmbiz 防盗链水印），仅支持白名单图床域名
 export function imageProxyUrl(url) {
-  return `/api/kb/image_proxy?url=${encodeURIComponent(url)}`
+  return `${API_BASE_URL}/api/kb/image_proxy?url=${encodeURIComponent(url)}`
 }

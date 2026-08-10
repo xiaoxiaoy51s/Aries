@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta
+import base64
+import hashlib
 
 import jwt
 from passlib.context import CryptContext
@@ -8,12 +10,18 @@ from app.config.settings import settings
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
+def _prehash(password: str) -> str:
+    """对密码做 SHA512 预哈希，避免 bcrypt 72 字节限制。"""
+    digest = hashlib.sha512(password.encode("utf-8")).digest()
+    return base64.b64encode(digest).decode("ascii")
+
+
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return pwd_context.hash(_prehash(password))
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    return pwd_context.verify(_prehash(plain), hashed)
 
 
 def create_access_token(data: dict) -> str:

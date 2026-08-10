@@ -195,7 +195,6 @@ async def _run_agent_for_platform(
         assistant_log_path = ""
         # 不传 segment_sink：避免跨 loop 实时推送；结束后按 JSONL 整段发送
         async for _sse in ChatService.chat_stream(
-            db,
             user.email,
             user.id,
             sid,

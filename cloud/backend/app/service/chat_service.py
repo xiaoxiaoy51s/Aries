@@ -8,6 +8,8 @@ from typing import AsyncGenerator, Optional, TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import async_session
+
 if TYPE_CHECKING:
     from app.services.platform_segment import PlatformStreamSink
 
@@ -154,7 +156,6 @@ class ChatService:
 
     @staticmethod
     async def chat_stream(
-        db: AsyncSession,
         user_email: str,
         user_id: int,
         session_id: str | None,
@@ -194,21 +195,12 @@ class ChatService:
             yield "data: [DONE]\n\n"
             return
 
-        # 2. 创建或获取 session
+        # 2. 创建或获取 session（独立 DB session，用完即还，不占用连接池）
         title_source = clean_message or ("[图片]" if image_list else "新对话")
-        session = None
-        if not session_id:
-            session_id = f"sess-{uuid.uuid4().hex[:12]}"
-            title = title_source[:30].replace("\n", " ") + ("..." if len(title_source) > 30 else "")
-            ws = (workspace_dir or "default").strip() or "default"
-            await SessionService.create_session(
-                db, session_id, user_id, title,
-                user_email=user_email, workspace_dir=ws,
-            )
-            session = await SessionService.get_session(db, session_id)
-        else:
-            session = await SessionService.get_session(db, session_id)
-            if not session:
+        async with async_session() as db:
+            session = None
+            if not session_id:
+                session_id = f"sess-{uuid.uuid4().hex[:12]}"
                 title = title_source[:30].replace("\n", " ") + ("..." if len(title_source) > 30 else "")
                 ws = (workspace_dir or "default").strip() or "default"
                 await SessionService.create_session(
@@ -216,49 +208,60 @@ class ChatService:
                     user_email=user_email, workspace_dir=ws,
                 )
                 session = await SessionService.get_session(db, session_id)
+            else:
+                session = await SessionService.get_session(db, session_id)
+                if not session:
+                    title = title_source[:30].replace("\n", " ") + ("..." if len(title_source) > 30 else "")
+                    ws = (workspace_dir or "default").strip() or "default"
+                    await SessionService.create_session(
+                        db, session_id, user_id, title,
+                        user_email=user_email, workspace_dir=ws,
+                    )
+                    session = await SessionService.get_session(db, session_id)
 
-        session_workspace = (session.workspace_dir if session else None) or "default"
+            session_workspace = (session.workspace_dir if session else None) or "default"
 
-        # 3. 推送 session_id
-        yield f'data: {json.dumps({"type": "session", "session_id": session_id})}\n\n'
+            # 3. 推送 session_id
+            yield f'data: {json.dumps({"type": "session", "session_id": session_id})}\n\n'
 
-        # 4. 写入用户消息
-        user_msg = await MessageRepository.create(
-            db, session_id=session_id, user_id=user_id, role="user", log_path=""
-        )
-        user_logger = SessionLogger(user_email, session_id, user_msg.id)
-        user_logger.write_user_message(clean_message, image_list)
-        await MessageRepository.update_log_path(db, user_msg.id, user_logger.jsonl_path_str)
-        user_logger.finalize()
+            # 4. 写入用户消息
+            user_msg = await MessageRepository.create(
+                db, session_id=session_id, user_id=user_id, role="user", log_path=""
+            )
+            user_logger = SessionLogger(user_email, session_id, user_msg.id)
+            user_logger.write_user_message(clean_message, image_list)
+            await MessageRepository.update_log_path(db, user_msg.id, user_logger.jsonl_path_str)
+            user_logger.finalize()
 
-        # 5. 创建 assistant 消息 + logger
-        assistant_msg = await MessageRepository.create(
-            db, session_id=session_id, user_id=user_id, role="assistant", log_path=""
-        )
+            # 5. 创建 assistant 消息 + logger
+            assistant_msg = await MessageRepository.create(
+                db, session_id=session_id, user_id=user_id, role="assistant", log_path=""
+            )
 
-        sse_queue: list[str] = []
+            sse_queue: list[str] = []
 
-        def on_event(event: dict):
-            # 前端 SSE 仍按 token 广播；平台推送不在这里触发（避免按 token 刷屏）
-            sse_queue.append(f"data: {json.dumps(event, ensure_ascii=False)}\n\n")
+            def on_event(event: dict):
+                # 前端 SSE 仍按 token 广播；平台推送不在这里触发（避免按 token 刷屏）
+                sse_queue.append(f"data: {json.dumps(event, ensure_ascii=False)}\n\n")
 
-        logger = SessionLogger(user_email, session_id, assistant_msg.id, on_event=on_event)
-        logger.set_model(model.model)
-        await MessageRepository.update_log_path(db, assistant_msg.id, logger.jsonl_path_str)
+            logger = SessionLogger(user_email, session_id, assistant_msg.id, on_event=on_event)
+            logger.set_model(model.model)
+            await MessageRepository.update_log_path(db, assistant_msg.id, logger.jsonl_path_str)
 
-        # 6. 构建上下文
-        db_messages = await SessionService.get_messages(db, session_id)
-        messages, context_info = build_context_messages(
-            db_messages=db_messages,
-            current_user_text=clean_message,
-            current_user_images=image_list,
-            model=model.model,
-            platform=platform,
-            user_email=user_email,
-            as_agent=as_agent,
-            workspace_dir=session_workspace,
-            skills=skills,
-        )
+            # 6. 构建上下文
+            db_messages = await SessionService.get_messages(db, session_id)
+            messages, context_info = build_context_messages(
+                db_messages=db_messages,
+                current_user_text=clean_message,
+                current_user_images=image_list,
+                model=model.model,
+                platform=platform,
+                user_email=user_email,
+                as_agent=as_agent,
+                workspace_dir=session_workspace,
+                skills=skills,
+            )
+        # DB session 已释放，后续流式 LLM 调用不再占用连接池
 
         # 6.5 知识库模式：BM25 检索 wiki 文档，命中文档注入 system prompt（不污染用户消息）
         if use_kb and clean_message:

@@ -157,6 +157,23 @@ async def auth_exception_handler(request: Request, exc: AuthException):
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
+# 未捕获异常兜底：DEBUG 时把真实错误返回给前端，便于远程定位
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    import traceback
+
+    logger.error("Unhandled error: %s", traceback.format_exc())
+    if settings.APP_DEBUG:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc().splitlines()[-20:],
+            },
+        )
+    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+
+
 # 注册路由
 app.include_router(auth_router)
 app.include_router(model_router)

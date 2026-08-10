@@ -5,6 +5,7 @@ asyncpg>=0.29.0
 pydantic-settings>=2.2.1
 PyJWT>=2.8.0
 passlib[bcrypt]>=1.7.4
+bcrypt==3.2.2  # bcrypt 4.x 移除了 __about__，且对 >72 字节密码抛 ValueError；3.x 兼容 passlib 且静默截断
 aiosmtplib>=3.0.0
 python-multipart>=0.0.9
 email-validator>=2.1.0
